@@ -24,7 +24,7 @@
 <!-- APP -->
 <div id="app" style="display:none;">
     <nav class="sidebar">
-        <div class="logo">NanoredVPN <span style="font-size:11px;color:var(--text-secondary);">v1.3</span></div>
+        <div class="logo">NanoredVPN <span style="font-size:11px;color:var(--text-secondary);">v1.4</span></div>
         <a href="#" class="nav-link active" data-section="dashboard">Панель</a>
         <a href="#" class="nav-link" data-section="devices">Устройства</a>
         <a href="#" class="nav-link" data-section="sessions">Сессии</a>
@@ -306,20 +306,23 @@
                 <div class="table-header">
                     <h3>Загруженные логи</h3>
                     <div class="table-filters">
+                        <button class="btn btn-danger btn-sm" onclick="clearAllDeviceLogs()">Очистить все</button>
                         <select id="devlogs-account-filter" onchange="loadDeviceLogs(1)">
                             <option value="">Все аккаунты</option>
                         </select>
                         <select id="devlogs-type-filter" onchange="loadDeviceLogs(1)">
                             <option value="">Все типы</option>
-                            <option value="logcat">logcat</option>
-                            <option value="crash">crash</option>
-                            <option value="custom">custom</option>
+                            <option value="logcat">Приложение</option>
+                            <option value="full_log">Полный журнал</option>
+                            <option value="xray_access">Xray access</option>
+                            <option value="xray_error">Xray error</option>
+                            <option value="crash">Crash</option>
                         </select>
                     </div>
                 </div>
                 <table>
                     <thead>
-                        <tr><th>Устройство</th><th>Тип</th><th>Версия</th><th>Размер</th><th>Превью</th><th>Время</th><th>Действия</th></tr>
+                        <tr><th>Устройство</th><th>Тип</th><th>Размер</th><th>Время</th><th>Действия</th></tr>
                     </thead>
                     <tbody id="devlogs-tbody"></tbody>
                 </table>

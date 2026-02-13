@@ -24,7 +24,7 @@ from app.models.device_change_log import DeviceChangeLog
 from app.schemas.device import DeviceRegisterRequest, DeviceRegisterResponse
 from app.schemas.session import SessionStartRequest, SessionStartResponse, SessionEndRequest
 from app.schemas.telemetry import (
-    SNIBatchRequest, DNSBatchRequest, AppTrafficBatchRequest,
+    SNIBatchRequest, SNIRawRequest, DNSBatchRequest, AppTrafficBatchRequest,
     ConnectionBatchRequest, ErrorReportRequest, PermissionsBatchRequest,
     DeviceLogRequest,
 )
@@ -265,6 +265,90 @@ async def sni_batch(
         db.add(log)
     logging_buffer.add("processing", f"SNI batch: {len(req.entries)} записей от устройства {device.id}")
     return {"status": "ok", "count": len(req.entries)}
+
+
+import re
+
+_IP_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
+_TAG_SUFFIXES = {"proxy", "direct", "block"}
+
+
+def _parse_access_log_lines(raw_log: str) -> list[dict]:
+    """Parse v2ray access log lines and return SNI/connection entries.
+
+    Format variants:
+      ... accepted tcp:domain.com:443 [proxy]
+      ... >> domain.com:443
+      ... tcp:1.2.3.4:443 accepted proxy >> domain.com:443 email: ...
+    """
+    results: list[dict] = []
+    for line in raw_log.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            host = None
+            if ">>" in line:
+                part = line.split(">>", 1)[1].strip().split()[0]
+                host = _parse_host(part)
+            elif "accepted" in line:
+                accepted = line.split("accepted", 1)[1].strip()
+                target = accepted.split()[0]
+                for prefix in ("tcp:", "udp:"):
+                    if target.startswith(prefix):
+                        target = target[len(prefix):]
+                for tag in ("[proxy]", "[direct]", "[block]"):
+                    target = target.replace(tag, "")
+                target = target.strip()
+                if not target or target.rstrip("]") in _TAG_SUFFIXES:
+                    continue
+                host = _parse_host(target)
+
+            if host:
+                results.append({"domain": host, "hit_count": 1, "bytes_total": 0})
+        except Exception:
+            continue
+    return results
+
+
+def _parse_host(s: str) -> str | None:
+    s = s.strip()
+    if not s:
+        return None
+    if s.startswith("["):
+        cb = s.find("]")
+        return s[1:cb] if cb > 0 else s
+    last = s.rfind(":")
+    if last < 0:
+        return s
+    host = s[:last]
+    return host if host else None
+
+
+@router.post("/sni/raw")
+async def sni_raw(
+    req: SNIRawRequest,
+    db: AsyncSession = Depends(get_db),
+    x_api_key: str = Header(..., alias="X-API-Key"),
+):
+    """Receive raw v2ray access log, parse on server, save SNI entries."""
+    device = await _get_device(x_api_key, db)
+    session_id = uuid.UUID(req.session_id)
+    now = datetime.now(timezone.utc)
+
+    entries = _parse_access_log_lines(req.raw_log)
+    for e in entries:
+        db.add(SNILog(
+            session_id=session_id,
+            device_id=device.id,
+            domain=e["domain"],
+            hit_count=e["hit_count"],
+            bytes_total=e["bytes_total"],
+            first_seen=now,
+            last_seen=now,
+        ))
+    logging_buffer.add("processing", f"SNI raw: {len(entries)} записей (из {len(req.raw_log)} байт) от устройства {device.id}")
+    return {"status": "ok", "count": len(entries)}
 
 
 @router.post("/dns/batch")

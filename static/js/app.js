@@ -293,7 +293,7 @@ async function viewDeviceDetail(deviceId) {
         if (dev.battery_level != null) {
             const lvl = dev.battery_level;
             const color = lvl > 50 ? 'var(--green)' : lvl > 20 ? 'var(--yellow)' : 'var(--red)';
-            batteryHtml = `<div class="battery-bar-wrap"><div class="battery-bar" style="width:${lvl}%;background:${color};"></div><span class="battery-label">${lvl}%</span></div>`;
+            batteryHtml = `<div class="battery-bar-wrap"><div class="battery-bar-track"><div class="battery-bar" style="width:${lvl}%;background:${color};"></div></div><span class="battery-label">${lvl}%</span></div>`;
         }
 
         // Update modal header with battery
@@ -526,17 +526,16 @@ async function loadDeviceLogs(page = 1) {
     if (logType) url += `&log_type=${encodeURIComponent(logType)}`;
     const resp = await api(url);
     const d = await resp.json();
+    const typeLabels = { logcat: 'Приложение', full_log: 'Полный журнал', xray_access: 'Xray access', xray_error: 'Xray error', crash: 'Crash' };
     document.getElementById('devlogs-tbody').innerHTML = d.items.map(l => `
         <tr>
             <td title="${l.device_id}">${l.device_id.slice(0, 8)}...</td>
-            <td><span class="badge badge-blue">${escapeHtml(l.log_type)}</span></td>
-            <td>${l.app_version || '-'}</td>
+            <td><span class="badge badge-blue">${escapeHtml(typeLabels[l.log_type] || l.log_type)}</span></td>
             <td>${formatBytes(l.content_size)}</td>
-            <td title="${escapeHtml(l.content_preview)}">${escapeHtml(l.content_preview.slice(0, 60))}...</td>
             <td>${formatDate(l.uploaded_at)}</td>
             <td>
-                <button class="btn btn-sm btn-primary" onclick="viewDevLog('${l.id}')">Просмотр</button>
-                <button class="btn btn-sm btn-success" onclick="downloadDevLog('${l.id}')">Скачать</button>
+                <button class="btn btn-sm btn-primary" onclick="viewDevLog('${l.id}')">Открыть</button>
+                <button class="btn btn-sm btn-danger" onclick="deleteDevLog('${l.id}')">Удалить</button>
             </td>
         </tr>
     `).join('');
@@ -559,6 +558,18 @@ function closeDevLogModal() {
 
 function downloadDevLog(logId) {
     window.open(`${API}/admin/device-logs/${logId}/download`, '_blank');
+}
+
+async function deleteDevLog(logId) {
+    if (!confirm('Удалить этот лог?')) return;
+    await api(`/admin/device-logs/${logId}`, { method: 'DELETE' });
+    loadDeviceLogs();
+}
+
+async function clearAllDeviceLogs() {
+    if (!confirm('Удалить ВСЕ логи устройств? Это действие необратимо.')) return;
+    await api('/admin/device-logs', { method: 'DELETE' });
+    loadDeviceLogs();
 }
 
 // ========== JOURNAL (LIVE LOGS) ==========

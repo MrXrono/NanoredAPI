@@ -268,14 +268,15 @@ tbody tr:hover { background: rgba(233, 69, 96, 0.05); }
     align-items: center;
     gap: 6px;
     margin-left: 12px;
-    width: 100px;
+    vertical-align: middle;
+}
+.battery-bar-track {
+    width: 80px;
     height: 18px;
     background: var(--bg-secondary);
     border: 1px solid var(--border);
     border-radius: 4px;
     overflow: hidden;
-    position: relative;
-    vertical-align: middle;
 }
 .battery-bar {
     height: 100%;
@@ -283,11 +284,10 @@ tbody tr:hover { background: rgba(233, 69, 96, 0.05); }
     transition: width 0.3s;
 }
 .battery-label {
-    position: absolute;
-    right: 6px;
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 700;
     color: var(--text-primary);
+    white-space: nowrap;
 }
 
 /* Responsive */

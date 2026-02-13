@@ -12,6 +12,11 @@ class SNIBatchRequest(BaseModel):
     entries: list[SNIEntry]
 
 
+class SNIRawRequest(BaseModel):
+    session_id: str
+    raw_log: str
+
+
 class DNSEntry(BaseModel):
     domain: str
     resolved_ip: str | None = None

@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Body
-from sqlalchemy import select, func, desc, and_
+from sqlalchemy import select, func, desc, and_, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -723,8 +723,6 @@ async def list_device_logs(
             "id": str(l.id),
             "device_id": str(l.device_id),
             "log_type": l.log_type,
-            "app_version": l.app_version,
-            "content_preview": l.content[:200] if l.content else "",
             "content_size": len(l.content) if l.content else 0,
             "uploaded_at": l.uploaded_at.isoformat() if l.uploaded_at else None,
         } for l in logs],
@@ -742,9 +740,24 @@ async def get_device_log(log_id: str, db: AsyncSession = Depends(get_db)):
         "device_id": str(log.device_id),
         "log_type": log.log_type,
         "content": log.content,
-        "app_version": log.app_version,
         "uploaded_at": log.uploaded_at.isoformat() if log.uploaded_at else None,
     }
+
+
+@router.delete("/device-logs/{log_id}")
+async def delete_device_log(log_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(DeviceLog).where(DeviceLog.id == uuid.UUID(log_id)))
+    log = result.scalar_one_or_none()
+    if not log:
+        raise HTTPException(status_code=404, detail="Log not found")
+    await db.delete(log)
+    return {"status": "ok"}
+
+
+@router.delete("/device-logs")
+async def delete_all_device_logs(db: AsyncSession = Depends(get_db)):
+    await db.execute(delete(DeviceLog))
+    return {"status": "ok"}
 
 
 @router.get("/device-logs/{log_id}/download")
