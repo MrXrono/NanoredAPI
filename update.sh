@@ -23,9 +23,17 @@ err() { echo -e "${RED}[$(date '+%H:%M:%S')] ОШИБКА:${NC} $1"; }
 # ---------- 1. Check current version ----------
 log "Проверка текущей версии..."
 if [ ! -d "$INSTALL_DIR/.git" ]; then
-    err "Директория $INSTALL_DIR не является git-репозиторием"
-    err "Клонирование репозитория..."
-    git clone "$REPO_URL" "$INSTALL_DIR"
+    warn "Директория $INSTALL_DIR не является git-репозиторием"
+    log "Инициализация git в существующей директории..."
+    cd "$INSTALL_DIR"
+    git init
+    git remote add origin "$REPO_URL" 2>/dev/null || git remote set-url origin "$REPO_URL"
+    git fetch origin main --quiet 2>/dev/null || git fetch origin master --quiet 2>/dev/null
+    BRANCH=$(git remote show origin 2>/dev/null | grep 'HEAD branch' | awk '{print $NF}')
+    BRANCH=${BRANCH:-main}
+    git checkout -b "$BRANCH" 2>/dev/null || true
+    git reset --mixed "origin/$BRANCH" 2>/dev/null || true
+    log "Git инициализирован (ветка: $BRANCH)"
 fi
 
 cd "$INSTALL_DIR"
