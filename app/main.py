@@ -1,10 +1,11 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.requests import Request
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app.core.config import settings
 from app.core.database import engine, Base, async_session
@@ -20,22 +21,34 @@ from app.models.app_traffic import AppTraffic
 from app.models.connection_log import ConnectionLog
 from app.models.error_log import ErrorLog
 
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: create tables and default admin
+    # Startup: create tables with advisory lock to prevent race condition
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+        # PostgreSQL advisory lock to ensure only one worker creates tables
+        await conn.execute(text("SELECT pg_advisory_lock(1)"))
+        try:
+            await conn.run_sync(Base.metadata.create_all)
+        except Exception as e:
+            logger.warning(f"Table creation skipped (already exists): {e}")
+        finally:
+            await conn.execute(text("SELECT pg_advisory_unlock(1)"))
 
-    async with async_session() as db:
-        result = await db.execute(select(Admin).where(Admin.username == settings.ADMIN_USERNAME))
-        if not result.scalar_one_or_none():
-            admin = Admin(
-                username=settings.ADMIN_USERNAME,
-                password_hash=hash_password(settings.ADMIN_PASSWORD),
-            )
-            db.add(admin)
-            await db.commit()
+    try:
+        async with async_session() as db:
+            result = await db.execute(select(Admin).where(Admin.username == settings.ADMIN_USERNAME))
+            if not result.scalar_one_or_none():
+                admin = Admin(
+                    username=settings.ADMIN_USERNAME,
+                    password_hash=hash_password(settings.ADMIN_PASSWORD),
+                )
+                db.add(admin)
+                await db.commit()
+    except Exception as e:
+        logger.warning(f"Admin creation skipped: {e}")
 
     yield
 
