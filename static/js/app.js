@@ -566,8 +566,18 @@ function copyDevLogContent() {
     }).catch(() => alert('Не удалось скопировать'));
 }
 
-function downloadDevLog(logId) {
-    window.open(`${API}/admin/device-logs/${logId}/download`, '_blank');
+async function downloadDevLog(logId) {
+    try {
+        const resp = await api(`/admin/device-logs/${logId}`);
+        const d = await resp.json();
+        const blob = new Blob([d.content], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `device_log_${logId}.txt`;
+        a.click();
+        URL.revokeObjectURL(url);
+    } catch (err) { console.error('Download error:', err); }
 }
 
 async function deleteDevLog(logId) {
@@ -657,9 +667,18 @@ async function exportSNI() {
     const days = prompt('Экспорт SNI за сколько дней?', '7');
     if (!days) return;
     const accountId = getAccountFilter('sni-account-filter');
-    let url = `${API}/admin/export/sni?days=${days}`;
+    let url = `/admin/export/sni?days=${days}`;
     if (accountId) url += `&account_id=${encodeURIComponent(accountId)}`;
-    window.open(url, '_blank');
+    try {
+        const resp = await api(url);
+        const blob = await resp.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = blobUrl;
+        a.download = `sni_export_${days}d.csv`;
+        a.click();
+        URL.revokeObjectURL(blobUrl);
+    } catch (err) { console.error('Export error:', err); }
 }
 
 // ========== INIT ==========

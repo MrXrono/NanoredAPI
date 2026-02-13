@@ -270,79 +270,75 @@ async def sni_batch(
 import re
 
 _IP_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
-_TAG_SUFFIXES = {"proxy", "direct", "block"}
-# DNS log: "... [DNS] domain.com --> 1.2.3.4" or "... [DNS] domain.com -> 1.2.3.4"
-_DNS_RE = re.compile(r"\[DNS\]\s+(\S+)\s+--?>\s+(\S+)")
+# "sniffed domain: example.com"
+_SNIFFED_RE = re.compile(r"sniffed domain:\s+(\S+)")
+# "app/dns: returning ... for domain example.com -> [1.2.3.4, 5.6.7.8]"
+_DNS_RESOLVE_RE = re.compile(r"app/dns:.*domain\s+(\S+)\s+->\s+\[([^\]]+)\]")
+# Known infrastructure domains/IPs to skip
+_SKIP_DOMAINS = {"proxy", "proxy]", "direct", "direct]", "block", "block]",
+                 "https", "http", "tun", "socks", ""}
 
 
-def _build_dns_map(dns_log: str) -> dict[str, str]:
-    """Parse xray DNS log lines and build IP -> domain mapping."""
+def _parse_dns_log(dns_log: str) -> tuple[list[str], dict[str, str]]:
+    """Parse xray error log lines containing sniffed domains and DNS resolutions.
+
+    Returns:
+        - sniffed_domains: list of domains extracted from 'sniffed domain:' lines
+        - ip_to_domain: mapping of IP -> domain from DNS resolution lines
+    """
+    sniffed_domains: list[str] = []
     ip_to_domain: dict[str, str] = {}
+
     for line in dns_log.splitlines():
-        m = _DNS_RE.search(line)
+        # Extract sniffed domains (most reliable source)
+        m = _SNIFFED_RE.search(line)
         if m:
-            domain = m.group(1)
-            ips = m.group(2)
-            # Can be comma-separated IPs
-            for ip in ips.split(","):
+            domain = m.group(1).strip()
+            if domain and domain not in _SKIP_DOMAINS:
+                sniffed_domains.append(domain)
+            continue
+
+        # Extract DNS IP->domain mapping
+        m2 = _DNS_RESOLVE_RE.search(line)
+        if m2:
+            domain = m2.group(1).strip()
+            ips_str = m2.group(2)
+            for ip in ips_str.split(","):
                 ip = ip.strip()
                 if ip and _IP_RE.match(ip):
                     ip_to_domain[ip] = domain
-    return ip_to_domain
+
+    return sniffed_domains, ip_to_domain
 
 
-def _parse_access_log_lines(raw_log: str, dns_map: dict[str, str] | None = None) -> list[dict]:
-    """Parse v2ray access log lines and return SNI entries.
+def _parse_access_log_ips(raw_log: str) -> list[str]:
+    """Extract destination IPs from v2ray access log (TUN mode).
 
-    Uses dns_map to resolve IPs to domain names when available.
+    Access log format: ... accepted tcp:IP:PORT [tun >> proxy]
     """
-    if dns_map is None:
-        dns_map = {}
-    results: list[dict] = []
+    ips: list[str] = []
     for line in raw_log.splitlines():
         line = line.strip()
-        if not line:
+        if not line or "accepted" not in line:
             continue
         try:
-            host = None
-            if ">>" in line:
-                part = line.split(">>", 1)[1].strip().split()[0]
-                host = _parse_host(part)
-            elif "accepted" in line:
-                accepted = line.split("accepted", 1)[1].strip()
-                target = accepted.split()[0]
-                for prefix in ("tcp:", "udp:"):
-                    if target.startswith(prefix):
-                        target = target[len(prefix):]
-                for tag in ("[proxy]", "[direct]", "[block]"):
-                    target = target.replace(tag, "")
-                target = target.strip()
-                if not target or target.rstrip("]") in _TAG_SUFFIXES:
-                    continue
-                host = _parse_host(target)
-
-            if host:
-                # If host is an IP, try to resolve via DNS map
-                if _IP_RE.match(host) and host in dns_map:
-                    host = dns_map[host]
-                results.append({"domain": host, "hit_count": 1, "bytes_total": 0})
+            accepted = line.split("accepted", 1)[1].strip()
+            target = accepted.split()[0]
+            for prefix in ("tcp:", "udp:"):
+                if target.startswith(prefix):
+                    target = target[len(prefix):]
+            # Extract IP from IP:PORT
+            last_colon = target.rfind(":")
+            if last_colon > 0:
+                host = target[:last_colon]
+            else:
+                host = target
+            host = host.strip()
+            if host and _IP_RE.match(host):
+                ips.append(host)
         except Exception:
             continue
-    return results
-
-
-def _parse_host(s: str) -> str | None:
-    s = s.strip()
-    if not s:
-        return None
-    if s.startswith("["):
-        cb = s.find("]")
-        return s[1:cb] if cb > 0 else s
-    last = s.rfind(":")
-    if last < 0:
-        return s
-    host = s[:last]
-    return host if host else None
+    return ips
 
 
 @router.post("/sni/raw")
@@ -351,28 +347,47 @@ async def sni_raw(
     db: AsyncSession = Depends(get_db),
     x_api_key: str = Header(..., alias="X-API-Key"),
 ):
-    """Receive raw v2ray access + DNS logs, parse on server, save SNI entries."""
+    """Receive raw v2ray access + error logs, parse on server, save SNI entries.
+
+    Primary source: sniffed domains from xray error log.
+    Fallback: IP->domain mapping from DNS resolutions applied to access log IPs.
+    """
     device = await _get_device(x_api_key, db)
     session_id = uuid.UUID(req.session_id)
     now = datetime.now(timezone.utc)
 
-    # Build IP->domain mapping from DNS log
-    dns_map = _build_dns_map(req.dns_log) if req.dns_log else {}
+    # Parse DNS/sniffing log
+    sniffed_domains, ip_to_domain = _parse_dns_log(req.dns_log) if req.dns_log else ([], {})
 
-    entries = _parse_access_log_lines(req.raw_log, dns_map)
-    for e in entries:
+    # Collect all domains: sniffed + resolved from access log IPs
+    domain_counts: dict[str, int] = {}
+    for d in sniffed_domains:
+        domain_counts[d] = domain_counts.get(d, 0) + 1
+
+    # Also resolve IPs from access log using DNS map
+    if req.raw_log and ip_to_domain:
+        access_ips = _parse_access_log_ips(req.raw_log)
+        for ip in access_ips:
+            if ip in ip_to_domain:
+                d = ip_to_domain[ip]
+                if d not in domain_counts:
+                    domain_counts[d] = domain_counts.get(d, 0) + 1
+
+    # Save entries
+    for domain, count in domain_counts.items():
         db.add(SNILog(
             session_id=session_id,
             device_id=device.id,
-            domain=e["domain"],
-            hit_count=e["hit_count"],
-            bytes_total=e["bytes_total"],
+            domain=domain,
+            hit_count=count,
+            bytes_total=0,
             first_seen=now,
             last_seen=now,
         ))
-    dns_count = len(dns_map)
-    logging_buffer.add("processing", f"SNI raw: {len(entries)} записей, DNS map: {dns_count} записей от устройства {device.id}")
-    return {"status": "ok", "count": len(entries), "dns_resolved": dns_count}
+    total = len(domain_counts)
+    logging_buffer.add("processing",
+        f"SNI raw: {total} доменов (sniffed={len(sniffed_domains)}, dns_map={len(ip_to_domain)}) от устройства {device.id}")
+    return {"status": "ok", "count": total, "sniffed": len(sniffed_domains), "dns_resolved": len(ip_to_domain)}
 
 
 @router.post("/dns/batch")
