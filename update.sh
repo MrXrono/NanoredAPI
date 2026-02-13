@@ -16,12 +16,20 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
+FORCE=false
+if [ "$1" = "--f" ] || [ "$1" = "--force" ]; then
+    FORCE=true
+fi
+
 log() { echo -e "${GREEN}[$(date '+%H:%M:%S')]${NC} $1"; }
 warn() { echo -e "${YELLOW}[$(date '+%H:%M:%S')] ВНИМАНИЕ:${NC} $1"; }
 err() { echo -e "${RED}[$(date '+%H:%M:%S')] ОШИБКА:${NC} $1"; }
 
 # ---------- 1. Check current version ----------
 log "Проверка текущей версии..."
+if [ "$FORCE" = true ]; then
+    log "Режим принудительного обновления (--f)"
+fi
 if [ ! -d "$INSTALL_DIR/.git" ]; then
     warn "Директория $INSTALL_DIR не является git-репозиторием"
     log "Инициализация git в существующей директории..."
@@ -41,10 +49,14 @@ LOCAL_COMMIT=$(git rev-parse HEAD)
 git fetch origin main --quiet 2>/dev/null || git fetch origin master --quiet 2>/dev/null
 REMOTE_COMMIT=$(git rev-parse FETCH_HEAD 2>/dev/null)
 
-if [ "$LOCAL_COMMIT" = "$REMOTE_COMMIT" ]; then
-    log "Версия актуальна ($LOCAL_COMMIT)"
-    log "Принудительное обновление не требуется."
+if [ "$LOCAL_COMMIT" = "$REMOTE_COMMIT" ] && [ "$FORCE" = false ]; then
+    log "Версия актуальна (${LOCAL_COMMIT:0:8})"
+    log "Используйте --f для принудительного обновления."
     exit 0
+fi
+
+if [ "$LOCAL_COMMIT" = "$REMOTE_COMMIT" ] && [ "$FORCE" = true ]; then
+    warn "Версия актуальна, но выполняется принудительное обновление"
 fi
 
 LOCAL_VER=$(grep -oP 'VERSION.*?=.*?"(\K[^"]+)' app/core/config.py 2>/dev/null || echo "unknown")
@@ -59,9 +71,16 @@ fi
 
 # ---------- 3. Pull updates ----------
 log "Загрузка обновлений..."
-git stash --quiet 2>/dev/null || true
-git pull origin main --quiet 2>/dev/null || git pull origin master --quiet 2>/dev/null
-git stash pop --quiet 2>/dev/null || true
+if [ "$FORCE" = true ]; then
+    BRANCH=$(git remote show origin 2>/dev/null | grep 'HEAD branch' | awk '{print $NF}')
+    BRANCH=${BRANCH:-main}
+    git reset --hard "origin/$BRANCH" 2>/dev/null
+    git clean -fd 2>/dev/null || true
+else
+    git stash --quiet 2>/dev/null || true
+    git pull origin main --quiet 2>/dev/null || git pull origin master --quiet 2>/dev/null
+    git stash pop --quiet 2>/dev/null || true
+fi
 
 NEW_VER=$(grep -oP 'VERSION.*?=.*?"(\K[^"]+)' app/core/config.py 2>/dev/null || echo "unknown")
 log "Новая версия: $NEW_VER"
