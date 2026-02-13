@@ -105,14 +105,14 @@ docker compose -f "$COMPOSE_FILE" down 2>/dev/null || docker-compose -f "$COMPOS
 # ---------- 6. Handle DB schema changes ----------
 if [ "$SCHEMA_CHANGED" = true ]; then
     warn "Удаление старой БД из-за изменений схемы..."
-    VOLUME_NAME=$(docker volume ls -q | grep nanored.*db 2>/dev/null || true)
+    VOLUME_NAME=$(docker volume ls -q | grep nanored.*pgdata 2>/dev/null || true)
     if [ -n "$VOLUME_NAME" ]; then
         docker volume rm "$VOLUME_NAME" 2>/dev/null || true
         log "Том $VOLUME_NAME удалён"
     else
         # Try to find by compose project name
-        docker volume rm nanored-api_postgres_data 2>/dev/null || true
-        docker volume rm nanored_postgres_data 2>/dev/null || true
+        docker volume rm nanored-api_nanored-pgdata 2>/dev/null || true
+        docker volume rm nanored_nanored-pgdata 2>/dev/null || true
         log "Тома БД удалены (если существовали)"
     fi
 fi
