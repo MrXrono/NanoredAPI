@@ -63,3 +63,9 @@ class PermissionEntry(BaseModel):
 
 class PermissionsBatchRequest(BaseModel):
     permissions: list[PermissionEntry]
+
+
+class DeviceLogRequest(BaseModel):
+    log_type: str = "logcat"  # logcat, crash, custom
+    content: str
+    app_version: str | None = None

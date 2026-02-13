@@ -21,11 +21,22 @@ class LoggingBuffer:
         with self._lock:
             self._buffer.append(entry)
 
+    TELEMETRY_KEYWORDS = (
+        "Регистрация", "перерегистрировано", "Новое устройство",
+        "Сессия начата", "Сессия завершена", "Автозакрытие",
+        "SNI batch", "DNS batch", "App traffic batch", "Connections batch",
+        "Permissions", "Лог от устройства", "Ошибка от устройства",
+        "Создан аккаунт",
+    )
+
     def get_logs(self, log_type: str | None = None, limit: int = 200, offset: int = 0) -> list[dict]:
         with self._lock:
             items = list(self._buffer)
         if log_type and log_type != "all":
-            items = [i for i in items if i["type"] == log_type]
+            if log_type == "telemetry":
+                items = [i for i in items if any(kw in i["message"] for kw in self.TELEMETRY_KEYWORDS)]
+            else:
+                items = [i for i in items if i["type"] == log_type]
         items.reverse()
         return items[offset:offset + limit]
 

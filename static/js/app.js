@@ -66,6 +66,7 @@ document.querySelectorAll('.nav-link').forEach(link => {
         else if (section === 'apps') loadApps();
         else if (section === 'connections') loadConnections();
         else if (section === 'errors') loadErrors();
+        else if (section === 'device-logs') loadDeviceLogs();
         else if (section === 'journal') refreshLogs();
     });
 });
@@ -115,7 +116,8 @@ async function loadAccounts() {
 function populateAccountFilters() {
     const selectors = [
         'device-account-filter', 'session-account-filter', 'sni-account-filter',
-        'dns-account-filter', 'apps-account-filter', 'conn-account-filter', 'errors-account-filter'
+        'dns-account-filter', 'apps-account-filter', 'conn-account-filter', 'errors-account-filter',
+        'devlogs-account-filter'
     ];
     selectors.forEach(id => {
         const el = document.getElementById(id);
@@ -421,6 +423,50 @@ async function loadErrors(page = 1) {
         </tr>
     `).join('');
     renderPagination(document.getElementById('errors-pagination'), d.total, d.page, d.per_page, 'loadErrors');
+}
+
+// ========== DEVICE LOGS ==========
+async function loadDeviceLogs(page = 1) {
+    const accountId = getAccountFilter('devlogs-account-filter');
+    const logType = document.getElementById('devlogs-type-filter')?.value || '';
+    let url = `/admin/device-logs?page=${page}&per_page=50`;
+    if (accountId) url += `&account_id=${encodeURIComponent(accountId)}`;
+    if (logType) url += `&log_type=${encodeURIComponent(logType)}`;
+    const resp = await api(url);
+    const d = await resp.json();
+    document.getElementById('devlogs-tbody').innerHTML = d.items.map(l => `
+        <tr>
+            <td title="${l.device_id}">${l.device_id.slice(0, 8)}...</td>
+            <td><span class="badge badge-blue">${escapeHtml(l.log_type)}</span></td>
+            <td>${l.app_version || '-'}</td>
+            <td>${formatBytes(l.content_size)}</td>
+            <td title="${escapeHtml(l.content_preview)}">${escapeHtml(l.content_preview.slice(0, 60))}...</td>
+            <td>${formatDate(l.uploaded_at)}</td>
+            <td>
+                <button class="btn btn-sm btn-primary" onclick="viewDevLog('${l.id}')">Просмотр</button>
+                <button class="btn btn-sm btn-success" onclick="downloadDevLog('${l.id}')">Скачать</button>
+            </td>
+        </tr>
+    `).join('');
+    renderPagination(document.getElementById('devlogs-pagination'), d.total, d.page, d.per_page, 'loadDeviceLogs');
+}
+
+async function viewDevLog(logId) {
+    try {
+        const resp = await api(`/admin/device-logs/${logId}`);
+        const d = await resp.json();
+        document.getElementById('devlog-content').textContent = d.content;
+        document.getElementById('devlog-download-btn').onclick = () => downloadDevLog(logId);
+        document.getElementById('devlog-modal').style.display = 'flex';
+    } catch (err) { console.error('View device log error:', err); }
+}
+
+function closeDevLogModal() {
+    document.getElementById('devlog-modal').style.display = 'none';
+}
+
+function downloadDevLog(logId) {
+    window.open(`${API}/admin/device-logs/${logId}/download`, '_blank');
 }
 
 // ========== JOURNAL (LIVE LOGS) ==========

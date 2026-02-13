@@ -18,6 +18,7 @@ from app.models.connection_log import ConnectionLog
 from app.models.error_log import ErrorLog
 from app.models.account import Account
 from app.models.device_permission import DevicePermission
+from app.models.device_log import DeviceLog
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(get_current_admin)])
 
@@ -610,6 +611,79 @@ async def get_logs(
 ):
     logs = logging_buffer.get_logs(log_type=log_type, limit=limit, offset=offset)
     return {"enabled": logging_buffer.enabled, "items": logs, "count": len(logs)}
+
+
+# ==================== DEVICE LOGS ====================
+
+@router.get("/device-logs")
+async def list_device_logs(
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=1, le=200),
+    device_id: str | None = None,
+    account_id: str | None = None,
+    log_type: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    query = select(DeviceLog).order_by(desc(DeviceLog.uploaded_at))
+    if device_id:
+        query = query.where(DeviceLog.device_id == uuid.UUID(device_id))
+    if log_type:
+        query = query.where(DeviceLog.log_type == log_type)
+    if account_id:
+        dev_ids = await _device_ids_for_account(account_id, db)
+        query = query.where(DeviceLog.device_id.in_(dev_ids))
+
+    total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar()
+    result = await db.execute(query.offset((page - 1) * per_page).limit(per_page))
+    logs = result.scalars().all()
+
+    return {
+        "total": total, "page": page, "per_page": per_page,
+        "items": [{
+            "id": str(l.id),
+            "device_id": str(l.device_id),
+            "log_type": l.log_type,
+            "app_version": l.app_version,
+            "content_preview": l.content[:200] if l.content else "",
+            "content_size": len(l.content) if l.content else 0,
+            "uploaded_at": l.uploaded_at.isoformat() if l.uploaded_at else None,
+        } for l in logs],
+    }
+
+
+@router.get("/device-logs/{log_id}")
+async def get_device_log(log_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(DeviceLog).where(DeviceLog.id == uuid.UUID(log_id)))
+    log = result.scalar_one_or_none()
+    if not log:
+        raise HTTPException(status_code=404, detail="Log not found")
+    return {
+        "id": str(log.id),
+        "device_id": str(log.device_id),
+        "log_type": log.log_type,
+        "content": log.content,
+        "app_version": log.app_version,
+        "uploaded_at": log.uploaded_at.isoformat() if log.uploaded_at else None,
+    }
+
+
+@router.get("/device-logs/{log_id}/download")
+async def download_device_log(log_id: str, db: AsyncSession = Depends(get_db)):
+    from fastapi.responses import StreamingResponse
+    import io
+
+    result = await db.execute(select(DeviceLog).where(DeviceLog.id == uuid.UUID(log_id)))
+    log = result.scalar_one_or_none()
+    if not log:
+        raise HTTPException(status_code=404, detail="Log not found")
+
+    output = io.BytesIO(log.content.encode("utf-8"))
+    filename = f"device_log_{str(log.device_id)[:8]}_{log.log_type}_{log.uploaded_at.strftime('%Y%m%d_%H%M%S')}.txt"
+    return StreamingResponse(
+        output,
+        media_type="text/plain",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # ==================== EXPORT ====================

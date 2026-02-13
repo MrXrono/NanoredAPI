@@ -19,11 +19,13 @@ from app.models.app_traffic import AppTraffic
 from app.models.connection_log import ConnectionLog
 from app.models.error_log import ErrorLog
 from app.models.device_permission import DevicePermission
+from app.models.device_log import DeviceLog
 from app.schemas.device import DeviceRegisterRequest, DeviceRegisterResponse
 from app.schemas.session import SessionStartRequest, SessionStartResponse, SessionEndRequest
 from app.schemas.telemetry import (
     SNIBatchRequest, DNSBatchRequest, AppTrafficBatchRequest,
     ConnectionBatchRequest, ErrorReportRequest, PermissionsBatchRequest,
+    DeviceLogRequest,
 )
 from app.services.geoip import lookup_ip
 
@@ -332,3 +334,23 @@ async def update_permissions(
         ))
     logging_buffer.add("processing", f"Permissions: {len(req.permissions)} разрешений от устройства {device.id}")
     return {"status": "ok", "count": len(req.permissions)}
+
+
+# ==================== DEVICE LOGS ====================
+
+@router.post("/logs")
+async def upload_device_log(
+    req: DeviceLogRequest,
+    db: AsyncSession = Depends(get_db),
+    x_api_key: str = Header(..., alias="X-API-Key"),
+):
+    device = await _get_device(x_api_key, db)
+    log = DeviceLog(
+        device_id=device.id,
+        log_type=req.log_type,
+        content=req.content,
+        app_version=req.app_version,
+    )
+    db.add(log)
+    logging_buffer.add("processing", f"Лог от устройства {device.id}: тип={req.log_type}, размер={len(req.content)}")
+    return {"status": "ok"}
