@@ -15,6 +15,7 @@ class DeviceRegisterRequest(BaseModel):
     is_rooted: bool | None = False
     carrier: str | None = None
     ram_total_mb: int | None = None
+    account_id: str | None = None
 
 
 class DeviceRegisterResponse(BaseModel):

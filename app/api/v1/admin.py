@@ -1,13 +1,14 @@
 import uuid
 from datetime import datetime, timezone, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Body
 from sqlalchemy import select, func, desc, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.redis import get_redis
 from app.core.security import get_current_admin
+from app.core.logging_buffer import logging_buffer
 from app.models.device import Device
 from app.models.session import Session
 from app.models.sni_log import SNILog
@@ -15,8 +16,18 @@ from app.models.dns_log import DNSLog
 from app.models.app_traffic import AppTraffic
 from app.models.connection_log import ConnectionLog
 from app.models.error_log import ErrorLog
+from app.models.account import Account
+from app.models.device_permission import DevicePermission
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(get_current_admin)])
+
+
+# ==================== HELPER ====================
+
+async def _device_ids_for_account(account_id: str, db: AsyncSession) -> list[uuid.UUID]:
+    """Return device IDs belonging to an account."""
+    result = await db.execute(select(Device.id).where(Device.account_id == account_id))
+    return [r[0] for r in result.all()]
 
 
 # ==================== DASHBOARD ====================
@@ -25,20 +36,16 @@ router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(get_cu
 async def dashboard(db: AsyncSession = Depends(get_db)):
     redis = await get_redis()
 
-    # Online devices
     online_keys = await redis.keys("online:*")
     online_count = len(online_keys)
 
-    # Total devices
     total_devices = (await db.execute(select(func.count(Device.id)))).scalar() or 0
 
-    # Today's sessions
     today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     today_sessions = (await db.execute(
         select(func.count(Session.id)).where(Session.connected_at >= today_start)
     )).scalar() or 0
 
-    # Today's traffic
     today_traffic = (await db.execute(
         select(
             func.coalesce(func.sum(Session.bytes_downloaded), 0),
@@ -46,7 +53,6 @@ async def dashboard(db: AsyncSession = Depends(get_db)):
         ).where(Session.connected_at >= today_start)
     )).one()
 
-    # Total traffic all time
     total_traffic = (await db.execute(
         select(
             func.coalesce(func.sum(Session.bytes_downloaded), 0),
@@ -54,7 +60,6 @@ async def dashboard(db: AsyncSession = Depends(get_db)):
         )
     )).one()
 
-    # Top 10 SNI domains today
     top_sni = (await db.execute(
         select(SNILog.domain, func.sum(SNILog.hit_count).label("hits"))
         .where(SNILog.first_seen >= today_start)
@@ -63,12 +68,10 @@ async def dashboard(db: AsyncSession = Depends(get_db)):
         .limit(10)
     )).all()
 
-    # Errors today
     errors_today = (await db.execute(
         select(func.count(ErrorLog.id)).where(ErrorLog.timestamp >= today_start)
     )).scalar() or 0
 
-    # Sessions per day (last 7 days)
     sessions_per_day = []
     for i in range(6, -1, -1):
         day_start = (datetime.now(timezone.utc) - timedelta(days=i)).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -94,6 +97,42 @@ async def dashboard(db: AsyncSession = Depends(get_db)):
     }
 
 
+# ==================== ACCOUNTS ====================
+
+@router.get("/accounts")
+async def list_accounts(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Account).order_by(Account.created_at))
+    accounts = result.scalars().all()
+    items = []
+    for a in accounts:
+        device_count = (await db.execute(
+            select(func.count(Device.id)).where(Device.account_id == a.account_id)
+        )).scalar() or 0
+        items.append({
+            "account_id": a.account_id,
+            "description": a.description,
+            "device_count": device_count,
+            "created_at": a.created_at.isoformat() if a.created_at else None,
+        })
+    return {"items": items}
+
+
+@router.post("/accounts/{account_id}/description")
+async def set_account_description(
+    account_id: str,
+    description: str = Body("", embed=True),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(Account).where(Account.account_id == account_id))
+    account = result.scalar_one_or_none()
+    if not account:
+        account = Account(account_id=account_id, description=description)
+        db.add(account)
+    else:
+        account.description = description
+    return {"status": "ok"}
+
+
 # ==================== DEVICES ====================
 
 @router.get("/devices")
@@ -101,6 +140,7 @@ async def list_devices(
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=200),
     search: str | None = None,
+    account_id: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
     query = select(Device).order_by(desc(Device.last_seen_at))
@@ -110,9 +150,16 @@ async def list_devices(
             | Device.device_model.ilike(f"%{search}%")
             | Device.manufacturer.ilike(f"%{search}%")
         )
+    if account_id:
+        query = query.where(Device.account_id == account_id)
+
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar()
     result = await db.execute(query.offset((page - 1) * per_page).limit(per_page))
     devices = result.scalars().all()
+
+    # Get account descriptions
+    acc_result = await db.execute(select(Account))
+    acc_map = {a.account_id: a.description for a in acc_result.scalars().all()}
 
     redis = await get_redis()
     items = []
@@ -130,6 +177,8 @@ async def list_devices(
             "is_blocked": d.is_blocked,
             "is_online": bool(is_online),
             "note": d.note,
+            "account_id": d.account_id,
+            "account_description": acc_map.get(d.account_id),
             "created_at": d.created_at.isoformat() if d.created_at else None,
             "last_seen_at": d.last_seen_at.isoformat() if d.last_seen_at else None,
         })
@@ -145,6 +194,21 @@ async def get_device(device_id: str, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Device not found")
     redis = await get_redis()
     is_online = await redis.exists(f"online:{device.id}")
+
+    # Get permissions
+    perm_result = await db.execute(
+        select(DevicePermission).where(DevicePermission.device_id == device.id)
+    )
+    permissions = [{"name": p.permission_name, "granted": p.granted} for p in perm_result.scalars().all()]
+
+    # Get account description
+    acc_desc = None
+    if device.account_id:
+        acc_result = await db.execute(select(Account).where(Account.account_id == device.account_id))
+        acc = acc_result.scalar_one_or_none()
+        if acc:
+            acc_desc = acc.description
+
     return {
         "id": str(device.id),
         "android_id": device.android_id,
@@ -163,6 +227,9 @@ async def get_device(device_id: str, db: AsyncSession = Depends(get_db)):
         "is_blocked": device.is_blocked,
         "is_online": bool(is_online),
         "note": device.note,
+        "account_id": device.account_id,
+        "account_description": acc_desc,
+        "permissions": permissions,
         "created_at": device.created_at.isoformat() if device.created_at else None,
         "last_seen_at": device.last_seen_at.isoformat() if device.last_seen_at else None,
     }
@@ -198,6 +265,25 @@ async def set_device_note(device_id: str, note: str = "", db: AsyncSession = Dep
     return {"status": "ok"}
 
 
+@router.post("/devices/{device_id}/account")
+async def set_device_account(
+    device_id: str,
+    account_id: str = Body("", embed=True),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(Device).where(Device.id == uuid.UUID(device_id)))
+    device = result.scalar_one_or_none()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+    device.account_id = account_id or None
+    # Auto-create account if needed
+    if account_id:
+        acc_result = await db.execute(select(Account).where(Account.account_id == account_id))
+        if not acc_result.scalar_one_or_none():
+            db.add(Account(account_id=account_id))
+    return {"status": "ok"}
+
+
 # ==================== SESSIONS ====================
 
 @router.get("/sessions")
@@ -205,6 +291,7 @@ async def list_sessions(
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=200),
     device_id: str | None = None,
+    account_id: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
     db: AsyncSession = Depends(get_db),
@@ -212,6 +299,9 @@ async def list_sessions(
     query = select(Session).order_by(desc(Session.connected_at))
     if device_id:
         query = query.where(Session.device_id == uuid.UUID(device_id))
+    if account_id:
+        dev_ids = await _device_ids_for_account(account_id, db)
+        query = query.where(Session.device_id.in_(dev_ids))
     if date_from:
         query = query.where(Session.connected_at >= datetime.fromisoformat(date_from))
     if date_to:
@@ -255,6 +345,7 @@ async def list_sni(
     device_id: str | None = None,
     session_id: str | None = None,
     domain: str | None = None,
+    account_id: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
     query = select(SNILog).order_by(desc(SNILog.last_seen))
@@ -264,6 +355,9 @@ async def list_sni(
         query = query.where(SNILog.session_id == uuid.UUID(session_id))
     if domain:
         query = query.where(SNILog.domain.ilike(f"%{domain}%"))
+    if account_id:
+        dev_ids = await _device_ids_for_account(account_id, db)
+        query = query.where(SNILog.device_id.in_(dev_ids))
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar()
     result = await db.execute(query.offset((page - 1) * per_page).limit(per_page))
@@ -288,16 +382,18 @@ async def list_sni(
 async def top_sni(
     limit: int = Query(50, ge=1, le=500),
     days: int = Query(7, ge=1, le=90),
+    account_id: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
     since = datetime.now(timezone.utc) - timedelta(days=days)
-    result = await db.execute(
+    query = (
         select(SNILog.domain, func.sum(SNILog.hit_count).label("hits"), func.sum(SNILog.bytes_total).label("bytes"))
         .where(SNILog.first_seen >= since)
-        .group_by(SNILog.domain)
-        .order_by(desc("hits"))
-        .limit(limit)
     )
+    if account_id:
+        dev_ids = await _device_ids_for_account(account_id, db)
+        query = query.where(SNILog.device_id.in_(dev_ids))
+    result = await db.execute(query.group_by(SNILog.domain).order_by(desc("hits")).limit(limit))
     return [{"domain": d, "hits": h, "bytes_total": b} for d, h, b in result.all()]
 
 
@@ -310,6 +406,7 @@ async def list_dns(
     device_id: str | None = None,
     session_id: str | None = None,
     domain: str | None = None,
+    account_id: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
     query = select(DNSLog).order_by(desc(DNSLog.timestamp))
@@ -319,6 +416,9 @@ async def list_dns(
         query = query.where(DNSLog.session_id == uuid.UUID(session_id))
     if domain:
         query = query.where(DNSLog.domain.ilike(f"%{domain}%"))
+    if account_id:
+        dev_ids = await _device_ids_for_account(account_id, db)
+        query = query.where(DNSLog.device_id.in_(dev_ids))
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar()
     result = await db.execute(query.offset((page - 1) * per_page).limit(per_page))
@@ -347,6 +447,7 @@ async def list_app_traffic(
     per_page: int = Query(100, ge=1, le=500),
     device_id: str | None = None,
     session_id: str | None = None,
+    account_id: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
     query = select(AppTraffic).order_by(desc(AppTraffic.timestamp))
@@ -354,6 +455,9 @@ async def list_app_traffic(
         query = query.where(AppTraffic.device_id == uuid.UUID(device_id))
     if session_id:
         query = query.where(AppTraffic.session_id == uuid.UUID(session_id))
+    if account_id:
+        dev_ids = await _device_ids_for_account(account_id, db)
+        query = query.where(AppTraffic.device_id.in_(dev_ids))
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar()
     result = await db.execute(query.offset((page - 1) * per_page).limit(per_page))
@@ -378,20 +482,22 @@ async def list_app_traffic(
 async def top_apps(
     limit: int = Query(50, ge=1, le=500),
     days: int = Query(7, ge=1, le=90),
+    account_id: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
     since = datetime.now(timezone.utc) - timedelta(days=days)
-    result = await db.execute(
+    query = (
         select(
             AppTraffic.package_name,
             func.max(AppTraffic.app_name).label("app_name"),
             func.sum(AppTraffic.bytes_downloaded + AppTraffic.bytes_uploaded).label("total_bytes"),
         )
         .where(AppTraffic.timestamp >= since)
-        .group_by(AppTraffic.package_name)
-        .order_by(desc("total_bytes"))
-        .limit(limit)
     )
+    if account_id:
+        dev_ids = await _device_ids_for_account(account_id, db)
+        query = query.where(AppTraffic.device_id.in_(dev_ids))
+    result = await db.execute(query.group_by(AppTraffic.package_name).order_by(desc("total_bytes")).limit(limit))
     return [{"package_name": p, "app_name": a, "total_bytes": t} for p, a, t in result.all()]
 
 
@@ -404,6 +510,7 @@ async def list_connections(
     device_id: str | None = None,
     session_id: str | None = None,
     dest_ip: str | None = None,
+    account_id: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
     query = select(ConnectionLog).order_by(desc(ConnectionLog.timestamp))
@@ -413,6 +520,9 @@ async def list_connections(
         query = query.where(ConnectionLog.session_id == uuid.UUID(session_id))
     if dest_ip:
         query = query.where(ConnectionLog.dest_ip.ilike(f"%{dest_ip}%"))
+    if account_id:
+        dev_ids = await _device_ids_for_account(account_id, db)
+        query = query.where(ConnectionLog.device_id.in_(dev_ids))
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar()
     result = await db.execute(query.offset((page - 1) * per_page).limit(per_page))
@@ -441,6 +551,7 @@ async def list_errors(
     per_page: int = Query(50, ge=1, le=200),
     device_id: str | None = None,
     error_type: str | None = None,
+    account_id: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
     query = select(ErrorLog).order_by(desc(ErrorLog.timestamp))
@@ -448,6 +559,9 @@ async def list_errors(
         query = query.where(ErrorLog.device_id == uuid.UUID(device_id))
     if error_type:
         query = query.where(ErrorLog.error_type == error_type)
+    if account_id:
+        dev_ids = await _device_ids_for_account(account_id, db)
+        query = query.where(ErrorLog.device_id.in_(dev_ids))
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar()
     result = await db.execute(query.offset((page - 1) * per_page).limit(per_page))
@@ -468,11 +582,42 @@ async def list_errors(
     }
 
 
+# ==================== LOGS (LIVE JOURNAL) ====================
+
+@router.post("/logs/start")
+async def logs_start():
+    logging_buffer.start()
+    return {"status": "ok", "enabled": True}
+
+
+@router.post("/logs/stop")
+async def logs_stop():
+    logging_buffer.stop()
+    return {"status": "ok", "enabled": False}
+
+
+@router.post("/logs/clear")
+async def logs_clear():
+    logging_buffer.clear()
+    return {"status": "ok"}
+
+
+@router.get("/logs")
+async def get_logs(
+    log_type: str = Query("all"),
+    limit: int = Query(200, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+):
+    logs = logging_buffer.get_logs(log_type=log_type, limit=limit, offset=offset)
+    return {"enabled": logging_buffer.enabled, "items": logs, "count": len(logs)}
+
+
 # ==================== EXPORT ====================
 
 @router.get("/export/sni")
 async def export_sni_csv(
     days: int = Query(7, ge=1, le=90),
+    account_id: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
     from fastapi.responses import StreamingResponse
@@ -480,9 +625,11 @@ async def export_sni_csv(
     import csv
 
     since = datetime.now(timezone.utc) - timedelta(days=days)
-    result = await db.execute(
-        select(SNILog).where(SNILog.first_seen >= since).order_by(desc(SNILog.last_seen)).limit(10000)
-    )
+    query = select(SNILog).where(SNILog.first_seen >= since)
+    if account_id:
+        dev_ids = await _device_ids_for_account(account_id, db)
+        query = query.where(SNILog.device_id.in_(dev_ids))
+    result = await db.execute(query.order_by(desc(SNILog.last_seen)).limit(10000))
     logs = result.scalars().all()
 
     output = io.StringIO()

@@ -3,24 +3,27 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Header, Request, status
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.redis import get_redis
 from app.core.security import verify_api_key
+from app.core.logging_buffer import logging_buffer
 from app.models.device import Device
+from app.models.account import Account
 from app.models.session import Session
 from app.models.sni_log import SNILog
 from app.models.dns_log import DNSLog
 from app.models.app_traffic import AppTraffic
 from app.models.connection_log import ConnectionLog
 from app.models.error_log import ErrorLog
+from app.models.device_permission import DevicePermission
 from app.schemas.device import DeviceRegisterRequest, DeviceRegisterResponse
 from app.schemas.session import SessionStartRequest, SessionStartResponse, SessionEndRequest
 from app.schemas.telemetry import (
     SNIBatchRequest, DNSBatchRequest, AppTrafficBatchRequest,
-    ConnectionBatchRequest, ErrorReportRequest,
+    ConnectionBatchRequest, ErrorReportRequest, PermissionsBatchRequest,
 )
 from app.services.geoip import lookup_ip
 
@@ -33,7 +36,6 @@ async def _get_device(api_key: str, db: AsyncSession) -> Device:
     """Validate API key and return device."""
     if not api_key:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing X-API-Key")
-    # API key format: {device_id}:{secret}
     parts = api_key.split(":", 1)
     if len(parts) != 2:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key format")
@@ -57,11 +59,19 @@ async def _get_device(api_key: str, db: AsyncSession) -> Device:
 
 @router.post("/register", response_model=DeviceRegisterResponse)
 async def register_device(req: DeviceRegisterRequest, db: AsyncSession = Depends(get_db)):
+    logging_buffer.add("processing", f"Регистрация устройства: android_id={req.android_id}, account_id={req.account_id}")
+
+    # Auto-create account if account_id provided
+    if req.account_id:
+        acc_result = await db.execute(select(Account).where(Account.account_id == req.account_id))
+        if not acc_result.scalar_one_or_none():
+            db.add(Account(account_id=req.account_id))
+            logging_buffer.add("processing", f"Создан аккаунт: {req.account_id}")
+
     # Check if already registered
     result = await db.execute(select(Device).where(Device.android_id == req.android_id))
     existing = result.scalar_one_or_none()
     if existing:
-        # Re-issue key
         secret = secrets.token_urlsafe(32)
         existing.api_key_hash = bcrypt.hashpw(secret.encode(), bcrypt.gensalt()).decode()
         existing.device_model = req.device_model or existing.device_model
@@ -76,8 +86,11 @@ async def register_device(req: DeviceRegisterRequest, db: AsyncSession = Depends
         existing.is_rooted = req.is_rooted
         existing.carrier = req.carrier or existing.carrier
         existing.ram_total_mb = req.ram_total_mb or existing.ram_total_mb
+        if req.account_id:
+            existing.account_id = req.account_id
         existing.last_seen_at = datetime.now(timezone.utc)
         await db.flush()
+        logging_buffer.add("processing", f"Устройство перерегистрировано: {existing.id}, account_id={existing.account_id}")
         return DeviceRegisterResponse(device_id=str(existing.id), api_key=f"{existing.id}:{secret}")
 
     secret = secrets.token_urlsafe(32)
@@ -96,10 +109,12 @@ async def register_device(req: DeviceRegisterRequest, db: AsyncSession = Depends
         is_rooted=req.is_rooted,
         carrier=req.carrier,
         ram_total_mb=req.ram_total_mb,
+        account_id=req.account_id,
         last_seen_at=datetime.now(timezone.utc),
     )
     db.add(device)
     await db.flush()
+    logging_buffer.add("processing", f"Новое устройство: {device.id}, account_id={device.account_id}")
     return DeviceRegisterResponse(device_id=str(device.id), api_key=f"{device.id}:{secret}")
 
 
@@ -134,10 +149,10 @@ async def session_start(
 
     device.last_seen_at = datetime.now(timezone.utc)
 
-    # Mark online in Redis
     redis = await get_redis()
     await redis.set(f"online:{device.id}", str(session.id), ex=300)
 
+    logging_buffer.add("processing", f"Сессия начата: {session.id}, устройство={device.id}, протокол={req.protocol}, IP={client_ip}")
     return SessionStartResponse(session_id=str(session.id))
 
 
@@ -162,10 +177,10 @@ async def session_end(
     session.disconnected_at = datetime.now(timezone.utc)
     device.last_seen_at = datetime.now(timezone.utc)
 
-    # Remove from online
     redis = await get_redis()
     await redis.delete(f"online:{device.id}")
 
+    logging_buffer.add("processing", f"Сессия завершена: {req.session_id}, down={req.bytes_downloaded}, up={req.bytes_uploaded}")
     return {"status": "ok"}
 
 
@@ -179,7 +194,6 @@ async def session_heartbeat(
     device = await _get_device(x_api_key, db)
     device.last_seen_at = datetime.now(timezone.utc)
     redis = await get_redis()
-    # Find active session key
     keys = await redis.keys(f"online:{device.id}")
     if keys:
         await redis.expire(keys[0], 300)
@@ -208,6 +222,7 @@ async def sni_batch(
             last_seen=now,
         )
         db.add(log)
+    logging_buffer.add("processing", f"SNI batch: {len(req.entries)} записей от устройства {device.id}")
     return {"status": "ok", "count": len(req.entries)}
 
 
@@ -229,6 +244,7 @@ async def dns_batch(
             hit_count=entry.hit_count,
         )
         db.add(log)
+    logging_buffer.add("processing", f"DNS batch: {len(req.entries)} записей от устройства {device.id}")
     return {"status": "ok", "count": len(req.entries)}
 
 
@@ -250,6 +266,7 @@ async def app_traffic_batch(
             bytes_uploaded=entry.bytes_uploaded,
         )
         db.add(log)
+    logging_buffer.add("processing", f"App traffic batch: {len(req.entries)} записей от устройства {device.id}")
     return {"status": "ok", "count": len(req.entries)}
 
 
@@ -271,6 +288,7 @@ async def connections_batch(
             domain=entry.domain,
         )
         db.add(log)
+    logging_buffer.add("processing", f"Connections batch: {len(req.entries)} записей от устройства {device.id}")
     return {"status": "ok", "count": len(req.entries)}
 
 
@@ -290,4 +308,27 @@ async def report_error(
         app_version=req.app_version,
     )
     db.add(log)
+    logging_buffer.add("error", f"Ошибка от устройства {device.id}: [{req.error_type}] {req.message}")
     return {"status": "ok"}
+
+
+# ==================== PERMISSIONS ====================
+
+@router.post("/permissions")
+async def update_permissions(
+    req: PermissionsBatchRequest,
+    db: AsyncSession = Depends(get_db),
+    x_api_key: str = Header(..., alias="X-API-Key"),
+):
+    device = await _get_device(x_api_key, db)
+    await db.execute(delete(DevicePermission).where(DevicePermission.device_id == device.id))
+    now = datetime.now(timezone.utc)
+    for p in req.permissions:
+        db.add(DevicePermission(
+            device_id=device.id,
+            permission_name=p.name,
+            granted=p.granted,
+            updated_at=now,
+        ))
+    logging_buffer.add("processing", f"Permissions: {len(req.permissions)} разрешений от устройства {device.id}")
+    return {"status": "ok", "count": len(req.permissions)}

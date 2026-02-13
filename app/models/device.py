@@ -26,6 +26,7 @@ class Device(Base):
     is_rooted: Mapped[bool | None] = mapped_column(Boolean, default=False)
     carrier: Mapped[str | None] = mapped_column(String(128))
     ram_total_mb: Mapped[int | None] = mapped_column()
+    account_id: Mapped[str | None] = mapped_column(String(64), index=True)
     is_blocked: Mapped[bool] = mapped_column(Boolean, default=False)
     note: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))

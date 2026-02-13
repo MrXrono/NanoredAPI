@@ -1,5 +1,7 @@
 const API = '/api/v1';
 let token = localStorage.getItem('nanored_token');
+let accountsCache = [];
+let journalInterval = null;
 
 // ========== AUTH ==========
 async function api(path, opts = {}) {
@@ -14,7 +16,7 @@ function showApp() {
     document.getElementById('login-page').style.display = 'none';
     document.getElementById('app').style.display = 'block';
     document.getElementById('app').classList.add('app');
-    loadDashboard();
+    loadAccounts().then(() => loadDashboard());
 }
 
 function logout() {
@@ -22,6 +24,7 @@ function logout() {
     localStorage.removeItem('nanored_token');
     document.getElementById('login-page').style.display = 'flex';
     document.getElementById('app').style.display = 'none';
+    if (journalInterval) { clearInterval(journalInterval); journalInterval = null; }
 }
 
 document.getElementById('login-form').addEventListener('submit', async (e) => {
@@ -35,14 +38,14 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ username, password }),
         });
-        if (!resp.ok) { errEl.textContent = 'Invalid credentials'; errEl.style.display = 'block'; return; }
+        if (!resp.ok) { errEl.textContent = 'Неверные учётные данные'; errEl.style.display = 'block'; return; }
         const data = await resp.json();
         token = data.access_token;
         localStorage.setItem('nanored_token', token);
         errEl.style.display = 'none';
         showApp();
     } catch (err) {
-        errEl.textContent = 'Connection error'; errEl.style.display = 'block';
+        errEl.textContent = 'Ошибка подключения'; errEl.style.display = 'block';
     }
 });
 
@@ -63,6 +66,7 @@ document.querySelectorAll('.nav-link').forEach(link => {
         else if (section === 'apps') loadApps();
         else if (section === 'connections') loadConnections();
         else if (section === 'errors') loadErrors();
+        else if (section === 'journal') refreshLogs();
     });
 });
 
@@ -93,6 +97,44 @@ function renderPagination(container, total, page, perPage, callback) {
     container.innerHTML = html;
 }
 
+function escapeHtml(str) {
+    if (!str) return '';
+    return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ========== ACCOUNTS ==========
+async function loadAccounts() {
+    try {
+        const resp = await api('/admin/accounts');
+        const d = await resp.json();
+        accountsCache = d.items || [];
+        populateAccountFilters();
+    } catch (err) { console.error('Accounts error:', err); }
+}
+
+function populateAccountFilters() {
+    const selectors = [
+        'device-account-filter', 'session-account-filter', 'sni-account-filter',
+        'dns-account-filter', 'apps-account-filter', 'conn-account-filter', 'errors-account-filter'
+    ];
+    selectors.forEach(id => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        const currentVal = el.value;
+        el.innerHTML = '<option value="">Все аккаунты</option>';
+        accountsCache.forEach(a => {
+            const label = a.description ? `${a.account_id} (${a.description})` : a.account_id;
+            el.innerHTML += `<option value="${escapeHtml(a.account_id)}">${escapeHtml(label)}</option>`;
+        });
+        el.value = currentVal;
+    });
+}
+
+function getAccountFilter(selectId) {
+    const el = document.getElementById(selectId);
+    return el ? el.value : '';
+}
+
 // ========== DASHBOARD ==========
 async function loadDashboard() {
     try {
@@ -107,13 +149,11 @@ async function loadDashboard() {
         document.getElementById('total-traffic').textContent = formatBytes(d.total_downloaded + d.total_uploaded);
         document.getElementById('errors-today').textContent = d.errors_today;
 
-        // Top SNI
         const sniList = document.getElementById('top-sni-list');
         sniList.innerHTML = d.top_sni.map((s, i) =>
-            `<li><span class="rank">${i + 1}</span><span class="domain">${s.domain}</span><span class="hits">${s.hits}</span></li>`
-        ).join('') || '<li>No data</li>';
+            `<li><span class="rank">${i + 1}</span><span class="domain">${escapeHtml(s.domain)}</span><span class="hits">${s.hits}</span></li>`
+        ).join('') || '<li>Нет данных</li>';
 
-        // Chart
         renderChart(d.sessions_per_day);
     } catch (err) { console.error('Dashboard error:', err); }
 }
@@ -153,26 +193,34 @@ function renderChart(data) {
 // ========== DEVICES ==========
 async function loadDevices(page = 1) {
     const search = document.getElementById('device-search')?.value || '';
-    const resp = await api(`/admin/devices?page=${page}&per_page=50&search=${encodeURIComponent(search)}`);
+    const accountId = getAccountFilter('device-account-filter');
+    let url = `/admin/devices?page=${page}&per_page=50&search=${encodeURIComponent(search)}`;
+    if (accountId) url += `&account_id=${encodeURIComponent(accountId)}`;
+    const resp = await api(url);
     const d = await resp.json();
     const tbody = document.getElementById('devices-tbody');
-    tbody.innerHTML = d.items.map(dev => `
-        <tr>
-            <td title="${dev.android_id}">${dev.android_id.slice(0, 12)}...</td>
-            <td>${dev.manufacturer || ''} ${dev.device_model || ''}</td>
+    tbody.innerHTML = d.items.map(dev => {
+        const accLabel = dev.account_description
+            ? `${dev.account_id || '-'} (${escapeHtml(dev.account_description)})`
+            : (dev.account_id || '-');
+        return `<tr>
+            <td title="${escapeHtml(dev.account_id || '')}">${escapeHtml(accLabel)}</td>
+            <td title="${escapeHtml(dev.android_id)}">${escapeHtml(dev.android_id.slice(0, 12))}...</td>
+            <td>${escapeHtml(dev.manufacturer || '')} ${escapeHtml(dev.device_model || '')}</td>
             <td>${dev.android_version || '-'}</td>
             <td>${dev.app_version || '-'}</td>
-            <td>${dev.carrier || '-'}</td>
-            <td>${dev.is_online ? '<span class="badge badge-green">Online</span>' : '<span class="badge badge-red">Offline</span>'}</td>
-            <td>${dev.is_blocked ? '<span class="badge badge-red">Blocked</span>' : '<span class="badge badge-green">Active</span>'}</td>
+            <td>${escapeHtml(dev.carrier || '-')}</td>
+            <td>${dev.is_online ? '<span class="badge badge-green">Онлайн</span>' : '<span class="badge badge-red">Оффлайн</span>'}</td>
+            <td>${dev.is_blocked ? '<span class="badge badge-red">Заблокирован</span>' : '<span class="badge badge-green">Активен</span>'}</td>
             <td>${formatDate(dev.last_seen_at)}</td>
             <td>
                 <button class="btn btn-sm ${dev.is_blocked ? 'btn-success' : 'btn-danger'}"
-                    onclick="toggleBlock('${dev.id}', ${dev.is_blocked})">${dev.is_blocked ? 'Unblock' : 'Block'}</button>
-                <button class="btn btn-sm btn-primary" onclick="viewDeviceSessions('${dev.id}')">Sessions</button>
+                    onclick="toggleBlock('${dev.id}', ${dev.is_blocked})">${dev.is_blocked ? 'Разблок.' : 'Заблок.'}</button>
+                <button class="btn btn-sm btn-primary" onclick="viewDeviceDetail('${dev.id}')">Детали</button>
+                <button class="btn btn-sm btn-primary" onclick="viewDeviceSessions('${dev.id}')">Сессии</button>
             </td>
-        </tr>
-    `).join('');
+        </tr>`;
+    }).join('');
     renderPagination(document.getElementById('devices-pagination'), d.total, d.page, d.per_page, 'loadDevices');
 }
 
@@ -191,24 +239,76 @@ function viewDeviceSessions(deviceId) {
     loadSessions(1);
 }
 
+async function viewDeviceDetail(deviceId) {
+    try {
+        const resp = await api(`/admin/devices/${deviceId}`);
+        const dev = await resp.json();
+        const body = document.getElementById('device-detail-body');
+
+        let permHtml = '';
+        if (dev.permissions && dev.permissions.length > 0) {
+            permHtml = '<h4 style="margin-top:16px;">Разрешения</h4><table><thead><tr><th>Разрешение</th><th>Статус</th></tr></thead><tbody>';
+            dev.permissions.forEach(p => {
+                permHtml += `<tr><td>${escapeHtml(p.name)}</td><td>${p.granted ? '<span class="badge badge-green">Разрешено</span>' : '<span class="badge badge-red">Запрещено</span>'}</td></tr>`;
+            });
+            permHtml += '</tbody></table>';
+        }
+
+        body.innerHTML = `
+            <div class="detail-grid">
+                <div><strong>ID:</strong> ${dev.id}</div>
+                <div><strong>Android ID:</strong> ${escapeHtml(dev.android_id)}</div>
+                <div><strong>Аккаунт:</strong> ${escapeHtml(dev.account_id || '-')} ${dev.account_description ? '(' + escapeHtml(dev.account_description) + ')' : ''}</div>
+                <div><strong>Устройство:</strong> ${escapeHtml(dev.manufacturer || '')} ${escapeHtml(dev.device_model || '')}</div>
+                <div><strong>Android:</strong> ${dev.android_version || '-'} (API ${dev.api_level || '-'})</div>
+                <div><strong>Версия приложения:</strong> ${dev.app_version || '-'}</div>
+                <div><strong>Разрешение экрана:</strong> ${dev.screen_resolution || '-'}</div>
+                <div><strong>DPI:</strong> ${dev.dpi || '-'}</div>
+                <div><strong>Язык:</strong> ${dev.language || '-'}</div>
+                <div><strong>Часовой пояс:</strong> ${escapeHtml(dev.timezone || '-')}</div>
+                <div><strong>Root:</strong> ${dev.is_rooted ? 'Да' : 'Нет'}</div>
+                <div><strong>Оператор:</strong> ${escapeHtml(dev.carrier || '-')}</div>
+                <div><strong>RAM:</strong> ${dev.ram_total_mb ? dev.ram_total_mb + ' MB' : '-'}</div>
+                <div><strong>Статус:</strong> ${dev.is_online ? '<span class="badge badge-green">Онлайн</span>' : '<span class="badge badge-red">Оффлайн</span>'}</div>
+                <div><strong>Доступ:</strong> ${dev.is_blocked ? '<span class="badge badge-red">Заблокирован</span>' : '<span class="badge badge-green">Активен</span>'}</div>
+                <div><strong>Заметка:</strong> ${escapeHtml(dev.note || '-')}</div>
+                <div><strong>Создан:</strong> ${formatDate(dev.created_at)}</div>
+                <div><strong>Посл. активность:</strong> ${formatDate(dev.last_seen_at)}</div>
+            </div>
+            ${permHtml}
+        `;
+        document.getElementById('device-detail-modal').style.display = 'flex';
+    } catch (err) { console.error('Device detail error:', err); }
+}
+
+function closeDeviceDetail() {
+    document.getElementById('device-detail-modal').style.display = 'none';
+}
+
 // ========== SESSIONS ==========
 async function loadSessions(page = 1) {
     const deviceId = document.getElementById('session-device-filter')?.value || '';
+    const accountId = getAccountFilter('session-account-filter');
     let url = `/admin/sessions?page=${page}&per_page=50`;
     if (deviceId) url += `&device_id=${deviceId}`;
+    if (accountId) url += `&account_id=${encodeURIComponent(accountId)}`;
     const resp = await api(url);
     const d = await resp.json();
     const tbody = document.getElementById('sessions-tbody');
     tbody.innerHTML = d.items.map(s => {
-        const duration = s.disconnected_at
-            ? Math.round((new Date(s.disconnected_at) - new Date(s.connected_at)) / 60000) + ' min'
-            : '<span class="badge badge-green">Active</span>';
+        let duration;
+        if (s.disconnected_at) {
+            const mins = Math.round((new Date(s.disconnected_at) - new Date(s.connected_at)) / 60000);
+            duration = mins >= 60 ? Math.floor(mins / 60) + ' ч ' + (mins % 60) + ' мин' : mins + ' мин';
+        } else {
+            duration = '<span class="badge badge-green">Активна</span>';
+        }
         return `<tr>
             <td title="${s.device_id}">${s.device_id.slice(0, 8)}...</td>
             <td>${s.protocol || '-'}</td>
-            <td>${s.server_address || '-'}</td>
+            <td>${escapeHtml(s.server_address || '-')}</td>
             <td>${s.client_ip || '-'}</td>
-            <td>${s.client_country || '-'} ${s.client_city ? '/ ' + s.client_city : ''}</td>
+            <td>${escapeHtml(s.client_country || '-')} ${s.client_city ? '/ ' + escapeHtml(s.client_city) : ''}</td>
             <td>${s.network_type || '-'}</td>
             <td>${formatBytes(s.bytes_downloaded)}</td>
             <td>${formatBytes(s.bytes_uploaded)}</td>
@@ -222,13 +322,15 @@ async function loadSessions(page = 1) {
 // ========== SNI ==========
 async function loadSNI(page = 1) {
     const domain = document.getElementById('sni-search')?.value || '';
+    const accountId = getAccountFilter('sni-account-filter');
     let url = `/admin/sni?page=${page}&per_page=100`;
     if (domain) url += `&domain=${encodeURIComponent(domain)}`;
+    if (accountId) url += `&account_id=${encodeURIComponent(accountId)}`;
     const resp = await api(url);
     const d = await resp.json();
     document.getElementById('sni-tbody').innerHTML = d.items.map(l => `
         <tr>
-            <td>${l.domain}</td>
+            <td>${escapeHtml(l.domain)}</td>
             <td>${l.hit_count}</td>
             <td>${formatBytes(l.bytes_total)}</td>
             <td title="${l.device_id}">${l.device_id.slice(0, 8)}...</td>
@@ -241,13 +343,15 @@ async function loadSNI(page = 1) {
 // ========== DNS ==========
 async function loadDNS(page = 1) {
     const domain = document.getElementById('dns-search')?.value || '';
+    const accountId = getAccountFilter('dns-account-filter');
     let url = `/admin/dns?page=${page}&per_page=100`;
     if (domain) url += `&domain=${encodeURIComponent(domain)}`;
+    if (accountId) url += `&account_id=${encodeURIComponent(accountId)}`;
     const resp = await api(url);
     const d = await resp.json();
     document.getElementById('dns-tbody').innerHTML = d.items.map(l => `
         <tr>
-            <td>${l.domain}</td>
+            <td>${escapeHtml(l.domain)}</td>
             <td>${l.resolved_ip || '-'}</td>
             <td>${l.query_type || '-'}</td>
             <td>${l.hit_count}</td>
@@ -260,12 +364,15 @@ async function loadDNS(page = 1) {
 
 // ========== APPS ==========
 async function loadApps(page = 1) {
-    const resp = await api(`/admin/app-traffic?page=${page}&per_page=100`);
+    const accountId = getAccountFilter('apps-account-filter');
+    let url = `/admin/app-traffic?page=${page}&per_page=100`;
+    if (accountId) url += `&account_id=${encodeURIComponent(accountId)}`;
+    const resp = await api(url);
     const d = await resp.json();
     document.getElementById('apps-tbody').innerHTML = d.items.map(l => `
         <tr>
-            <td>${l.package_name}</td>
-            <td>${l.app_name || '-'}</td>
+            <td>${escapeHtml(l.package_name)}</td>
+            <td>${escapeHtml(l.app_name || '-')}</td>
             <td>${formatBytes(l.bytes_downloaded)}</td>
             <td>${formatBytes(l.bytes_uploaded)}</td>
             <td title="${l.device_id}">${l.device_id.slice(0, 8)}...</td>
@@ -278,8 +385,10 @@ async function loadApps(page = 1) {
 // ========== CONNECTIONS ==========
 async function loadConnections(page = 1) {
     const search = document.getElementById('conn-search')?.value || '';
+    const accountId = getAccountFilter('conn-account-filter');
     let url = `/admin/connections?page=${page}&per_page=100`;
     if (search) url += `&dest_ip=${encodeURIComponent(search)}`;
+    if (accountId) url += `&account_id=${encodeURIComponent(accountId)}`;
     const resp = await api(url);
     const d = await resp.json();
     document.getElementById('connections-tbody').innerHTML = d.items.map(l => `
@@ -287,7 +396,7 @@ async function loadConnections(page = 1) {
             <td>${l.dest_ip}</td>
             <td>${l.dest_port}</td>
             <td>${l.protocol || '-'}</td>
-            <td>${l.domain || '-'}</td>
+            <td>${escapeHtml(l.domain || '-')}</td>
             <td title="${l.device_id}">${l.device_id.slice(0, 8)}...</td>
             <td>${formatDate(l.timestamp)}</td>
         </tr>
@@ -297,12 +406,15 @@ async function loadConnections(page = 1) {
 
 // ========== ERRORS ==========
 async function loadErrors(page = 1) {
-    const resp = await api(`/admin/errors?page=${page}&per_page=50`);
+    const accountId = getAccountFilter('errors-account-filter');
+    let url = `/admin/errors?page=${page}&per_page=50`;
+    if (accountId) url += `&account_id=${encodeURIComponent(accountId)}`;
+    const resp = await api(url);
     const d = await resp.json();
     document.getElementById('errors-tbody').innerHTML = d.items.map(l => `
         <tr>
-            <td><span class="badge badge-${l.error_type === 'crash' ? 'red' : 'yellow'}">${l.error_type}</span></td>
-            <td title="${l.message || ''}">${(l.message || '-').slice(0, 60)}</td>
+            <td><span class="badge badge-${l.error_type === 'crash' ? 'red' : 'yellow'}">${escapeHtml(l.error_type)}</span></td>
+            <td title="${escapeHtml(l.message || '')}">${escapeHtml((l.message || '-').slice(0, 60))}</td>
             <td>${l.app_version || '-'}</td>
             <td title="${l.device_id}">${l.device_id.slice(0, 8)}...</td>
             <td>${formatDate(l.timestamp)}</td>
@@ -311,11 +423,84 @@ async function loadErrors(page = 1) {
     renderPagination(document.getElementById('errors-pagination'), d.total, d.page, d.per_page, 'loadErrors');
 }
 
+// ========== JOURNAL (LIVE LOGS) ==========
+async function startLogs() {
+    await api('/admin/logs/start', { method: 'POST' });
+    document.getElementById('btn-log-start').disabled = true;
+    document.getElementById('btn-log-stop').disabled = false;
+    document.getElementById('journal-status').textContent = 'Запись...';
+    document.getElementById('journal-status').classList.add('active');
+    if (!journalInterval) {
+        journalInterval = setInterval(refreshLogs, 2000);
+    }
+    refreshLogs();
+}
+
+async function stopLogs() {
+    await api('/admin/logs/stop', { method: 'POST' });
+    document.getElementById('btn-log-start').disabled = false;
+    document.getElementById('btn-log-stop').disabled = true;
+    document.getElementById('journal-status').textContent = 'Остановлен';
+    document.getElementById('journal-status').classList.remove('active');
+    if (journalInterval) { clearInterval(journalInterval); journalInterval = null; }
+}
+
+async function clearLogs() {
+    await api('/admin/logs/clear', { method: 'POST' });
+    document.getElementById('journal-terminal').innerHTML = '<div class="journal-empty">Журнал очищен</div>';
+}
+
+async function refreshLogs() {
+    try {
+        const logType = document.getElementById('log-type-filter')?.value || 'all';
+        const resp = await api(`/admin/logs?log_type=${logType}&limit=200`);
+        const d = await resp.json();
+
+        if (d.enabled) {
+            document.getElementById('btn-log-start').disabled = true;
+            document.getElementById('btn-log-stop').disabled = false;
+            document.getElementById('journal-status').textContent = 'Запись...';
+            document.getElementById('journal-status').classList.add('active');
+            if (!journalInterval) {
+                journalInterval = setInterval(refreshLogs, 2000);
+            }
+        }
+
+        const terminal = document.getElementById('journal-terminal');
+        if (!d.items || d.items.length === 0) {
+            terminal.innerHTML = '<div class="journal-empty">Нет записей</div>';
+            return;
+        }
+
+        const typeLabels = { request: 'ЗАПРОС', processing: 'ОБРАБОТКА', error: 'ОШИБКА' };
+        const typeClasses = { request: 'log-request', processing: 'log-processing', error: 'log-error' };
+
+        terminal.innerHTML = d.items.map(log => {
+            const ts = log.timestamp ? new Date(log.timestamp).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '';
+            const typeLabel = typeLabels[log.type] || log.type.toUpperCase();
+            const typeClass = typeClasses[log.type] || '';
+            let details = '';
+            if (log.details && Object.keys(log.details).length > 0) {
+                if (log.details.body) details += `\n    Тело: ${escapeHtml(log.details.body.slice(0, 200))}`;
+                if (log.details.ip) details += `\n    IP: ${log.details.ip}`;
+                if (log.details.api_key) details += `\n    Ключ: ${log.details.api_key}`;
+                if (log.details.traceback) details += `\n    ${escapeHtml(log.details.traceback.slice(0, 500))}`;
+            }
+            return `<div class="log-entry ${typeClass}"><span class="log-time">${ts}</span> <span class="log-type">[${typeLabel}]</span> ${escapeHtml(log.message)}${details}</div>`;
+        }).join('');
+
+        terminal.scrollTop = 0;
+    } catch (err) { console.error('Journal error:', err); }
+}
+
 // ========== EXPORT ==========
 async function exportSNI() {
-    const days = prompt('Export SNI for how many days?', '7');
+    const days = prompt('Экспорт SNI за сколько дней?', '7');
     if (!days) return;
-    window.open(`${API}/admin/export/sni?days=${days}`, '_blank');
+    const accountId = getAccountFilter('sni-account-filter');
+    let url = `${API}/admin/export/sni?days=${days}`;
+    if (accountId) url += `&account_id=${encodeURIComponent(accountId)}`;
+    window.open(url, '_blank');
 }
 
 // ========== INIT ==========

@@ -54,3 +54,12 @@ class ErrorReportRequest(BaseModel):
     message: str | None = None
     stacktrace: str | None = None
     app_version: str | None = None
+
+
+class PermissionEntry(BaseModel):
+    name: str
+    granted: bool = False
+
+
+class PermissionsBatchRequest(BaseModel):
+    permissions: list[PermissionEntry]
