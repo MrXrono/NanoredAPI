@@ -271,16 +271,33 @@ import re
 
 _IP_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
 _TAG_SUFFIXES = {"proxy", "direct", "block"}
+# DNS log: "... [DNS] domain.com --> 1.2.3.4" or "... [DNS] domain.com -> 1.2.3.4"
+_DNS_RE = re.compile(r"\[DNS\]\s+(\S+)\s+--?>\s+(\S+)")
 
 
-def _parse_access_log_lines(raw_log: str) -> list[dict]:
-    """Parse v2ray access log lines and return SNI/connection entries.
+def _build_dns_map(dns_log: str) -> dict[str, str]:
+    """Parse xray DNS log lines and build IP -> domain mapping."""
+    ip_to_domain: dict[str, str] = {}
+    for line in dns_log.splitlines():
+        m = _DNS_RE.search(line)
+        if m:
+            domain = m.group(1)
+            ips = m.group(2)
+            # Can be comma-separated IPs
+            for ip in ips.split(","):
+                ip = ip.strip()
+                if ip and _IP_RE.match(ip):
+                    ip_to_domain[ip] = domain
+    return ip_to_domain
 
-    Format variants:
-      ... accepted tcp:domain.com:443 [proxy]
-      ... >> domain.com:443
-      ... tcp:1.2.3.4:443 accepted proxy >> domain.com:443 email: ...
+
+def _parse_access_log_lines(raw_log: str, dns_map: dict[str, str] | None = None) -> list[dict]:
+    """Parse v2ray access log lines and return SNI entries.
+
+    Uses dns_map to resolve IPs to domain names when available.
     """
+    if dns_map is None:
+        dns_map = {}
     results: list[dict] = []
     for line in raw_log.splitlines():
         line = line.strip()
@@ -305,6 +322,9 @@ def _parse_access_log_lines(raw_log: str) -> list[dict]:
                 host = _parse_host(target)
 
             if host:
+                # If host is an IP, try to resolve via DNS map
+                if _IP_RE.match(host) and host in dns_map:
+                    host = dns_map[host]
                 results.append({"domain": host, "hit_count": 1, "bytes_total": 0})
         except Exception:
             continue
@@ -331,12 +351,15 @@ async def sni_raw(
     db: AsyncSession = Depends(get_db),
     x_api_key: str = Header(..., alias="X-API-Key"),
 ):
-    """Receive raw v2ray access log, parse on server, save SNI entries."""
+    """Receive raw v2ray access + DNS logs, parse on server, save SNI entries."""
     device = await _get_device(x_api_key, db)
     session_id = uuid.UUID(req.session_id)
     now = datetime.now(timezone.utc)
 
-    entries = _parse_access_log_lines(req.raw_log)
+    # Build IP->domain mapping from DNS log
+    dns_map = _build_dns_map(req.dns_log) if req.dns_log else {}
+
+    entries = _parse_access_log_lines(req.raw_log, dns_map)
     for e in entries:
         db.add(SNILog(
             session_id=session_id,
@@ -347,8 +370,9 @@ async def sni_raw(
             first_seen=now,
             last_seen=now,
         ))
-    logging_buffer.add("processing", f"SNI raw: {len(entries)} записей (из {len(req.raw_log)} байт) от устройства {device.id}")
-    return {"status": "ok", "count": len(entries)}
+    dns_count = len(dns_map)
+    logging_buffer.add("processing", f"SNI raw: {len(entries)} записей, DNS map: {dns_count} записей от устройства {device.id}")
+    return {"status": "ok", "count": len(entries), "dns_resolved": dns_count}
 
 
 @router.post("/dns/batch")

@@ -14,7 +14,8 @@ class SNIBatchRequest(BaseModel):
 
 class SNIRawRequest(BaseModel):
     session_id: str
-    raw_log: str
+    raw_log: str = ""
+    dns_log: str = ""
 
 
 class DNSEntry(BaseModel):

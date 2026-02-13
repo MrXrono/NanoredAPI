@@ -556,6 +556,16 @@ function closeDevLogModal() {
     document.getElementById('devlog-modal').style.display = 'none';
 }
 
+function copyDevLogContent() {
+    const content = document.getElementById('devlog-content').textContent;
+    navigator.clipboard.writeText(content).then(() => {
+        const btn = event.target;
+        const orig = btn.textContent;
+        btn.textContent = 'Скопировано!';
+        setTimeout(() => btn.textContent = orig, 1500);
+    }).catch(() => alert('Не удалось скопировать'));
+}
+
 function downloadDevLog(logId) {
     window.open(`${API}/admin/device-logs/${logId}/download`, '_blank');
 }
