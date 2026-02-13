@@ -10,6 +10,7 @@ REPO_URL="https://github.com/MrXrono/NanoredAPI.git"
 COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
 NGINX_CONTAINER="remnawave-nginx"
 HEALTH_URL="http://localhost:8000/health"
+API_CONTAINER="nanored-api"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -126,7 +127,8 @@ docker compose -f "$COMPOSE_FILE" up -d 2>/dev/null || docker-compose -f "$COMPO
 # ---------- 8. Wait for API to start ----------
 log "Ожидание запуска API..."
 for i in $(seq 1 30); do
-    if curl -s "$HEALTH_URL" | grep -q '"status":"ok"' 2>/dev/null; then
+    RESP=$(docker exec "$API_CONTAINER" curl -sf "$HEALTH_URL" 2>/dev/null || echo "")
+    if echo "$RESP" | grep -q '"status"' 2>/dev/null; then
         break
     fi
     sleep 2
@@ -138,9 +140,9 @@ docker exec "$NGINX_CONTAINER" nginx -s reload 2>/dev/null && log "Nginx пер�
 
 # ---------- 10. Health check ----------
 log "Проверка доступности..."
-HEALTH_RESP=$(curl -s "$HEALTH_URL" 2>/dev/null || echo "")
-if echo "$HEALTH_RESP" | grep -q '"status":"ok"'; then
-    RUNNING_VER=$(echo "$HEALTH_RESP" | grep -oP '"version":"(\K[^"]+)' || echo "unknown")
+HEALTH_RESP=$(docker exec "$API_CONTAINER" curl -sf "$HEALTH_URL" 2>/dev/null || echo "")
+if echo "$HEALTH_RESP" | grep -q '"status"'; then
+    RUNNING_VER=$(echo "$HEALTH_RESP" | sed 's/.*"version":"\([^"]*\)".*/\1/' 2>/dev/null || echo "unknown")
     log "====================================="
     log "Обновление завершено успешно!"
     log "Версия API: $RUNNING_VER"

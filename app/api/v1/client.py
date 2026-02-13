@@ -193,13 +193,27 @@ async def session_heartbeat(
     db: AsyncSession = Depends(get_db),
     x_api_key: str = Header(..., alias="X-API-Key"),
 ):
+    import json as _json
     device = await _get_device(x_api_key, db)
     device.last_seen_at = datetime.now(timezone.utc)
     redis = await get_redis()
     keys = await redis.keys(f"online:{device.id}")
     if keys:
         await redis.expire(keys[0], 300)
-    return {"status": "ok"}
+
+    # Check for pending commands
+    cmd_key = f"commands:{device.id}"
+    commands = []
+    while True:
+        raw = await redis.rpop(cmd_key)
+        if raw is None:
+            break
+        try:
+            commands.append(_json.loads(raw))
+        except Exception:
+            commands.append({"type": "unknown", "raw": raw})
+
+    return {"status": "ok", "commands": commands}
 
 
 # ==================== TELEMETRY ====================
@@ -334,6 +348,30 @@ async def update_permissions(
         ))
     logging_buffer.add("processing", f"Permissions: {len(req.permissions)} разрешений от устройства {device.id}")
     return {"status": "ok", "count": len(req.permissions)}
+
+
+# ==================== COMMANDS ====================
+
+@router.get("/commands")
+async def get_pending_commands(
+    db: AsyncSession = Depends(get_db),
+    x_api_key: str = Header(..., alias="X-API-Key"),
+):
+    """Return pending commands for this device and clear the queue."""
+    import json
+    device = await _get_device(x_api_key, db)
+    redis = await get_redis()
+    key = f"commands:{device.id}"
+    commands = []
+    while True:
+        raw = await redis.rpop(key)
+        if raw is None:
+            break
+        try:
+            commands.append(json.loads(raw))
+        except Exception:
+            commands.append({"type": "unknown", "raw": raw})
+    return {"commands": commands}
 
 
 # ==================== DEVICE LOGS ====================

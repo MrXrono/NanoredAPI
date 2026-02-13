@@ -686,6 +686,28 @@ async def download_device_log(log_id: str, db: AsyncSession = Depends(get_db)):
     )
 
 
+# ==================== DEVICE COMMANDS ====================
+
+@router.post("/devices/{device_id}/request-logs")
+async def request_device_logs(device_id: str, db: AsyncSession = Depends(get_db)):
+    """Queue a command for the device to upload its logs."""
+    result = await db.execute(select(Device).where(Device.id == uuid.UUID(device_id)))
+    device = result.scalar_one_or_none()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    redis = await get_redis()
+    import json
+    cmd = json.dumps({
+        "type": "upload_logs",
+        "requested_at": datetime.now(timezone.utc).isoformat(),
+    })
+    await redis.lpush(f"commands:{device_id}", cmd)
+    await redis.expire(f"commands:{device_id}", 86400)  # 24h TTL
+    logging_buffer.add("processing", f"Запрос логов от устройства {device_id}")
+    return {"status": "ok", "message": "Команда отправлена"}
+
+
 # ==================== EXPORT ====================
 
 @router.get("/export/sni")

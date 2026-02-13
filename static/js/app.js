@@ -278,9 +278,27 @@ async function viewDeviceDetail(deviceId) {
                 <div><strong>Посл. активность:</strong> ${formatDate(dev.last_seen_at)}</div>
             </div>
             ${permHtml}
+            <div style="margin-top:16px;display:flex;gap:8px;">
+                <button class="btn btn-primary btn-sm" onclick="requestDeviceLogs('${dev.id}')">Запросить журнал</button>
+            </div>
         `;
         document.getElementById('device-detail-modal').style.display = 'flex';
     } catch (err) { console.error('Device detail error:', err); }
+}
+
+async function requestDeviceLogs(deviceId) {
+    try {
+        const resp = await api(`/admin/devices/${deviceId}/request-logs`, { method: 'POST' });
+        const data = await resp.json();
+        if (resp.ok) {
+            alert('Команда отправлена. Устройство отправит журнал при следующем подключении.');
+        } else {
+            alert('Ошибка: ' + (data.detail || 'Неизвестная ошибка'));
+        }
+    } catch (err) {
+        alert('Ошибка отправки команды');
+        console.error('Request logs error:', err);
+    }
 }
 
 function closeDeviceDetail() {

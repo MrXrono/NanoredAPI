@@ -110,6 +110,10 @@ async def logging_middleware(request: Request, call_next):
     path = request.url.path
     client_ip = request.headers.get("X-Real-IP") or (request.client.host if request.client else "unknown")
 
+    # Skip logging for admin log-polling endpoints (prevents recursive log spam)
+    if path.startswith("/api/v1/admin/logs"):
+        return await call_next(request)
+
     if path.startswith("/api/"):
         api_key = request.headers.get("X-API-Key", "")
         masked_key = f"{api_key[:8]}...{api_key[-4:]}" if len(api_key) > 12 else "***"
