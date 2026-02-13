@@ -18,9 +18,13 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 FORCE=false
-if [ "$1" = "--f" ] || [ "$1" = "--force" ]; then
-    FORCE=true
-fi
+WIPE_DB=false
+for arg in "$@"; do
+    case "$arg" in
+        --f|--force) FORCE=true ;;
+        --db) WIPE_DB=true ;;
+    esac
+done
 
 log() { echo -e "${GREEN}[$(date '+%H:%M:%S')]${NC} $1"; }
 warn() { echo -e "${YELLOW}[$(date '+%H:%M:%S')] ВНИМАНИЕ:${NC} $1"; }
@@ -30,6 +34,9 @@ err() { echo -e "${RED}[$(date '+%H:%M:%S')] ОШИБКА:${NC} $1"; }
 log "Проверка текущей версии..."
 if [ "$FORCE" = true ]; then
     log "Режим принудительного обновления (--f)"
+fi
+if [ "$WIPE_DB" = true ]; then
+    warn "Режим удаления БД (--db)"
 fi
 if [ ! -d "$INSTALL_DIR/.git" ]; then
     warn "Директория $INSTALL_DIR не является git-репозиторием"
@@ -104,8 +111,14 @@ log "Остановка контейнеров..."
 docker compose -f "$COMPOSE_FILE" down 2>/dev/null || docker-compose -f "$COMPOSE_FILE" down 2>/dev/null
 
 # ---------- 6. Handle DB schema changes ----------
-if [ "$SCHEMA_CHANGED" = true ]; then
+if [ "$WIPE_DB" = true ]; then
+    SCHEMA_CHANGED=true
+    warn "Принудительное удаление БД (--db)..."
+elif [ "$SCHEMA_CHANGED" = true ]; then
     warn "Удаление старой БД из-за изменений схемы..."
+fi
+
+if [ "$SCHEMA_CHANGED" = true ]; then
     VOLUME_NAME=$(docker volume ls -q | grep nanored.*pgdata 2>/dev/null || true)
     if [ -n "$VOLUME_NAME" ]; then
         docker volume rm "$VOLUME_NAME" 2>/dev/null || true
@@ -146,7 +159,9 @@ if echo "$HEALTH_RESP" | grep -q '"status"'; then
     log "====================================="
     log "Обновление завершено успешно!"
     log "Версия API: $RUNNING_VER"
-    if [ "$SCHEMA_CHANGED" = true ]; then
+    if [ "$WIPE_DB" = true ]; then
+        warn "БД была удалена и пересоздана (--db)"
+    elif [ "$SCHEMA_CHANGED" = true ]; then
         warn "БД была пересоздана (схема изменилась)"
     fi
     log "====================================="
