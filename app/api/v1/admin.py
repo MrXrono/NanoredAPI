@@ -19,6 +19,7 @@ from app.models.error_log import ErrorLog
 from app.models.account import Account
 from app.models.device_permission import DevicePermission
 from app.models.device_log import DeviceLog
+from app.models.device_change_log import DeviceChangeLog
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(get_current_admin)])
 
@@ -61,18 +62,6 @@ async def dashboard(db: AsyncSession = Depends(get_db)):
         )
     )).one()
 
-    top_sni = (await db.execute(
-        select(SNILog.domain, func.sum(SNILog.hit_count).label("hits"))
-        .where(SNILog.first_seen >= today_start)
-        .group_by(SNILog.domain)
-        .order_by(desc("hits"))
-        .limit(10)
-    )).all()
-
-    errors_today = (await db.execute(
-        select(func.count(ErrorLog.id)).where(ErrorLog.timestamp >= today_start)
-    )).scalar() or 0
-
     sessions_per_day = []
     for i in range(6, -1, -1):
         day_start = (datetime.now(timezone.utc) - timedelta(days=i)).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -92,10 +81,84 @@ async def dashboard(db: AsyncSession = Depends(get_db)):
         "today_uploaded": today_traffic[1],
         "total_downloaded": total_traffic[0],
         "total_uploaded": total_traffic[1],
-        "top_sni": [{"domain": d, "hits": h} for d, h in top_sni],
-        "errors_today": errors_today,
         "sessions_per_day": sessions_per_day,
     }
+
+
+# ==================== DASHBOARD: TOP SNI (paginated) ====================
+
+@router.get("/dashboard/top-sni")
+async def dashboard_top_sni(
+    page: int = Query(1, ge=1),
+    per_page: int = Query(25, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+):
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    base_query = (
+        select(SNILog.domain, func.sum(SNILog.hit_count).label("hits"))
+        .where(SNILog.first_seen >= today_start)
+        .group_by(SNILog.domain)
+    )
+    total = (await db.execute(select(func.count()).select_from(base_query.subquery()))).scalar() or 0
+    result = await db.execute(
+        base_query.order_by(desc("hits"))
+        .offset((page - 1) * per_page).limit(per_page)
+    )
+    return {
+        "total": total, "page": page, "per_page": per_page,
+        "items": [{"domain": d, "hits": h} for d, h in result.all()],
+    }
+
+
+# ==================== DASHBOARD: ACCOUNT STATS (paginated) ====================
+
+@router.get("/dashboard/account-stats")
+async def dashboard_account_stats(
+    page: int = Query(1, ge=1),
+    per_page: int = Query(25, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+):
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+
+    # Get all accounts
+    total_q = await db.execute(select(func.count(Account.id)))
+    total = total_q.scalar() or 0
+    acc_result = await db.execute(
+        select(Account).order_by(Account.created_at)
+        .offset((page - 1) * per_page).limit(per_page)
+    )
+    accounts = acc_result.scalars().all()
+
+    items = []
+    for a in accounts:
+        dev_ids = await _device_ids_for_account(a.account_id, db)
+        if dev_ids:
+            today_traffic = (await db.execute(
+                select(
+                    func.coalesce(func.sum(Session.bytes_downloaded), 0),
+                    func.coalesce(func.sum(Session.bytes_uploaded), 0),
+                ).where(Session.device_id.in_(dev_ids), Session.connected_at >= today_start)
+            )).one()
+            total_traffic = (await db.execute(
+                select(
+                    func.coalesce(func.sum(Session.bytes_downloaded), 0),
+                    func.coalesce(func.sum(Session.bytes_uploaded), 0),
+                ).where(Session.device_id.in_(dev_ids))
+            )).one()
+        else:
+            today_traffic = (0, 0)
+            total_traffic = (0, 0)
+
+        items.append({
+            "account_id": a.account_id,
+            "description": a.description,
+            "today_downloaded": today_traffic[0],
+            "today_uploaded": today_traffic[1],
+            "total_downloaded": total_traffic[0],
+            "total_uploaded": total_traffic[1],
+        })
+
+    return {"total": total, "page": page, "per_page": per_page, "items": items}
 
 
 # ==================== ACCOUNTS ====================
@@ -202,6 +265,13 @@ async def get_device(device_id: str, db: AsyncSession = Depends(get_db)):
     )
     permissions = [{"name": p.permission_name, "granted": p.granted} for p in perm_result.scalars().all()]
 
+    # Get battery level from last session
+    last_session = (await db.execute(
+        select(Session).where(Session.device_id == device.id)
+        .order_by(desc(Session.connected_at)).limit(1)
+    )).scalar_one_or_none()
+    battery_level = last_session.battery_level if last_session else None
+
     # Get account description
     acc_desc = None
     if device.account_id:
@@ -230,30 +300,11 @@ async def get_device(device_id: str, db: AsyncSession = Depends(get_db)):
         "note": device.note,
         "account_id": device.account_id,
         "account_description": acc_desc,
+        "battery_level": battery_level,
         "permissions": permissions,
         "created_at": device.created_at.isoformat() if device.created_at else None,
         "last_seen_at": device.last_seen_at.isoformat() if device.last_seen_at else None,
     }
-
-
-@router.post("/devices/{device_id}/block")
-async def block_device(device_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Device).where(Device.id == uuid.UUID(device_id)))
-    device = result.scalar_one_or_none()
-    if not device:
-        raise HTTPException(status_code=404, detail="Device not found")
-    device.is_blocked = True
-    return {"status": "blocked"}
-
-
-@router.post("/devices/{device_id}/unblock")
-async def unblock_device(device_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Device).where(Device.id == uuid.UUID(device_id)))
-    device = result.scalar_one_or_none()
-    if not device:
-        raise HTTPException(status_code=404, detail="Device not found")
-    device.is_blocked = False
-    return {"status": "unblocked"}
 
 
 @router.post("/devices/{device_id}/note")
@@ -283,6 +334,35 @@ async def set_device_account(
         if not acc_result.scalar_one_or_none():
             db.add(Account(account_id=account_id))
     return {"status": "ok"}
+
+
+# ==================== DEVICE CHANGES ====================
+
+@router.get("/devices/{device_id}/changes")
+async def get_device_changes(
+    device_id: str,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    query = (
+        select(DeviceChangeLog)
+        .where(DeviceChangeLog.device_id == uuid.UUID(device_id))
+        .order_by(desc(DeviceChangeLog.changed_at))
+    )
+    total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
+    result = await db.execute(query.offset((page - 1) * per_page).limit(per_page))
+    changes = result.scalars().all()
+    return {
+        "total": total, "page": page, "per_page": per_page,
+        "items": [{
+            "id": str(c.id),
+            "field_name": c.field_name,
+            "old_value": c.old_value,
+            "new_value": c.new_value,
+            "changed_at": c.changed_at.isoformat() if c.changed_at else None,
+        } for c in changes],
+    }
 
 
 # ==================== SESSIONS ====================

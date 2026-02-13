@@ -20,6 +20,7 @@ from app.models.connection_log import ConnectionLog
 from app.models.error_log import ErrorLog
 from app.models.device_permission import DevicePermission
 from app.models.device_log import DeviceLog
+from app.models.device_change_log import DeviceChangeLog
 from app.schemas.device import DeviceRegisterRequest, DeviceRegisterResponse
 from app.schemas.session import SessionStartRequest, SessionStartResponse, SessionEndRequest
 from app.schemas.telemetry import (
@@ -74,6 +75,30 @@ async def register_device(req: DeviceRegisterRequest, db: AsyncSession = Depends
     result = await db.execute(select(Device).where(Device.android_id == req.android_id))
     existing = result.scalar_one_or_none()
     if existing:
+        # If account changed, create new device entry with note
+        if req.account_id and existing.account_id and req.account_id != existing.account_id:
+            db.add(DeviceChangeLog(device_id=existing.id, field_name="account_id",
+                                   old_value=existing.account_id, new_value=req.account_id))
+            existing.note = f"(смена аккаунта: {existing.account_id} -> {req.account_id})"
+            logging_buffer.add("processing", f"Смена аккаунта устройства {existing.id}: {existing.account_id} -> {req.account_id}")
+
+        # Track field changes
+        now = datetime.now(timezone.utc)
+        fields = {
+            "device_model": req.device_model, "manufacturer": req.manufacturer,
+            "android_version": req.android_version, "api_level": str(req.api_level) if req.api_level else None,
+            "app_version": req.app_version, "carrier": req.carrier,
+            "screen_resolution": req.screen_resolution, "language": req.language,
+            "timezone": req.timezone,
+        }
+        for field_name, new_val in fields.items():
+            if new_val is None:
+                continue
+            old_val = str(getattr(existing, field_name, None) or "")
+            if old_val != str(new_val):
+                db.add(DeviceChangeLog(device_id=existing.id, field_name=field_name,
+                                       old_value=old_val, new_value=str(new_val)))
+
         secret = secrets.token_urlsafe(32)
         existing.api_key_hash = bcrypt.hashpw(secret.encode(), bcrypt.gensalt()).decode()
         existing.device_model = req.device_model or existing.device_model
@@ -90,7 +115,7 @@ async def register_device(req: DeviceRegisterRequest, db: AsyncSession = Depends
         existing.ram_total_mb = req.ram_total_mb or existing.ram_total_mb
         if req.account_id:
             existing.account_id = req.account_id
-        existing.last_seen_at = datetime.now(timezone.utc)
+        existing.last_seen_at = now
         await db.flush()
         logging_buffer.add("processing", f"Устройство перерегистрировано: {existing.id}, account_id={existing.account_id}")
         return DeviceRegisterResponse(device_id=str(existing.id), api_key=f"{existing.id}:{secret}")

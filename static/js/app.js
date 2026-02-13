@@ -149,15 +149,55 @@ async function loadDashboard() {
         document.getElementById('today-download').textContent = formatBytes(d.today_downloaded);
         document.getElementById('today-upload').textContent = formatBytes(d.today_uploaded);
         document.getElementById('total-traffic').textContent = formatBytes(d.total_downloaded + d.total_uploaded);
-        document.getElementById('errors-today').textContent = d.errors_today;
-
-        const sniList = document.getElementById('top-sni-list');
-        sniList.innerHTML = d.top_sni.map((s, i) =>
-            `<li><span class="rank">${i + 1}</span><span class="domain">${escapeHtml(s.domain)}</span><span class="hits">${s.hits}</span></li>`
-        ).join('') || '<li>Нет данных</li>';
 
         renderChart(d.sessions_per_day);
+
+        loadTopSNI(1);
+        loadAccountStats(1);
     } catch (err) { console.error('Dashboard error:', err); }
+}
+
+async function loadTopSNI(page = 1) {
+    try {
+        const resp = await api(`/admin/dashboard/top-sni?page=${page}&per_page=25`);
+        const d = await resp.json();
+        const sniList = document.getElementById('top-sni-list');
+        const offset = (d.page - 1) * d.per_page;
+        sniList.innerHTML = d.items.map((s, i) =>
+            `<li><span class="rank">${offset + i + 1}</span><span class="domain">${escapeHtml(s.domain)}</span><span class="hits">${s.hits}</span></li>`
+        ).join('') || '<li>Нет данных</li>';
+        renderDashPagination(document.getElementById('top-sni-pagination'), d.total, d.page, d.per_page, 'loadTopSNI');
+    } catch (err) { console.error('Top SNI error:', err); }
+}
+
+async function loadAccountStats(page = 1) {
+    try {
+        const resp = await api(`/admin/dashboard/account-stats?page=${page}&per_page=25`);
+        const d = await resp.json();
+        const tbody = document.getElementById('account-stats-tbody');
+        tbody.innerHTML = d.items.map(a => `
+            <tr>
+                <td title="${escapeHtml(a.description || '')}">${escapeHtml(a.account_id)}${a.description ? ' (' + escapeHtml(a.description) + ')' : ''}</td>
+                <td>${formatBytes(a.today_downloaded)}</td>
+                <td>${formatBytes(a.total_downloaded)}</td>
+                <td>${formatBytes(a.today_uploaded)}</td>
+                <td>${formatBytes(a.total_uploaded)}</td>
+            </tr>
+        `).join('') || '<tr><td colspan="5">Нет данных</td></tr>';
+        renderDashPagination(document.getElementById('account-stats-pagination'), d.total, d.page, d.per_page, 'loadAccountStats');
+    } catch (err) { console.error('Account stats error:', err); }
+}
+
+function renderDashPagination(container, total, page, perPage, callback) {
+    const pages = Math.ceil(total / perPage);
+    if (pages <= 1) { container.innerHTML = ''; return; }
+    let html = `<button ${page <= 1 ? 'disabled' : ''} onclick="${callback}(${page - 1})">&laquo;</button>`;
+    for (let i = 1; i <= Math.min(pages, 5); i++) {
+        html += `<button class="${i === page ? 'active' : ''}" onclick="${callback}(${i})">${i}</button>`;
+    }
+    if (pages > 5) html += `<button disabled>...</button><button onclick="${callback}(${pages})">${pages}</button>`;
+    html += `<button ${page >= pages ? 'disabled' : ''} onclick="${callback}(${page + 1})">&raquo;</button>`;
+    container.innerHTML = html;
 }
 
 function renderChart(data) {
@@ -207,29 +247,21 @@ async function loadDevices(page = 1) {
             : (dev.account_id || '-');
         return `<tr>
             <td title="${escapeHtml(dev.account_id || '')}">${escapeHtml(accLabel)}</td>
-            <td title="${escapeHtml(dev.android_id)}">${escapeHtml(dev.android_id.slice(0, 12))}...</td>
+            <td>${escapeHtml(dev.android_id)}</td>
             <td>${escapeHtml(dev.manufacturer || '')} ${escapeHtml(dev.device_model || '')}</td>
             <td>${dev.android_version || '-'}</td>
             <td>${dev.app_version || '-'}</td>
             <td>${escapeHtml(dev.carrier || '-')}</td>
             <td>${dev.is_online ? '<span class="badge badge-green">Онлайн</span>' : '<span class="badge badge-red">Оффлайн</span>'}</td>
-            <td>${dev.is_blocked ? '<span class="badge badge-red">Заблокирован</span>' : '<span class="badge badge-green">Активен</span>'}</td>
             <td>${formatDate(dev.last_seen_at)}</td>
             <td>
-                <button class="btn btn-sm ${dev.is_blocked ? 'btn-success' : 'btn-danger'}"
-                    onclick="toggleBlock('${dev.id}', ${dev.is_blocked})">${dev.is_blocked ? 'Разблок.' : 'Заблок.'}</button>
                 <button class="btn btn-sm btn-primary" onclick="viewDeviceDetail('${dev.id}')">Детали</button>
                 <button class="btn btn-sm btn-primary" onclick="viewDeviceSessions('${dev.id}')">Сессии</button>
+                <button class="btn btn-sm btn-primary" onclick="viewDeviceChanges('${dev.id}')">Изменения</button>
             </td>
         </tr>`;
     }).join('');
     renderPagination(document.getElementById('devices-pagination'), d.total, d.page, d.per_page, 'loadDevices');
-}
-
-async function toggleBlock(deviceId, isBlocked) {
-    const action = isBlocked ? 'unblock' : 'block';
-    await api(`/admin/devices/${deviceId}/${action}`, { method: 'POST' });
-    loadDevices();
 }
 
 function viewDeviceSessions(deviceId) {
@@ -256,6 +288,18 @@ async function viewDeviceDetail(deviceId) {
             permHtml += '</tbody></table>';
         }
 
+        // Battery bar
+        let batteryHtml = '';
+        if (dev.battery_level != null) {
+            const lvl = dev.battery_level;
+            const color = lvl > 50 ? 'var(--green)' : lvl > 20 ? 'var(--yellow)' : 'var(--red)';
+            batteryHtml = `<div class="battery-bar-wrap"><div class="battery-bar" style="width:${lvl}%;background:${color};"></div><span class="battery-label">${lvl}%</span></div>`;
+        }
+
+        // Update modal header with battery
+        const modalHeader = document.querySelector('#device-detail-modal .modal-header h3');
+        modalHeader.innerHTML = `Детали устройства ${batteryHtml}`;
+
         body.innerHTML = `
             <div class="detail-grid">
                 <div><strong>ID:</strong> ${dev.id}</div>
@@ -272,7 +316,6 @@ async function viewDeviceDetail(deviceId) {
                 <div><strong>Оператор:</strong> ${escapeHtml(dev.carrier || '-')}</div>
                 <div><strong>RAM:</strong> ${dev.ram_total_mb ? dev.ram_total_mb + ' MB' : '-'}</div>
                 <div><strong>Статус:</strong> ${dev.is_online ? '<span class="badge badge-green">Онлайн</span>' : '<span class="badge badge-red">Оффлайн</span>'}</div>
-                <div><strong>Доступ:</strong> ${dev.is_blocked ? '<span class="badge badge-red">Заблокирован</span>' : '<span class="badge badge-green">Активен</span>'}</div>
                 <div><strong>Заметка:</strong> ${escapeHtml(dev.note || '-')}</div>
                 <div><strong>Создан:</strong> ${formatDate(dev.created_at)}</div>
                 <div><strong>Посл. активность:</strong> ${formatDate(dev.last_seen_at)}</div>
@@ -280,6 +323,7 @@ async function viewDeviceDetail(deviceId) {
             ${permHtml}
             <div style="margin-top:16px;display:flex;gap:8px;">
                 <button class="btn btn-primary btn-sm" onclick="requestDeviceLogs('${dev.id}')">Запросить журнал</button>
+                <button class="btn btn-primary btn-sm" onclick="closeDeviceDetail();viewDeviceChanges('${dev.id}')">Изменения</button>
             </div>
         `;
         document.getElementById('device-detail-modal').style.display = 'flex';
@@ -303,6 +347,36 @@ async function requestDeviceLogs(deviceId) {
 
 function closeDeviceDetail() {
     document.getElementById('device-detail-modal').style.display = 'none';
+}
+
+// ========== DEVICE CHANGES ==========
+let _changesDeviceId = null;
+
+async function viewDeviceChanges(deviceId, page = 1) {
+    _changesDeviceId = deviceId;
+    try {
+        const resp = await api(`/admin/devices/${deviceId}/changes?page=${page}&per_page=50`);
+        const d = await resp.json();
+        const tbody = document.getElementById('device-changes-tbody');
+        tbody.innerHTML = d.items.map(c => `
+            <tr>
+                <td>${escapeHtml(c.field_name)}</td>
+                <td>${escapeHtml(c.old_value || '-')}</td>
+                <td>${escapeHtml(c.new_value || '-')}</td>
+                <td>${formatDate(c.changed_at)}</td>
+            </tr>
+        `).join('') || '<tr><td colspan="4">Нет изменений</td></tr>';
+        renderPagination(document.getElementById('device-changes-pagination'), d.total, d.page, d.per_page, 'viewDeviceChangesPage');
+        document.getElementById('device-changes-modal').style.display = 'flex';
+    } catch (err) { console.error('Device changes error:', err); }
+}
+
+function viewDeviceChangesPage(page) {
+    if (_changesDeviceId) viewDeviceChanges(_changesDeviceId, page);
+}
+
+function closeDeviceChanges() {
+    document.getElementById('device-changes-modal').style.display = 'none';
 }
 
 // ========== SESSIONS ==========

@@ -242,6 +242,54 @@ tbody tr:hover { background: rgba(233, 69, 96, 0.05); }
 .log-error .log-type { color: var(--red); }
 .log-error { color: var(--red); }
 
+/* Dashboard columns */
+.dashboard-columns {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    margin-bottom: 24px;
+}
+
+/* Account stats table */
+.account-stats-table { width: 100%; border-collapse: collapse; }
+.account-stats-table th {
+    text-align: left; padding: 8px 10px; font-size: 11px;
+    color: var(--text-secondary); text-transform: uppercase;
+    border-bottom: 1px solid var(--border); white-space: nowrap;
+}
+.account-stats-table td {
+    padding: 6px 10px; font-size: 12px;
+    border-bottom: 1px solid var(--border); white-space: nowrap;
+}
+
+/* Battery bar */
+.battery-bar-wrap {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: 12px;
+    width: 100px;
+    height: 18px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+    position: relative;
+    vertical-align: middle;
+}
+.battery-bar {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.3s;
+}
+.battery-label {
+    position: absolute;
+    right: 6px;
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
 /* Responsive */
 @media (max-width: 768px) {
     .sidebar { width: 60px; }
@@ -249,5 +297,6 @@ tbody tr:hover { background: rgba(233, 69, 96, 0.05); }
     .main { margin-left: 60px; }
     .stats-grid { grid-template-columns: repeat(2, 1fr); }
     .detail-grid { grid-template-columns: 1fr; }
+    .dashboard-columns { grid-template-columns: 1fr; }
     .table-filters { flex-direction: column; }
 }

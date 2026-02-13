@@ -28,6 +28,7 @@ from app.models.error_log import ErrorLog
 from app.models.account import Account
 from app.models.device_permission import DevicePermission
 from app.models.device_log import DeviceLog
+from app.models.device_change_log import DeviceChangeLog
 
 logger = logging.getLogger(__name__)
 
