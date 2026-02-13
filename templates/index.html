@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NanoredVPN Admin</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="login-page" class="login-container" style="display:none;">
+    <div class="login-box">
+        <h1>NanoredVPN</h1>
+        <form id="login-form">
+            <input type="text" id="username" placeholder="Username" required autocomplete="username">
+            <input type="password" id="password" placeholder="Password" required autocomplete="current-password">
+            <button type="submit">Sign In</button>
+        </form>
+        <div id="login-error" class="login-error"></div>
+    </div>
+</div>
+
+<!-- APP -->
+<div id="app" style="display:none;">
+    <nav class="sidebar">
+        <div class="logo">NanoredVPN</div>
+        <a href="#" class="nav-link active" data-section="dashboard">Dashboard</a>
+        <a href="#" class="nav-link" data-section="devices">Devices</a>
+        <a href="#" class="nav-link" data-section="sessions">Sessions</a>
+        <a href="#" class="nav-link" data-section="sni">SNI Logs</a>
+        <a href="#" class="nav-link" data-section="dns">DNS Logs</a>
+        <a href="#" class="nav-link" data-section="apps">App Traffic</a>
+        <a href="#" class="nav-link" data-section="connections">Connections</a>
+        <a href="#" class="nav-link" data-section="errors">Errors</a>
+        <a href="#" class="logout" onclick="logout()">Logout</a>
+    </nav>
+
+    <div class="main">
+
+        <!-- DASHBOARD -->
+        <div id="section-dashboard" class="section active">
+            <h2>Dashboard</h2>
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="label">Online Now</div>
+                    <div class="value green" id="online-count">0</div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">Total Devices</div>
+                    <div class="value blue" id="total-devices">0</div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">Today Sessions</div>
+                    <div class="value" id="today-sessions">0</div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">Today Download</div>
+                    <div class="value blue" id="today-download">0 B</div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">Today Upload</div>
+                    <div class="value yellow" id="today-upload">0 B</div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">Total Traffic</div>
+                    <div class="value" id="total-traffic">0 B</div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">Errors Today</div>
+                    <div class="value red" id="errors-today">0</div>
+                </div>
+            </div>
+
+            <div class="chart-container">
+                <h3 style="margin-bottom:12px;">Sessions (7 days)</h3>
+                <canvas id="sessions-chart"></canvas>
+            </div>
+
+            <div class="table-container" style="padding:20px;">
+                <h3 style="margin-bottom:12px;">Top SNI Domains (today)</h3>
+                <ul class="top-list" id="top-sni-list">
+                    <li>Loading...</li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- DEVICES -->
+        <div id="section-devices" class="section">
+            <h2>Devices</h2>
+            <div class="table-container">
+                <div class="table-header">
+                    <h3>All Devices</h3>
+                    <input type="text" id="device-search" placeholder="Search..." onkeyup="loadDevices(1)">
+                </div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Android ID</th><th>Device</th><th>Android</th><th>App Ver</th>
+                            <th>Carrier</th><th>Status</th><th>Access</th><th>Last Seen</th><th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="devices-tbody"></tbody>
+                </table>
+                <div class="pagination" id="devices-pagination"></div>
+            </div>
+        </div>
+
+        <!-- SESSIONS -->
+        <div id="section-sessions" class="section">
+            <h2>Sessions</h2>
+            <div class="table-container">
+                <div class="table-header">
+                    <h3>Connection History</h3>
+                    <input type="text" id="session-device-filter" placeholder="Device ID filter..." onkeyup="loadSessions(1)">
+                </div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Device</th><th>Protocol</th><th>Server</th><th>Client IP</th>
+                            <th>Location</th><th>Network</th><th>Download</th><th>Upload</th>
+                            <th>Duration</th><th>Connected</th>
+                        </tr>
+                    </thead>
+                    <tbody id="sessions-tbody"></tbody>
+                </table>
+                <div class="pagination" id="sessions-pagination"></div>
+            </div>
+        </div>
+
+        <!-- SNI -->
+        <div id="section-sni" class="section">
+            <h2>SNI Logs</h2>
+            <div class="table-container">
+                <div class="table-header">
+                    <h3>TLS Server Name Indication</h3>
+                    <div>
+                        <input type="text" id="sni-search" placeholder="Search domain..." onkeyup="loadSNI(1)">
+                        <button class="btn btn-primary btn-sm" onclick="exportSNI()">Export CSV</button>
+                    </div>
+                </div>
+                <table>
+                    <thead>
+                        <tr><th>Domain</th><th>Hits</th><th>Bytes</th><th>Device</th><th>Last Seen</th></tr>
+                    </thead>
+                    <tbody id="sni-tbody"></tbody>
+                </table>
+                <div class="pagination" id="sni-pagination"></div>
+            </div>
+        </div>
+
+        <!-- DNS -->
+        <div id="section-dns" class="section">
+            <h2>DNS Logs</h2>
+            <div class="table-container">
+                <div class="table-header">
+                    <h3>DNS Queries</h3>
+                    <input type="text" id="dns-search" placeholder="Search domain..." onkeyup="loadDNS(1)">
+                </div>
+                <table>
+                    <thead>
+                        <tr><th>Domain</th><th>Resolved IP</th><th>Type</th><th>Hits</th><th>Device</th><th>Time</th></tr>
+                    </thead>
+                    <tbody id="dns-tbody"></tbody>
+                </table>
+                <div class="pagination" id="dns-pagination"></div>
+            </div>
+        </div>
+
+        <!-- APP TRAFFIC -->
+        <div id="section-apps" class="section">
+            <h2>App Traffic</h2>
+            <div class="table-container">
+                <div class="table-header">
+                    <h3>Traffic per Application</h3>
+                </div>
+                <table>
+                    <thead>
+                        <tr><th>Package</th><th>App Name</th><th>Download</th><th>Upload</th><th>Device</th><th>Time</th></tr>
+                    </thead>
+                    <tbody id="apps-tbody"></tbody>
+                </table>
+                <div class="pagination" id="apps-pagination"></div>
+            </div>
+        </div>
+
+        <!-- CONNECTIONS -->
+        <div id="section-connections" class="section">
+            <h2>Connections</h2>
+            <div class="table-container">
+                <div class="table-header">
+                    <h3>IP Connections</h3>
+                    <input type="text" id="conn-search" placeholder="Search IP..." onkeyup="loadConnections(1)">
+                </div>
+                <table>
+                    <thead>
+                        <tr><th>Dest IP</th><th>Port</th><th>Protocol</th><th>Domain</th><th>Device</th><th>Time</th></tr>
+                    </thead>
+                    <tbody id="connections-tbody"></tbody>
+                </table>
+                <div class="pagination" id="connections-pagination"></div>
+            </div>
+        </div>
+
+        <!-- ERRORS -->
+        <div id="section-errors" class="section">
+            <h2>Errors</h2>
+            <div class="table-container">
+                <div class="table-header">
+                    <h3>Error Reports</h3>
+                </div>
+                <table>
+                    <thead>
+                        <tr><th>Type</th><th>Message</th><th>App Ver</th><th>Device</th><th>Time</th></tr>
+                    </thead>
+                    <tbody id="errors-tbody"></tbody>
+                </table>
+                <div class="pagination" id="errors-pagination"></div>
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<script src="/static/js/app.js"></script>
+</body>
+</html>
