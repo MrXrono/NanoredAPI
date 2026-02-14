@@ -270,35 +270,64 @@ async def sni_batch(
 import re
 
 _IP_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
+# ISO8601 timestamp at the start of xray log lines: "2026-02-14T14:23:45Z"
+_TIMESTAMP_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?)")
 # "sniffed domain: example.com"
 _SNIFFED_RE = re.compile(r"sniffed domain:\s+(\S+)")
 # "app/dns: returning ... for domain example.com -> [1.2.3.4, 5.6.7.8]"
 _DNS_RESOLVE_RE = re.compile(r"app/dns:.*domain\s+(\S+)\s+->\s+\[([^\]]+)\]")
+# "default route for tcp:149.154.167.41:443" — IP-only connections (no sniffed domain)
+_DIRECT_IP_ROUTE_RE = re.compile(r"default route for (?:tcp|udp):(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):\d+")
+# "tunneling request to tcp:149.154.167.41:443" — IP-only tunneling
+_TUNNEL_IP_RE = re.compile(r"tunneling request to (?:tcp|udp):(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):\d+")
 # Known infrastructure domains/IPs to skip
 _SKIP_DOMAINS = {"proxy", "proxy]", "direct", "direct]", "block", "block]",
                  "https", "http", "tun", "socks", ""}
+# Infrastructure IPs to skip (DNS servers, VPN server itself, local)
+_SKIP_IP_PREFIXES = ("10.", "127.", "192.168.", "172.16.", "0.", "1.1.1.", "8.8.8.", "8.8.4.", "9.9.9.")
 
 
-def _parse_dns_log(dns_log: str) -> tuple[list[str], dict[str, str]]:
+def _extract_timestamp(line: str) -> datetime | None:
+    """Extract ISO8601 timestamp from the beginning of an xray log line."""
+    m = _TIMESTAMP_RE.match(line.strip())
+    if m:
+        ts_str = m.group(1)
+        try:
+            if ts_str.endswith("Z"):
+                return datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+            return datetime.fromisoformat(ts_str).replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+    return None
+
+
+def _parse_dns_log(dns_log: str) -> tuple[
+    list[tuple[str, datetime | None]],
+    dict[str, tuple[str, datetime | None]],
+    list[tuple[str, datetime | None]],
+]:
     """Parse xray error log lines containing sniffed domains and DNS resolutions.
 
     Returns:
-        - sniffed_domains: list of domains extracted from 'sniffed domain:' lines
-        - ip_to_domain: mapping of IP -> domain from DNS resolution lines
+        - sniffed_domains: list of (domain, timestamp)
+        - ip_to_domain: mapping of IP -> (domain, timestamp)
+        - raw_ips_no_dns: list of (IP, timestamp) routed without DNS
     """
-    sniffed_domains: list[str] = []
-    ip_to_domain: dict[str, str] = {}
+    sniffed_domains: list[tuple[str, datetime | None]] = []
+    ip_to_domain: dict[str, tuple[str, datetime | None]] = {}
+    raw_ips_no_dns: list[tuple[str, datetime | None]] = []
+    resolved_ips: set[str] = set()
 
     for line in dns_log.splitlines():
-        # Extract sniffed domains (most reliable source)
+        ts = _extract_timestamp(line)
+
         m = _SNIFFED_RE.search(line)
         if m:
             domain = m.group(1).strip()
             if domain and domain not in _SKIP_DOMAINS:
-                sniffed_domains.append(domain)
+                sniffed_domains.append((domain, ts))
             continue
 
-        # Extract DNS IP->domain mapping
         m2 = _DNS_RESOLVE_RE.search(line)
         if m2:
             domain = m2.group(1).strip()
@@ -306,9 +335,27 @@ def _parse_dns_log(dns_log: str) -> tuple[list[str], dict[str, str]]:
             for ip in ips_str.split(","):
                 ip = ip.strip()
                 if ip and _IP_RE.match(ip):
-                    ip_to_domain[ip] = domain
+                    ip_to_domain[ip] = (domain, ts)
+                    resolved_ips.add(ip)
+            continue
 
-    return sniffed_domains, ip_to_domain
+        m3 = _DIRECT_IP_ROUTE_RE.search(line)
+        if m3:
+            ip = m3.group(1)
+            if ip and not ip.startswith(_SKIP_IP_PREFIXES):
+                raw_ips_no_dns.append((ip, ts))
+            continue
+
+        m4 = _TUNNEL_IP_RE.search(line)
+        if m4:
+            ip = m4.group(1)
+            if ip and not ip.startswith(_SKIP_IP_PREFIXES):
+                raw_ips_no_dns.append((ip, ts))
+
+    filtered_ips = [(ip, ts) for ip, ts in raw_ips_no_dns
+                    if ip not in resolved_ips and ip not in ip_to_domain]
+
+    return sniffed_domains, ip_to_domain, filtered_ips
 
 
 def _parse_access_log_ips(raw_log: str) -> list[str]:
@@ -356,38 +403,86 @@ async def sni_raw(
     session_id = uuid.UUID(req.session_id)
     now = datetime.now(timezone.utc)
 
-    # Parse DNS/sniffing log
-    sniffed_domains, ip_to_domain = _parse_dns_log(req.dns_log) if req.dns_log else ([], {})
+    # Parse DNS/sniffing log (includes IPs without DNS from error log)
+    sniffed_domains, ip_to_domain, dns_log_raw_ips = (
+        _parse_dns_log(req.dns_log) if req.dns_log else ([], {}, [])
+    )
 
-    # Collect all domains: sniffed + resolved from access log IPs
-    domain_counts: dict[str, int] = {}
-    for d in sniffed_domains:
-        domain_counts[d] = domain_counts.get(d, 0) + 1
+    # Collect domains with timestamps: {domain: {count, first_ts, last_ts}}
+    domain_data: dict[str, dict] = {}
+    for domain, ts in sniffed_domains:
+        if domain in domain_data:
+            domain_data[domain]["count"] += 1
+            if ts:
+                if domain_data[domain]["first_ts"] is None or ts < domain_data[domain]["first_ts"]:
+                    domain_data[domain]["first_ts"] = ts
+                if domain_data[domain]["last_ts"] is None or ts > domain_data[domain]["last_ts"]:
+                    domain_data[domain]["last_ts"] = ts
+        else:
+            domain_data[domain] = {"count": 1, "first_ts": ts, "last_ts": ts}
 
     # Also resolve IPs from access log using DNS map
     if req.raw_log and ip_to_domain:
         access_ips = _parse_access_log_ips(req.raw_log)
         for ip in access_ips:
             if ip in ip_to_domain:
-                d = ip_to_domain[ip]
-                if d not in domain_counts:
-                    domain_counts[d] = domain_counts.get(d, 0) + 1
+                d, ts = ip_to_domain[ip]
+                if d not in domain_data:
+                    domain_data[d] = {"count": 1, "first_ts": ts, "last_ts": ts}
 
-    # Save entries
-    for domain, count in domain_counts.items():
+    # Collect IPs without DNS resolution with timestamps
+    unresolved_ip_data: dict[str, dict] = {}
+
+    # Source 1: IPs from dns_log that had no sniffed domain
+    for ip, ts in dns_log_raw_ips:
+        if ip not in ip_to_domain:
+            if ip not in unresolved_ip_data:
+                unresolved_ip_data[ip] = {"count": 1, "ts": ts}
+            else:
+                unresolved_ip_data[ip]["count"] += 1
+
+    # Source 2: IPs from access log not in dns map
+    if req.raw_log:
+        access_ips = _parse_access_log_ips(req.raw_log)
+        for ip in access_ips:
+            if ip not in ip_to_domain and not ip.startswith(_SKIP_IP_PREFIXES):
+                if ip not in unresolved_ip_data:
+                    unresolved_ip_data[ip] = {"count": 1, "ts": None}
+                else:
+                    unresolved_ip_data[ip]["count"] += 1
+
+    # Save SNI domain entries with real timestamps from xray logs
+    for domain, data in domain_data.items():
         db.add(SNILog(
             session_id=session_id,
             device_id=device.id,
             domain=domain,
-            hit_count=count,
+            hit_count=data["count"],
             bytes_total=0,
-            first_seen=now,
-            last_seen=now,
+            first_seen=data["first_ts"] or now,
+            last_seen=data["last_ts"] or now,
         ))
-    total = len(domain_counts)
+
+    # Save unresolved IPs as ConnectionLog entries with timestamps
+    for ip, data in unresolved_ip_data.items():
+        db.add(ConnectionLog(
+            session_id=session_id,
+            device_id=device.id,
+            dest_ip=ip,
+            dest_port=0,
+            protocol="no-dns",
+            domain=None,
+        ))
+
+    total = len(domain_data)
     logging_buffer.add("processing",
-        f"SNI raw: {total} доменов (sniffed={len(sniffed_domains)}, dns_map={len(ip_to_domain)}) от устройства {device.id}")
-    return {"status": "ok", "count": total, "sniffed": len(sniffed_domains), "dns_resolved": len(ip_to_domain)}
+        f"SNI raw: {total} доменов (sniffed={len(sniffed_domains)}, dns_map={len(ip_to_domain)}), "
+        f"IP без DNS: {len(unresolved_ip_data)} от устройства {device.id}")
+    return {
+        "status": "ok", "count": total,
+        "sniffed": len(sniffed_domains), "dns_resolved": len(ip_to_domain),
+        "unresolved_ips": len(unresolved_ip_data),
+    }
 
 
 @router.post("/dns/batch")

@@ -121,7 +121,7 @@ async def dashboard_account_stats(
     today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
 
     # Get all accounts
-    total_q = await db.execute(select(func.count(Account.id)))
+    total_q = await db.execute(select(func.count(Account.account_id)))
     total = total_q.scalar() or 0
     acc_result = await db.execute(
         select(Account).order_by(Account.created_at)
@@ -592,6 +592,7 @@ async def list_connections(
     session_id: str | None = None,
     dest_ip: str | None = None,
     account_id: str | None = None,
+    no_dns_only: bool = Query(False),
     db: AsyncSession = Depends(get_db),
 ):
     query = select(ConnectionLog).order_by(desc(ConnectionLog.timestamp))
@@ -604,6 +605,8 @@ async def list_connections(
     if account_id:
         dev_ids = await _device_ids_for_account(account_id, db)
         query = query.where(ConnectionLog.device_id.in_(dev_ids))
+    if no_dns_only:
+        query = query.where(ConnectionLog.protocol == "no-dns")
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar()
     result = await db.execute(query.offset((page - 1) * per_page).limit(per_page))
@@ -777,6 +780,40 @@ async def download_device_log(log_id: str, db: AsyncSession = Depends(get_db)):
         media_type="text/plain",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.post("/device-logs/{log_id}/upload")
+async def upload_device_log_to_server(log_id: str, db: AsyncSession = Depends(get_db)):
+    """Upload device log content to private-ai.tools and return the download URL."""
+    import httpx
+    import tempfile
+    import os
+
+    result = await db.execute(select(DeviceLog).where(DeviceLog.id == uuid.UUID(log_id)))
+    log = result.scalar_one_or_none()
+    if not log:
+        raise HTTPException(status_code=404, detail="Log not found")
+
+    filename = f"device_log_{str(log.device_id)[:8]}_{log.log_type}_{log.uploaded_at.strftime('%Y%m%d_%H%M%S')}.txt"
+
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as tmp:
+            tmp.write(log.content)
+            tmp_path = tmp.name
+
+        async with httpx.AsyncClient(verify=False, timeout=30.0) as client:
+            with open(tmp_path, 'rb') as f:
+                resp = await client.post(
+                    "https://private-ai.tools/upload",
+                    files={"file": (filename, f, "text/plain")},
+                )
+            resp.raise_for_status()
+            data = resp.json()
+    finally:
+        if 'tmp_path' in locals():
+            os.unlink(tmp_path)
+
+    return {"status": "ok", "url": data.get("url", "")}
 
 
 # ==================== DEVICE COMMANDS ====================

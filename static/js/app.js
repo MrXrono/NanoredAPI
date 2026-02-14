@@ -548,6 +548,7 @@ async function viewDevLog(logId) {
         const d = await resp.json();
         document.getElementById('devlog-content').textContent = d.content;
         document.getElementById('devlog-download-btn').onclick = () => downloadDevLog(logId);
+        document.getElementById('devlog-upload-btn').onclick = () => uploadDevLog(logId);
         document.getElementById('devlog-modal').style.display = 'flex';
     } catch (err) { console.error('View device log error:', err); }
 }
@@ -578,6 +579,46 @@ async function downloadDevLog(logId) {
         a.click();
         URL.revokeObjectURL(url);
     } catch (err) { console.error('Download error:', err); }
+}
+
+async function uploadDevLog(logId) {
+    const btn = document.getElementById('devlog-upload-btn');
+    const origText = btn.textContent;
+    btn.textContent = 'Загрузка...';
+    btn.disabled = true;
+    try {
+        const resp = await api(`/admin/device-logs/${logId}/upload`, { method: 'POST' });
+        const d = await resp.json();
+        if (resp.ok && d.url) {
+            // Show result in a modal-like dialog
+            const overlay = document.createElement('div');
+            overlay.className = 'modal-overlay';
+            overlay.style.display = 'flex';
+            overlay.innerHTML = `
+                <div class="modal-content" style="max-width:500px;">
+                    <div class="modal-header">
+                        <h3>Файл загружен</h3>
+                        <button class="btn btn-sm btn-danger" onclick="this.closest('.modal-overlay').remove()">&times;</button>
+                    </div>
+                    <div style="padding:16px;">
+                        <p>Ссылка на скачивание:</p>
+                        <input type="text" value="${d.url}" readonly style="width:100%;padding:8px;background:#1a1a2e;color:#e0e0ff;border:1px solid #333;border-radius:4px;font-size:13px;" onclick="this.select()">
+                        <button class="btn btn-sm btn-primary" style="margin-top:10px;" onclick="navigator.clipboard.writeText('${d.url}');this.textContent='Скопировано!';setTimeout(()=>this.textContent='Скопировать ссылку',1500)">Скопировать ссылку</button>
+                    </div>
+                </div>
+            `;
+            overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+            document.body.appendChild(overlay);
+        } else {
+            alert('Ошибка: ' + (d.detail || 'Неизвестная ошибка'));
+        }
+    } catch (err) {
+        alert('Ошибка загрузки');
+        console.error('Upload error:', err);
+    } finally {
+        btn.textContent = origText;
+        btn.disabled = false;
+    }
 }
 
 async function deleteDevLog(logId) {
@@ -680,6 +721,18 @@ async function exportSNI() {
         URL.revokeObjectURL(blobUrl);
     } catch (err) { console.error('Export error:', err); }
 }
+
+// ========== CLICK-OUTSIDE TO CLOSE MODALS ==========
+document.addEventListener('click', (e) => {
+    if (!e.target.classList.contains('modal-overlay')) return;
+    const modals = {
+        'device-detail-modal': closeDeviceDetail,
+        'device-changes-modal': closeDeviceChanges,
+        'devlog-modal': closeDevLogModal,
+    };
+    const fn = modals[e.target.id];
+    if (fn) fn();
+});
 
 // ========== INIT ==========
 if (token) {
