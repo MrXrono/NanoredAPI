@@ -1,3 +1,4 @@
+import json
 import secrets
 import uuid
 from datetime import datetime, timezone
@@ -206,6 +207,7 @@ async def session_end(
 
     redis = await get_redis()
     await redis.delete(f"online:{device.id}")
+    await redis.delete(f"dns_map:{req.session_id}")
 
     logging_buffer.add("processing", f"Сессия завершена: {req.session_id}, down={req.bytes_downloaded}, up={req.bytes_uploaded}")
     return {"status": "ok"}
@@ -402,11 +404,31 @@ async def sni_raw(
     device = await _get_device(x_api_key, db)
     session_id = uuid.UUID(req.session_id)
     now = datetime.now(timezone.utc)
+    redis = await get_redis()
+    dns_map_key = f"dns_map:{session_id}"
 
     # Parse DNS/sniffing log (includes IPs without DNS from error log)
     sniffed_domains, ip_to_domain, dns_log_raw_ips = (
         _parse_dns_log(req.dns_log) if req.dns_log else ([], {}, [])
     )
+
+    # Persist new ip_to_domain entries in Redis for this session
+    if ip_to_domain:
+        mapping = {ip: dom for ip, (dom, _ts) in ip_to_domain.items()}
+        await redis.hset(dns_map_key, mapping=mapping)
+        await redis.expire(dns_map_key, 3600)
+
+    # Build full DNS map: merge stored Redis data with current batch
+    full_ip_to_domain: dict[str, str] = {}
+    stored = await redis.hgetall(dns_map_key)
+    if stored:
+        for k, v in stored.items():
+            key = k.decode() if isinstance(k, bytes) else k
+            val = v.decode() if isinstance(v, bytes) else v
+            full_ip_to_domain[key] = val
+    # Overlay current batch (may have timestamps, but we only need domain for resolution)
+    for ip, (dom, _ts) in ip_to_domain.items():
+        full_ip_to_domain[ip] = dom
 
     # Collect domains with timestamps: {domain: {count, first_ts, last_ts}}
     domain_data: dict[str, dict] = {}
@@ -421,21 +443,23 @@ async def sni_raw(
         else:
             domain_data[domain] = {"count": 1, "first_ts": ts, "last_ts": ts}
 
-    # Also resolve IPs from access log using DNS map
-    if req.raw_log and ip_to_domain:
+    # Resolve IPs from access log using full DNS map (current + all previous flushes)
+    if req.raw_log and full_ip_to_domain:
         access_ips = _parse_access_log_ips(req.raw_log)
         for ip in access_ips:
-            if ip in ip_to_domain:
-                d, ts = ip_to_domain[ip]
+            if ip in full_ip_to_domain:
+                d = full_ip_to_domain[ip]
                 if d not in domain_data:
-                    domain_data[d] = {"count": 1, "first_ts": ts, "last_ts": ts}
+                    domain_data[d] = {"count": 1, "first_ts": None, "last_ts": None}
+                else:
+                    domain_data[d]["count"] += 1
 
-    # Collect IPs without DNS resolution with timestamps
+    # Collect unresolved IPs — these also go into SNI (not ConnectionLog)
     unresolved_ip_data: dict[str, dict] = {}
 
-    # Source 1: IPs from dns_log that had no sniffed domain
+    # Source 1: IPs from dns_log routing lines that had no DNS resolution
     for ip, ts in dns_log_raw_ips:
-        if ip not in ip_to_domain:
+        if ip not in full_ip_to_domain:
             if ip not in unresolved_ip_data:
                 unresolved_ip_data[ip] = {"count": 1, "ts": ts}
             else:
@@ -445,7 +469,7 @@ async def sni_raw(
     if req.raw_log:
         access_ips = _parse_access_log_ips(req.raw_log)
         for ip in access_ips:
-            if ip not in ip_to_domain and not ip.startswith(_SKIP_IP_PREFIXES):
+            if ip not in full_ip_to_domain and not ip.startswith(_SKIP_IP_PREFIXES):
                 if ip not in unresolved_ip_data:
                     unresolved_ip_data[ip] = {"count": 1, "ts": None}
                 else:
@@ -463,24 +487,25 @@ async def sni_raw(
             last_seen=data["last_ts"] or now,
         ))
 
-    # Save unresolved IPs as ConnectionLog entries with timestamps
+    # Save unresolved IPs as SNILog too (domain = IP address)
     for ip, data in unresolved_ip_data.items():
-        db.add(ConnectionLog(
+        db.add(SNILog(
             session_id=session_id,
             device_id=device.id,
-            dest_ip=ip,
-            dest_port=0,
-            protocol="no-dns",
-            domain=None,
+            domain=ip,
+            hit_count=data["count"],
+            bytes_total=0,
+            first_seen=data["ts"] or now,
+            last_seen=data["ts"] or now,
         ))
 
-    total = len(domain_data)
+    total = len(domain_data) + len(unresolved_ip_data)
     logging_buffer.add("processing",
-        f"SNI raw: {total} доменов (sniffed={len(sniffed_domains)}, dns_map={len(ip_to_domain)}), "
-        f"IP без DNS: {len(unresolved_ip_data)} от устройства {device.id}")
+        f"SNI raw: {len(domain_data)} доменов + {len(unresolved_ip_data)} IP (sniffed={len(sniffed_domains)}, "
+        f"dns_map={len(full_ip_to_domain)}) от устройства {device.id}")
     return {
         "status": "ok", "count": total,
-        "sniffed": len(sniffed_domains), "dns_resolved": len(ip_to_domain),
+        "sniffed": len(sniffed_domains), "dns_resolved": len(full_ip_to_domain),
         "unresolved_ips": len(unresolved_ip_data),
     }
 
