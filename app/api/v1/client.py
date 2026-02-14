@@ -651,10 +651,12 @@ async def upload_device_log(
     x_api_key: str = Header(..., alias="X-API-Key"),
 ):
     device = await _get_device(x_api_key, db)
+    # Strip null bytes that break PostgreSQL UTF-8 encoding
+    clean_content = req.content.replace("\x00", "")
     log = DeviceLog(
         device_id=device.id,
         log_type=req.log_type,
-        content=req.content,
+        content=clean_content,
         app_version=req.app_version,
     )
     db.add(log)
