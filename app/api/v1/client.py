@@ -22,7 +22,7 @@ from app.models.device_permission import DevicePermission
 from app.models.device_log import DeviceLog
 from app.models.device_change_log import DeviceChangeLog
 from app.schemas.device import DeviceRegisterRequest, DeviceRegisterResponse
-from app.schemas.session import SessionStartRequest, SessionStartResponse, SessionEndRequest
+from app.schemas.session import SessionStartRequest, SessionStartResponse, SessionEndRequest, ServerChangeRequest
 from app.schemas.telemetry import (
     SNIBatchRequest, SNIRawRequest, DNSBatchRequest,
     ConnectionBatchRequest, ErrorReportRequest, PermissionsBatchRequest,
@@ -147,6 +147,27 @@ async def register_device(req: DeviceRegisterRequest, db: AsyncSession = Depends
 
 # ==================== SESSION ====================
 
+import socket
+import ipaddress
+
+
+def resolve_server_ip(address: str | None) -> str | None:
+    if not address:
+        return None
+    try:
+        ipaddress.ip_address(address)
+        return address
+    except ValueError:
+        pass
+    try:
+        result = socket.getaddrinfo(address, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        if result:
+            return result[0][4][0]
+    except (socket.gaierror, OSError):
+        pass
+    return None
+
+
 @router.post("/session/start", response_model=SessionStartResponse)
 async def session_start(
     req: SessionStartRequest,
@@ -161,6 +182,7 @@ async def session_start(
     session = Session(
         device_id=device.id,
         server_address=req.server_address,
+        server_ip=resolve_server_ip(req.server_address),
         protocol=req.protocol,
         client_ip=client_ip,
         client_country=geo["country"],
@@ -209,6 +231,37 @@ async def session_end(
     await redis.delete(f"dns_map:{req.session_id}")
 
     logging_buffer.add("processing", f"Сессия завершена: {req.session_id}, down={req.bytes_downloaded}, up={req.bytes_uploaded}")
+    return {"status": "ok"}
+
+
+@router.post("/session/server-change")
+async def session_server_change(
+    req: ServerChangeRequest,
+    db: AsyncSession = Depends(get_db),
+    x_api_key: str = Header(..., alias="X-API-Key"),
+):
+    device = await _get_device(x_api_key, db)
+    result = await db.execute(
+        select(Session).where(Session.id == uuid.UUID(req.session_id), Session.device_id == device.id)
+    )
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    new_ip = resolve_server_ip(req.new_server_address)
+    old_ip = session.server_ip
+
+    if new_ip and new_ip != old_ip:
+        changes = json.loads(session.server_ip_changes) if session.server_ip_changes else []
+        changes.append({
+            "ip": new_ip,
+            "changed_at": datetime.now(timezone.utc).isoformat(),
+        })
+        session.server_ip_changes = json.dumps(changes)
+        session.server_ip = new_ip
+
+    session.server_address = req.new_server_address
+    logging_buffer.add("processing", f"Смена сервера сессии {req.session_id}: {old_ip} -> {new_ip}")
     return {"status": "ok"}
 
 

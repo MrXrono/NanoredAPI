@@ -397,6 +397,8 @@ async def list_sessions(
             "id": str(s.id),
             "device_id": str(s.device_id),
             "server_address": s.server_address,
+            "server_ip": s.server_ip,
+            "server_ip_changes": s.server_ip_changes,
             "protocol": s.protocol,
             "client_ip": s.client_ip,
             "client_country": s.client_country,

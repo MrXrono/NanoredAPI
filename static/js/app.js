@@ -396,12 +396,26 @@ async function loadSessions(page = 1) {
         } else {
             duration = '<span class="badge badge-green">Активна</span>';
         }
+        let ipChange = 'Нет';
+        if (s.server_ip_changes) {
+            try {
+                const changes = JSON.parse(s.server_ip_changes);
+                if (changes.length > 0) {
+                    ipChange = changes.map(c => {
+                        const d = new Date(c.changed_at);
+                        const dt = d.toLocaleString('ru-RU', {day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'});
+                        return `Да в ${dt} на: ${escapeHtml(c.ip)}`;
+                    }).join('<br>');
+                }
+            } catch(e) { ipChange = 'Нет'; }
+        }
         return `<tr>
             <td title="${s.device_id}">${s.device_id.slice(0, 8)}...</td>
             <td>${s.protocol || '-'}</td>
             <td>${escapeHtml(s.server_address || '-')}</td>
+            <td>${s.server_ip || '-'}</td>
             <td>${s.client_ip || '-'}</td>
-            <td>${escapeHtml(s.client_country || '-')} ${s.client_city ? '/ ' + escapeHtml(s.client_city) : ''}</td>
+            <td>${ipChange}</td>
             <td>${s.network_type || '-'}</td>
             <td>${formatBytes(s.bytes_downloaded)}</td>
             <td>${formatBytes(s.bytes_uploaded)}</td>

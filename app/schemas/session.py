@@ -23,6 +23,11 @@ class SessionEndRequest(BaseModel):
     reconnect_count: int = 0
 
 
+class ServerChangeRequest(BaseModel):
+    session_id: str
+    new_server_address: str
+
+
 class SessionInfoResponse(BaseModel):
     id: str
     device_id: str

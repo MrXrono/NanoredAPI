@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import String, DateTime, BigInteger, ForeignKey, Integer
+from sqlalchemy import String, DateTime, BigInteger, ForeignKey, Integer, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -14,6 +14,8 @@ class Session(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     device_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("devices.id"), index=True)
     server_address: Mapped[str | None] = mapped_column(String(256))
+    server_ip: Mapped[str | None] = mapped_column(String(64))
+    server_ip_changes: Mapped[str | None] = mapped_column(Text)
     protocol: Mapped[str | None] = mapped_column(String(32))
     client_ip: Mapped[str | None] = mapped_column(String(64))
     client_country: Mapped[str | None] = mapped_column(String(64))
