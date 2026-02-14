@@ -33,6 +33,5 @@ class Session(Base):
     device = relationship("Device", back_populates="sessions")
     sni_logs = relationship("SNILog", back_populates="session", lazy="selectin")
     dns_logs = relationship("DNSLog", back_populates="session", lazy="selectin")
-    app_traffic = relationship("AppTraffic", back_populates="session", lazy="selectin")
     connection_logs = relationship("ConnectionLog", back_populates="session", lazy="selectin")
     errors = relationship("ErrorLog", back_populates="session", lazy="selectin")

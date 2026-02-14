@@ -30,17 +30,6 @@ class DNSBatchRequest(BaseModel):
     entries: list[DNSEntry]
 
 
-class AppTrafficEntry(BaseModel):
-    package_name: str
-    app_name: str | None = None
-    bytes_downloaded: int = 0
-    bytes_uploaded: int = 0
-
-
-class AppTrafficBatchRequest(BaseModel):
-    session_id: str
-    entries: list[AppTrafficEntry]
-
 
 class ConnectionEntry(BaseModel):
     dest_ip: str

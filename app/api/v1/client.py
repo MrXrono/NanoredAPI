@@ -16,7 +16,6 @@ from app.models.account import Account
 from app.models.session import Session
 from app.models.sni_log import SNILog
 from app.models.dns_log import DNSLog
-from app.models.app_traffic import AppTraffic
 from app.models.connection_log import ConnectionLog
 from app.models.error_log import ErrorLog
 from app.models.device_permission import DevicePermission
@@ -25,7 +24,7 @@ from app.models.device_change_log import DeviceChangeLog
 from app.schemas.device import DeviceRegisterRequest, DeviceRegisterResponse
 from app.schemas.session import SessionStartRequest, SessionStartResponse, SessionEndRequest
 from app.schemas.telemetry import (
-    SNIBatchRequest, SNIRawRequest, DNSBatchRequest, AppTrafficBatchRequest,
+    SNIBatchRequest, SNIRawRequest, DNSBatchRequest,
     ConnectionBatchRequest, ErrorReportRequest, PermissionsBatchRequest,
     DeviceLogRequest,
 )
@@ -529,28 +528,6 @@ async def dns_batch(
         )
         db.add(log)
     logging_buffer.add("processing", f"DNS batch: {len(req.entries)} записей от устройства {device.id}")
-    return {"status": "ok", "count": len(req.entries)}
-
-
-@router.post("/app-traffic/batch")
-async def app_traffic_batch(
-    req: AppTrafficBatchRequest,
-    db: AsyncSession = Depends(get_db),
-    x_api_key: str = Header(..., alias="X-API-Key"),
-):
-    device = await _get_device(x_api_key, db)
-    session_id = uuid.UUID(req.session_id)
-    for entry in req.entries:
-        log = AppTraffic(
-            session_id=session_id,
-            device_id=device.id,
-            package_name=entry.package_name,
-            app_name=entry.app_name,
-            bytes_downloaded=entry.bytes_downloaded,
-            bytes_uploaded=entry.bytes_uploaded,
-        )
-        db.add(log)
-    logging_buffer.add("processing", f"App traffic batch: {len(req.entries)} записей от устройства {device.id}")
     return {"status": "ok", "count": len(req.entries)}
 
 

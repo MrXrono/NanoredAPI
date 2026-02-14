@@ -63,7 +63,6 @@ document.querySelectorAll('.nav-link').forEach(link => {
         else if (section === 'sessions') loadSessions();
         else if (section === 'sni') loadSNI();
         else if (section === 'dns') loadDNS();
-        else if (section === 'apps') loadApps();
         else if (section === 'connections') loadConnections();
         else if (section === 'errors') loadErrors();
         else if (section === 'device-logs') loadDeviceLogs();
@@ -116,7 +115,7 @@ async function loadAccounts() {
 function populateAccountFilters() {
     const selectors = [
         'device-account-filter', 'session-account-filter', 'sni-account-filter',
-        'dns-account-filter', 'apps-account-filter', 'conn-account-filter', 'errors-account-filter',
+        'dns-account-filter', 'conn-account-filter', 'errors-account-filter',
         'devlogs-account-filter'
     ];
     selectors.forEach(id => {
@@ -454,26 +453,6 @@ async function loadDNS(page = 1) {
         </tr>
     `).join('');
     renderPagination(document.getElementById('dns-pagination'), d.total, d.page, d.per_page, 'loadDNS');
-}
-
-// ========== APPS ==========
-async function loadApps(page = 1) {
-    const accountId = getAccountFilter('apps-account-filter');
-    let url = `/admin/app-traffic?page=${page}&per_page=100`;
-    if (accountId) url += `&account_id=${encodeURIComponent(accountId)}`;
-    const resp = await api(url);
-    const d = await resp.json();
-    document.getElementById('apps-tbody').innerHTML = d.items.map(l => `
-        <tr>
-            <td>${escapeHtml(l.package_name)}</td>
-            <td>${escapeHtml(l.app_name || '-')}</td>
-            <td>${formatBytes(l.bytes_downloaded)}</td>
-            <td>${formatBytes(l.bytes_uploaded)}</td>
-            <td title="${l.device_id}">${l.device_id.slice(0, 8)}...</td>
-            <td>${formatDate(l.timestamp)}</td>
-        </tr>
-    `).join('');
-    renderPagination(document.getElementById('apps-pagination'), d.total, d.page, d.per_page, 'loadApps');
 }
 
 // ========== CONNECTIONS ==========

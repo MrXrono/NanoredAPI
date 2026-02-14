@@ -22,7 +22,6 @@ from app.models.device import Device
 from app.models.session import Session
 from app.models.sni_log import SNILog
 from app.models.dns_log import DNSLog
-from app.models.app_traffic import AppTraffic
 from app.models.connection_log import ConnectionLog
 from app.models.error_log import ErrorLog
 from app.models.account import Account

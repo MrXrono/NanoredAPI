@@ -13,7 +13,6 @@ from app.models.device import Device
 from app.models.session import Session
 from app.models.sni_log import SNILog
 from app.models.dns_log import DNSLog
-from app.models.app_traffic import AppTraffic
 from app.models.connection_log import ConnectionLog
 from app.models.error_log import ErrorLog
 from app.models.account import Account
@@ -518,68 +517,6 @@ async def list_dns(
             "timestamp": l.timestamp.isoformat() if l.timestamp else None,
         } for l in logs],
     }
-
-
-# ==================== APP TRAFFIC ====================
-
-@router.get("/app-traffic")
-async def list_app_traffic(
-    page: int = Query(1, ge=1),
-    per_page: int = Query(100, ge=1, le=500),
-    device_id: str | None = None,
-    session_id: str | None = None,
-    account_id: str | None = None,
-    db: AsyncSession = Depends(get_db),
-):
-    query = select(AppTraffic).order_by(desc(AppTraffic.timestamp))
-    if device_id:
-        query = query.where(AppTraffic.device_id == uuid.UUID(device_id))
-    if session_id:
-        query = query.where(AppTraffic.session_id == uuid.UUID(session_id))
-    if account_id:
-        dev_ids = await _device_ids_for_account(account_id, db)
-        query = query.where(AppTraffic.device_id.in_(dev_ids))
-
-    total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar()
-    result = await db.execute(query.offset((page - 1) * per_page).limit(per_page))
-    logs = result.scalars().all()
-
-    return {
-        "total": total, "page": page, "per_page": per_page,
-        "items": [{
-            "id": str(l.id),
-            "session_id": str(l.session_id),
-            "device_id": str(l.device_id),
-            "package_name": l.package_name,
-            "app_name": l.app_name,
-            "bytes_downloaded": l.bytes_downloaded,
-            "bytes_uploaded": l.bytes_uploaded,
-            "timestamp": l.timestamp.isoformat() if l.timestamp else None,
-        } for l in logs],
-    }
-
-
-@router.get("/app-traffic/top")
-async def top_apps(
-    limit: int = Query(50, ge=1, le=500),
-    days: int = Query(7, ge=1, le=90),
-    account_id: str | None = None,
-    db: AsyncSession = Depends(get_db),
-):
-    since = datetime.now(timezone.utc) - timedelta(days=days)
-    query = (
-        select(
-            AppTraffic.package_name,
-            func.max(AppTraffic.app_name).label("app_name"),
-            func.sum(AppTraffic.bytes_downloaded + AppTraffic.bytes_uploaded).label("total_bytes"),
-        )
-        .where(AppTraffic.timestamp >= since)
-    )
-    if account_id:
-        dev_ids = await _device_ids_for_account(account_id, db)
-        query = query.where(AppTraffic.device_id.in_(dev_ids))
-    result = await db.execute(query.group_by(AppTraffic.package_name).order_by(desc("total_bytes")).limit(limit))
-    return [{"package_name": p, "app_name": a, "total_bytes": t} for p, a, t in result.all()]
 
 
 # ==================== CONNECTIONS ====================

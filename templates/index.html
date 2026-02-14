@@ -24,13 +24,12 @@
 <!-- APP -->
 <div id="app" style="display:none;">
     <nav class="sidebar">
-        <div class="logo">NanoredVPN <span style="font-size:11px;color:var(--text-secondary);">v1.4.2</span></div>
+        <div class="logo">NanoredVPN <span style="font-size:11px;color:var(--text-secondary);">v1.5.7</span></div>
         <a href="#" class="nav-link active" data-section="dashboard">Панель</a>
         <a href="#" class="nav-link" data-section="devices">Устройства</a>
         <a href="#" class="nav-link" data-section="sessions">Сессии</a>
         <a href="#" class="nav-link" data-section="sni">SNI</a>
         <a href="#" class="nav-link" data-section="dns">DNS</a>
-        <a href="#" class="nav-link" data-section="apps">Трафик прил.</a>
         <a href="#" class="nav-link" data-section="connections">Подключения</a>
         <a href="#" class="nav-link" data-section="errors">Ошибки</a>
         <a href="#" class="nav-link" data-section="device-logs">Логи устройств</a>
@@ -229,28 +228,6 @@
                     <tbody id="dns-tbody"></tbody>
                 </table>
                 <div class="pagination" id="dns-pagination"></div>
-            </div>
-        </div>
-
-        <!-- APP TRAFFIC -->
-        <div id="section-apps" class="section">
-            <h2>Трафик приложений</h2>
-            <div class="table-container">
-                <div class="table-header">
-                    <h3>Трафик по приложениям</h3>
-                    <div class="table-filters">
-                        <select id="apps-account-filter" onchange="loadApps(1)">
-                            <option value="">Все аккаунты</option>
-                        </select>
-                    </div>
-                </div>
-                <table>
-                    <thead>
-                        <tr><th>Пакет</th><th>Приложение</th><th>Загрузка</th><th>Отдача</th><th>Устройство</th><th>Время</th></tr>
-                    </thead>
-                    <tbody id="apps-tbody"></tbody>
-                </table>
-                <div class="pagination" id="apps-pagination"></div>
             </div>
         </div>
 
