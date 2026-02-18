@@ -11,7 +11,7 @@ from app.core.security import verify_api_key
 from app.models.device import Device
 from app.models.support_message import SupportDirection, SupportMessage, SupportMessageType
 from app.schemas.support_chat import SupportMessageResponse, SupportMessagesResponse, SupportReadRequest
-from app.services.telegram_bridge import telegram_bridge
+from app.services.telegram_support_forum import telegram_support_forum
 
 router = APIRouter(prefix="/client/support", tags=["client-support"])
 
@@ -119,21 +119,21 @@ async def send_support_message(
     await db.flush()
 
     try:
-        bridge_message_id = await telegram_bridge.send_from_app(
-            account_id=device.account_id,
-            app_token=str(device.id),
+        telegram_message_id = await telegram_support_forum.send_from_app(
+            db=db,
+            device=device,
             message_type=msg_type,
-            message_id=str(msg.id),
             text=msg.text,
             file_name=file_name,
             mime_type=mime_type,
             file_bytes=file_bytes,
         )
-        msg.bridge_message_id = bridge_message_id
+        msg.bridge_message_id = telegram_message_id
+        msg.source_bot_message_id = telegram_message_id
     except Exception as e:
         logging_buffer.add(
             "error",
-            f"Support bridge send failed: {e} (bridge_chat_id={telegram_bridge.bridge_chat_id})",
+            f"Support telegram send failed: {e}",
         )
 
     logging_buffer.add("processing", f"Support message from account={device.account_id}, type={msg_type.value}")
@@ -252,7 +252,7 @@ async def download_media(
     if not msg or not msg.telegram_file_id:
         raise HTTPException(status_code=404, detail="Attachment not found")
 
-    content = await telegram_bridge.download_file(msg.telegram_file_id)
+    content = await telegram_support_forum.download_file(msg.telegram_file_id)
     media_type = msg.mime_type or "application/octet-stream"
     filename = msg.file_name or f"support-{message_id}"
     headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
@@ -261,15 +261,57 @@ async def download_media(
 
 @router.post("/telegram/webhook")
 async def telegram_webhook(update: dict, db: AsyncSession = Depends(get_db)):
-    parsed = telegram_bridge.parse_support_update(update)
-    if not parsed:
+    message = telegram_support_forum.parse_update(update)
+    if message is None:
         return {"status": "ignored"}
 
-    account_id = parsed["account_id"]
+    # Only handle support group messages. (Bot API sends updates for everything the bot sees.)
+    if not telegram_support_forum.enabled:
+        return {"status": "disabled"}
+    if int(message.chat.id) != int(telegram_support_forum.support_group_id):
+        return {"status": "ignored"}
 
-    msg = SupportMessage(
-        account_id=account_id,
-        device_id=None,
+    # Auto-detect archive topic by name.
+    if message.forum_topic_created and message.forum_topic_created.name == "Архив" and message.message_thread_id:
+        await telegram_support_forum.set_archive_thread_id(db, int(message.message_thread_id))
+        await db.commit()
+        return {"status": "ok", "action": "archive_set"}
+
+    # Allow setting archive thread manually.
+    if message.text and message.text.strip().startswith("/set_archive") and message.message_thread_id:
+        await telegram_support_forum.set_archive_thread_id(db, int(message.message_thread_id))
+        await db.commit()
+        return {"status": "ok", "action": "archive_set"}
+
+    if message.forum_topic_closed and message.message_thread_id:
+        closed = await telegram_support_forum.handle_topic_closed(db, int(message.message_thread_id))
+        if not closed:
+            await db.commit()
+            return {"status": "ignored"}
+
+        # Notify app (as a system message in the support chat history).
+        sys_msg = SupportMessage(
+            account_id=closed["account_id"],
+            device_id=closed.get("device_id"),
+            direction=SupportDirection.SYSTEM,
+            message_type=SupportMessageType.TEXT,
+            text=closed["system_text"],
+            delivered_to_app_at=None,
+        )
+        db.add(sys_msg)
+        await db.flush()
+        await db.commit()
+        logging_buffer.add("processing", f"App ticket closed for account={closed['account_id']}, ticket_id={closed['ticket_id']}")
+        return {"status": "ok", "action": "ticket_closed", "message_id": str(sys_msg.id)}
+
+    parsed = await telegram_support_forum.handle_support_message(db, message)
+    if not parsed:
+        await db.commit()
+        return {"status": "ignored"}
+
+    out = SupportMessage(
+        account_id=parsed["account_id"],
+        device_id=parsed.get("device_id"),
         direction=SupportDirection.SUPPORT_TO_APP,
         message_type=parsed["message_type"],
         text=parsed.get("text"),
@@ -277,12 +319,13 @@ async def telegram_webhook(update: dict, db: AsyncSession = Depends(get_db)):
         mime_type=parsed.get("mime_type"),
         file_size=parsed.get("file_size"),
         telegram_file_id=parsed.get("telegram_file_id"),
-        bridge_message_id=parsed.get("bridge_message_id"),
         source_bot_message_id=parsed.get("source_bot_message_id"),
+        bridge_message_id=parsed.get("source_bot_message_id"),
         delivered_to_app_at=None,
     )
-    db.add(msg)
+    db.add(out)
     await db.flush()
+    await db.commit()
 
-    logging_buffer.add("processing", f"Support reply queued for account={account_id}, type={msg.message_type.value}")
-    return {"status": "ok", "message_id": str(msg.id)}
+    logging_buffer.add("processing", f"Support reply queued for account={out.account_id}, type={out.message_type.value}")
+    return {"status": "ok", "message_id": str(out.id)}
