@@ -132,6 +132,25 @@ docker compose ps
 docker compose logs -f nanored-api
 ```
 
+## 6.1. Telegram webhook (обязательно для ответов/закрытия заявок)
+
+Чтобы `NanoredAPI` получал ответы саппорта из тем и событие закрытия темы, Telegram-бот должен слать апдейты в вебхук:
+
+```bash
+# Вставьте токен бота и ваш публичный URL (должен быть доступен Telegram)
+BOT_TOKEN="..."
+WEBHOOK_URL="https://api.nanored.top/api/v1/client/support/telegram/webhook"
+
+curl -sS "https://api.telegram.org/bot${BOT_TOKEN}/setWebhook" \\
+  -d "url=${WEBHOOK_URL}" \\
+  -d 'allowed_updates=["message","edited_message"]'
+```
+
+Проверить текущий вебхук:
+```bash
+curl -sS "https://api.telegram.org/bot${BOT_TOKEN}/getWebhookInfo"
+```
+
 ## 7. Перезапуск Nginx
 
 ```bash
