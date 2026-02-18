@@ -332,56 +332,58 @@ class TelegramSupportForum:
     async def archive_and_delete_topic(self, ticket: dict) -> None:
         archive_tid = await self.get_archive_thread_id()
         if not archive_tid:
-            log.warning("TELEGRAM archive_thread_id not set; skipping archive for ticket_id=%s", ticket.get("ticket_id"))
-            return
+            log.warning(
+                "TELEGRAM archive_thread_id not set; skipping archive for ticket_id=%s (will still delete topic)",
+                ticket.get("ticket_id"),
+            )
+        else:
+            await self.bot.send_message(
+                chat_id=self.support_group_id,
+                message_thread_id=archive_tid,
+                text=f"═══ 📂 <b>Начало заявки app №{ticket.get('ticket_id')}</b> ═══",
+                parse_mode="HTML",
+            )
 
-        await self.bot.send_message(
-            chat_id=self.support_group_id,
-            message_thread_id=archive_tid,
-            text=f"═══ 📂 <b>Начало заявки app №{ticket.get('ticket_id')}</b> ═══",
-            parse_mode="HTML",
-        )
+            for item in ticket.get("messages", []):
+                label: str | None
+                msg_id = None
+                sender = None
+                if isinstance(item, dict):
+                    msg_id = item.get("msg_id")
+                    sender = item.get("from")
+                if not isinstance(msg_id, int):
+                    continue
 
-        for item in ticket.get("messages", []):
-            label: str | None
-            msg_id = None
-            sender = None
-            if isinstance(item, dict):
-                msg_id = item.get("msg_id")
-                sender = item.get("from")
-            if not isinstance(msg_id, int):
-                continue
+                if sender == "info":
+                    label = None
+                elif sender == "app":
+                    label = "📱 <b>От приложения:</b>"
+                else:
+                    label = "👨‍💻 <b>От техподдержки:</b>"
 
-            if sender == "info":
-                label = None
-            elif sender == "app":
-                label = "📱 <b>От приложения:</b>"
-            else:
-                label = "👨‍💻 <b>От техподдержки:</b>"
-
-            try:
-                if label:
-                    await self.bot.send_message(
+                try:
+                    if label:
+                        await self.bot.send_message(
+                            chat_id=self.support_group_id,
+                            message_thread_id=archive_tid,
+                            text=label,
+                            parse_mode="HTML",
+                        )
+                    await self.bot.copy_message(
                         chat_id=self.support_group_id,
+                        from_chat_id=self.support_group_id,
+                        message_id=int(msg_id),
                         message_thread_id=archive_tid,
-                        text=label,
-                        parse_mode="HTML",
                     )
-                await self.bot.copy_message(
-                    chat_id=self.support_group_id,
-                    from_chat_id=self.support_group_id,
-                    message_id=int(msg_id),
-                    message_thread_id=archive_tid,
-                )
-            except Exception as e:
-                log.warning("Failed to archive msg_id=%s ticket_id=%s: %s", msg_id, ticket.get("ticket_id"), e)
+                except Exception as e:
+                    log.warning("Failed to archive msg_id=%s ticket_id=%s: %s", msg_id, ticket.get("ticket_id"), e)
 
-        await self.bot.send_message(
-            chat_id=self.support_group_id,
-            message_thread_id=archive_tid,
-            text=f"═══ ✅ <b>Конец заявки app №{ticket.get('ticket_id')}</b> ═══",
-            parse_mode="HTML",
-        )
+            await self.bot.send_message(
+                chat_id=self.support_group_id,
+                message_thread_id=archive_tid,
+                text=f"═══ ✅ <b>Конец заявки app №{ticket.get('ticket_id')}</b> ═══",
+                parse_mode="HTML",
+            )
 
         try:
             await self.bot.delete_forum_topic(chat_id=self.support_group_id, message_thread_id=int(ticket.get("thread_id")))

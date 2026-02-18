@@ -260,7 +260,16 @@ async def download_media(
 
 
 @router.post("/telegram/webhook")
-async def telegram_webhook(update: dict, db: AsyncSession = Depends(get_db)):
+async def telegram_webhook(
+    update: dict,
+    db: AsyncSession = Depends(get_db),
+    x_telegram_bot_api_secret_token: str | None = Header(default=None, alias="X-Telegram-Bot-Api-Secret-Token"),
+):
+    # Optional webhook authentication (recommended).
+    expected_secret = (settings.TELEGRAM_WEBHOOK_SECRET or "").strip()
+    if expected_secret and (x_telegram_bot_api_secret_token or "").strip() != expected_secret:
+        raise HTTPException(status_code=403, detail="Invalid Telegram webhook secret")
+
     message = telegram_support_forum.parse_update(update)
     if message is None:
         return {"status": "ignored"}
