@@ -179,7 +179,7 @@ class TelegramSupportForum:
         file_name: str | None = None,
         mime_type: str | None = None,
         file_bytes: bytes | None = None,
-    ) -> int | None:
+    ) -> dict | None:
         if not self.enabled:
             return None
 
@@ -229,7 +229,22 @@ class TelegramSupportForum:
             async with self._state_lock:
                 ticket["messages"].append({"msg_id": int(sent.message_id), "from": "app"})
                 self._save_state()
-            return int(sent.message_id)
+            file_id = None
+            if getattr(sent, "photo", None):
+                try:
+                    file_id = sent.photo[-1].file_id
+                except Exception:
+                    file_id = None
+            elif getattr(sent, "document", None):
+                file_id = sent.document.file_id
+            elif getattr(sent, "video", None):
+                file_id = sent.video.file_id
+            elif getattr(sent, "audio", None):
+                file_id = sent.audio.file_id
+            elif getattr(sent, "voice", None):
+                file_id = sent.voice.file_id
+
+            return {"message_id": int(sent.message_id), "telegram_file_id": file_id}
 
         body = text or ""
         sent = await self.bot.send_message(
@@ -240,7 +255,7 @@ class TelegramSupportForum:
         async with self._state_lock:
             ticket["messages"].append({"msg_id": int(sent.message_id), "from": "app"})
             self._save_state()
-        return int(sent.message_id)
+        return {"message_id": int(sent.message_id), "telegram_file_id": None}
 
     @staticmethod
     def _infer_type(message: Message) -> SupportMessageType:

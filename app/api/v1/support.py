@@ -120,7 +120,7 @@ async def send_support_message(
     await db.flush()
 
     try:
-        telegram_message_id = await telegram_support_forum.send_from_app(
+        telegram_sent = await telegram_support_forum.send_from_app(
             db=db,
             device=device,
             message_type=msg_type,
@@ -129,8 +129,13 @@ async def send_support_message(
             mime_type=mime_type,
             file_bytes=file_bytes,
         )
-        msg.bridge_message_id = telegram_message_id
-        msg.source_bot_message_id = telegram_message_id
+        if telegram_sent:
+            telegram_message_id = telegram_sent.get("message_id")
+            msg.bridge_message_id = telegram_message_id
+            msg.source_bot_message_id = telegram_message_id
+            # Keep file_id for app->support attachments so the client can render/download later.
+            if telegram_sent.get("telegram_file_id"):
+                msg.telegram_file_id = telegram_sent.get("telegram_file_id")
     except Exception as e:
         logging_buffer.add(
             "error",
