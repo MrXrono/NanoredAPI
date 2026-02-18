@@ -193,28 +193,28 @@ class TelegramSupportForum:
             if message_type == SupportMessageType.PHOTO:
                 sent = await self.bot.send_photo(
                     chat_id=self.support_group_id,
-                    message_thread_id=ticket.thread_id,
+                    message_thread_id=ticket["thread_id"],
                     photo=upload,
                     caption=caption,
                 )
             elif message_type == SupportMessageType.VIDEO:
                 sent = await self.bot.send_video(
                     chat_id=self.support_group_id,
-                    message_thread_id=ticket.thread_id,
+                    message_thread_id=ticket["thread_id"],
                     video=upload,
                     caption=caption,
                 )
             elif message_type == SupportMessageType.AUDIO:
                 sent = await self.bot.send_audio(
                     chat_id=self.support_group_id,
-                    message_thread_id=ticket.thread_id,
+                    message_thread_id=ticket["thread_id"],
                     audio=upload,
                     caption=caption,
                 )
             elif message_type == SupportMessageType.VOICE:
                 sent = await self.bot.send_voice(
                     chat_id=self.support_group_id,
-                    message_thread_id=ticket.thread_id,
+                    message_thread_id=ticket["thread_id"],
                     voice=upload,
                     caption=caption,
                 )
@@ -248,7 +248,13 @@ class TelegramSupportForum:
             return SupportMessageType.PHOTO
         if message.document:
             return SupportMessageType.DOCUMENT
+        if message.sticker:
+            return SupportMessageType.FILE
         if message.video:
+            return SupportMessageType.VIDEO
+        if getattr(message, "video_note", None):
+            return SupportMessageType.VIDEO
+        if getattr(message, "animation", None):
             return SupportMessageType.VIDEO
         if message.audio:
             return SupportMessageType.AUDIO
@@ -264,9 +270,19 @@ class TelegramSupportForum:
         if message.document:
             d = message.document
             return d.file_id, d.mime_type, d.file_size, d.file_name
+        if message.sticker:
+            s = message.sticker
+            # mime_type is not always provided for stickers, keep a reasonable default.
+            return s.file_id, "image/webp", s.file_size, None
         if message.video:
             v = message.video
             return v.file_id, v.mime_type, v.file_size, None
+        vn = getattr(message, "video_note", None)
+        if vn:
+            return vn.file_id, "video/mp4", vn.file_size, None
+        anim = getattr(message, "animation", None)
+        if anim:
+            return anim.file_id, anim.mime_type, anim.file_size, anim.file_name
         if message.audio:
             a = message.audio
             return a.file_id, a.mime_type, a.file_size, None
