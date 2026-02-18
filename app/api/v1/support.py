@@ -162,8 +162,15 @@ async def get_support_messages(
         if after_ts:
             query = query.where(SupportMessage.created_at > after_ts)
 
-    result = await db.execute(query.order_by(SupportMessage.created_at.asc()).limit(limit))
-    items = result.scalars().all()
+    if after_id:
+        # Incremental tail (newer than after_id).
+        result = await db.execute(query.order_by(SupportMessage.created_at.asc()).limit(limit))
+        items = result.scalars().all()
+    else:
+        # Initial load should return the most recent messages, not the oldest ones.
+        # We fetch a descending page, then reverse it so the client can render oldest->newest.
+        result = await db.execute(query.order_by(SupportMessage.created_at.desc()).limit(limit))
+        items = list(reversed(result.scalars().all()))
 
     unread_count_q = await db.execute(
         select(func.count(SupportMessage.id)).where(
