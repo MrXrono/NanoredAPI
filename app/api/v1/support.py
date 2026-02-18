@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Uploa
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.logging_buffer import logging_buffer
 from app.core.security import verify_api_key
