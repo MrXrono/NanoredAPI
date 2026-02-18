@@ -35,23 +35,38 @@ from app.services.telegram_support_forum import telegram_support_forum
 
 logger = logging.getLogger(__name__)
 
+def _join_url(base: str, path: str) -> str:
+    b = (base or "").strip().rstrip("/")
+    p = (path or "").strip()
+    if not b:
+        return ""
+    if not p.startswith("/"):
+        p = "/" + p
+    return b + p
+
+
 async def _ensure_telegram_webhook() -> None:
     # Optional: auto-configure webhook on startup, if TELEGRAM_WEBHOOK_URL is set.
     if not telegram_support_forum.enabled:
         return
-    url = (settings.TELEGRAM_WEBHOOK_URL or "").strip()
+    url = (settings.TELEGRAM_WEBHOOK_URL or "").strip() or _join_url(
+        (settings.PUBLIC_BASE_URL or "").strip(),
+        f"{settings.API_V1_PREFIX}/client/support/telegram/webhook",
+    )
     if not url:
+        logger.info("Telegram webhook not configured (set TELEGRAM_WEBHOOK_URL or PUBLIC_BASE_URL)")
         return
     secret = (settings.TELEGRAM_WEBHOOK_SECRET or "").strip() or None
     try:
         await telegram_support_forum.bot.set_webhook(
             url=url,
             secret_token=secret,
+            drop_pending_updates=bool(settings.TELEGRAM_WEBHOOK_DROP_PENDING_UPDATES),
             allowed_updates=["message", "edited_message"],
         )
         logger.info("Telegram webhook set to %s", url)
     except Exception as e:
-        logger.warning("Failed to set Telegram webhook: %s", e)
+        logger.exception("Failed to set Telegram webhook to %s: %s", url, e)
 
 
 async def _cleanup_stale_sessions():

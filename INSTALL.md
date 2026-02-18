@@ -143,13 +143,17 @@ WEBHOOK_URL="https://api.nanored.top/api/v1/client/support/telegram/webhook"
 
 curl -sS "https://api.telegram.org/bot${BOT_TOKEN}/setWebhook" \\
   -d "url=${WEBHOOK_URL}" \\
+  -d "drop_pending_updates=false" \\
   -d 'allowed_updates=["message","edited_message"]'
 ```
 
 Также можно настроить вебхук автоматически при старте контейнера через переменные окружения:
 ```env
-TELEGRAM_WEBHOOK_URL=https://api.nanored.top/api/v1/client/support/telegram/webhook
+PUBLIC_BASE_URL=https://api.nanored.top
+# Optional override (if empty, derived from PUBLIC_BASE_URL)
+TELEGRAM_WEBHOOK_URL=
 TELEGRAM_WEBHOOK_SECRET=
+TELEGRAM_WEBHOOK_DROP_PENDING_UPDATES=0
 ```
 
 Проверить текущий вебхук:

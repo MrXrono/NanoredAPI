@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     TELEGRAM_SUPPORT_GROUP_ID: int = int(os.getenv("TELEGRAM_SUPPORT_GROUP_ID", "0"))
     TELEGRAM_WEBHOOK_URL: str = os.getenv("TELEGRAM_WEBHOOK_URL", "")
     TELEGRAM_WEBHOOK_SECRET: str = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
+    TELEGRAM_WEBHOOK_DROP_PENDING_UPDATES: bool = os.getenv("TELEGRAM_WEBHOOK_DROP_PENDING_UPDATES", "0").strip() in ("1", "true", "yes", "on")
+
+    # External base URL used to derive webhook URL if TELEGRAM_WEBHOOK_URL is not set.
+    # Example: https://api.nanored.top
+    PUBLIC_BASE_URL: str = os.getenv("PUBLIC_BASE_URL", "")
 
     # GeoIP
     GEOIP_DB_PATH: str = "/app/data/GeoLite2-City.mmdb"
