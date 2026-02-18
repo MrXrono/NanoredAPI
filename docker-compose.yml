@@ -10,6 +10,9 @@ services:
       - SECRET_KEY=${SECRET_KEY:-change-me-in-production-nanored-secret-key-2026}
       - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-nanored_admin_2026}
+      - TELEGRAM_MESSAGE_BOT_TOKEN=${TELEGRAM_MESSAGE_BOT_TOKEN:-}
+      - TELEGRAM_BRIDGE_CHAT_ID=${TELEGRAM_BRIDGE_CHAT_ID:-5180531069}
+      - TELEGRAM_SUPPORT_BOT_ID=${TELEGRAM_SUPPORT_BOT_ID:-7764403235}
     volumes:
       - ./data:/app/data
     depends_on:

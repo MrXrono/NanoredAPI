@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "NanoredVPN API"
-    VERSION: str = "1.5.8"
+    VERSION: str = "1.6.0.0"
     API_V1_PREFIX: str = "/api/v1"
 
     # Database
@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     # Admin credentials (initial)
     ADMIN_USERNAME: str = os.getenv("ADMIN_USERNAME", "admin")
     ADMIN_PASSWORD: str = os.getenv("ADMIN_PASSWORD", "nanored_admin_2026")
+
+    # Telegram bridge for support chat
+    TELEGRAM_MESSAGE_BOT_TOKEN: str = os.getenv("TELEGRAM_MESSAGE_BOT_TOKEN", "")
+    TELEGRAM_BRIDGE_CHAT_ID: int = int(os.getenv("TELEGRAM_BRIDGE_CHAT_ID", "5180531069"))
+    TELEGRAM_SUPPORT_BOT_ID: int = int(os.getenv("TELEGRAM_SUPPORT_BOT_ID", "7764403235"))
 
     # GeoIP
     GEOIP_DB_PATH: str = "/app/data/GeoLite2-City.mmdb"
