@@ -273,14 +273,12 @@ async def telegram_webhook(update: dict, db: AsyncSession = Depends(get_db)):
 
     # Auto-detect archive topic by name.
     if message.forum_topic_created and message.forum_topic_created.name == "Архив" and message.message_thread_id:
-        await telegram_support_forum.set_archive_thread_id(db, int(message.message_thread_id))
-        await db.commit()
+        await telegram_support_forum.set_archive_thread_id(int(message.message_thread_id))
         return {"status": "ok", "action": "archive_set"}
 
     # Allow setting archive thread manually.
     if message.text and message.text.strip().startswith("/set_archive") and message.message_thread_id:
-        await telegram_support_forum.set_archive_thread_id(db, int(message.message_thread_id))
-        await db.commit()
+        await telegram_support_forum.set_archive_thread_id(int(message.message_thread_id))
         return {"status": "ok", "action": "archive_set"}
 
     if message.forum_topic_closed and message.message_thread_id:

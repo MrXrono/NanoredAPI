@@ -52,6 +52,9 @@ nano .env
 SECRET_KEY=ваш-случайный-ключ-минимум-32-символа
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD=ваш-надёжный-пароль
+TELEGRAM_MESSAGE_BOT_TOKEN=токен-телеграм-бота-для-саппорта
+TELEGRAM_SUPPORT_GROUP_ID=-1002021945145
+TELEGRAM_SUPPORT_DATA_FILE=data.json
 ```
 
 Для генерации SECRET_KEY:

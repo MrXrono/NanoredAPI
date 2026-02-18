@@ -1,22 +1,17 @@
+import asyncio
 import io
+import json
 import logging
-from datetime import datetime, timezone
+import os
+from pathlib import Path
 
 from aiogram import Bot
 from aiogram.types import BufferedInputFile, Message, Update
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.device import Device
 from app.models.support_message import SupportMessageType
-from app.models.support_ticket import (
-    SupportForumMeta,
-    SupportTicket,
-    SupportTicketMessage,
-    SupportTicketMessageFrom,
-    SupportTicketOwner,
-)
 
 log = logging.getLogger(__name__)
 
@@ -25,6 +20,43 @@ class TelegramSupportForum:
     def __init__(self) -> None:
         self._bot: Bot | None = None
         self._bot_id: int | None = None
+        self._state_lock = asyncio.Lock()
+        self._state_file = Path(os.getenv("TELEGRAM_SUPPORT_DATA_FILE", "data.json"))
+        self._state = self._load_state()
+
+    @staticmethod
+    def _default_state() -> dict:
+        # Keep the same top-level shape as nanored_support_bot.
+        return {
+            "next_ticket_id": 1,
+            "open_tickets": {},
+            "thread_to_user": {},
+            "archive_thread_id": None,
+            "thread_to_target": {},
+        }
+
+    def _load_state(self) -> dict:
+        try:
+            raw = self._state_file.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return self._default_state()
+        try:
+            data = json.loads(raw)
+        except Exception:
+            log.warning("TELEGRAM_SUPPORT_DATA_FILE is not valid JSON: %s", self._state_file)
+            return self._default_state()
+
+        # Backfill missing keys for forward compatibility.
+        base = self._default_state()
+        for k, v in base.items():
+            if k not in data:
+                data[k] = v
+        return data
+
+    def _save_state(self) -> None:
+        tmp = self._state_file.with_suffix(self._state_file.suffix + ".tmp")
+        tmp.write_text(json.dumps(self._state, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(self._state_file)
 
     @property
     def enabled(self) -> bool:
@@ -60,88 +92,59 @@ class TelegramSupportForum:
         await self.bot.download(file, destination=bio)
         return bio.getvalue()
 
-    async def _meta_get(self, db: AsyncSession, key: str) -> str | None:
-        row = await db.execute(select(SupportForumMeta).where(SupportForumMeta.key == key))
-        item = row.scalar_one_or_none()
-        return item.value if item else None
+    def _target_key(self, device: Device) -> str:
+        # Stable unique key per app installation/device.
+        return f"app:{device.account_id}:{device.id}"
 
-    async def _meta_set(self, db: AsyncSession, key: str, value: str) -> None:
-        row = await db.execute(select(SupportForumMeta).where(SupportForumMeta.key == key))
-        item = row.scalar_one_or_none()
-        now = datetime.now(timezone.utc)
-        if item:
-            item.value = value
-            item.updated_at = now
-        else:
-            db.add(SupportForumMeta(key=key, value=value, updated_at=now))
-        await db.flush()
-
-    async def get_archive_thread_id(self, db: AsyncSession) -> int | None:
-        raw = await self._meta_get(db, "archive_thread_id")
-        if not raw:
-            return None
+    def _parse_target_key(self, target_key: str) -> tuple[str | None, str | None]:
+        # app:<account_id>:<device_uuid>
         try:
-            return int(raw)
+            pfx, account_id, device_id = target_key.split(":", 2)
         except ValueError:
-            return None
+            return None, None
+        if pfx != "app":
+            return None, None
+        return account_id, device_id
 
-    async def set_archive_thread_id(self, db: AsyncSession, thread_id: int) -> None:
-        await self._meta_set(db, "archive_thread_id", str(int(thread_id)))
+    async def get_archive_thread_id(self) -> int | None:
+        raw = self._state.get("archive_thread_id")
+        return int(raw) if isinstance(raw, int) else None
 
-    async def _add_ticket_message(self, db: AsyncSession, ticket_id: int, message_id: int, sender: SupportTicketMessageFrom) -> None:
-        db.add(SupportTicketMessage(ticket_id=ticket_id, message_id=int(message_id), sender=sender))
-        await db.flush()
+    async def set_archive_thread_id(self, thread_id: int) -> None:
+        async with self._state_lock:
+            self._state["archive_thread_id"] = int(thread_id)
+            self._save_state()
 
-    async def _get_open_ticket(self, db: AsyncSession, account_id: str) -> SupportTicket | None:
-        q = await db.execute(
-            select(SupportTicket).where(
-                SupportTicket.owner == SupportTicketOwner.APP,
-                SupportTicket.account_id == account_id,
-                SupportTicket.closed_at.is_(None),
-            )
-        )
-        return q.scalar_one_or_none()
+    async def _ensure_ticket(self, device: Device) -> dict:
+        target = self._target_key(device)
+        async with self._state_lock:
+            existing = self._state["open_tickets"].get(target)
+            if existing:
+                return existing
 
-    async def _get_ticket_by_thread(self, db: AsyncSession, thread_id: int) -> SupportTicket | None:
-        q = await db.execute(
-            select(SupportTicket).where(
-                SupportTicket.owner == SupportTicketOwner.APP,
-                SupportTicket.thread_id == int(thread_id),
-            )
-        )
-        return q.scalar_one_or_none()
+            ticket_id = int(self._state["next_ticket_id"])
+            self._state["next_ticket_id"] = ticket_id + 1
+            self._save_state()
 
-    async def _create_ticket(self, db: AsyncSession, device: Device) -> SupportTicket:
-        # Step 1: reserve ticket number via DB autoincrement.
-        ticket = SupportTicket(
-            owner=SupportTicketOwner.APP,
-            account_id=device.account_id,
-            device_id=device.id,
-            thread_id=0,
-        )
-        db.add(ticket)
-        await db.flush()  # assigns ticket.id
-
-        # Step 2: create topic in support forum.
         try:
             topic = await self.bot.create_forum_topic(
                 chat_id=self.support_group_id,
-                name=f"Заявка app №{ticket.id}",
+                name=f"Заявка app №{ticket_id}",
             )
-            ticket.thread_id = int(topic.message_thread_id)
-            await db.flush()
+            thread_id = int(topic.message_thread_id)
         except Exception:
-            # Keep DB clean if Telegram call fails.
-            await db.delete(ticket)
-            await db.flush()
+            # Roll back ticket counter on failure (keep IDs dense like nanored_support_bot).
+            async with self._state_lock:
+                if int(self._state.get("next_ticket_id") or 0) == ticket_id + 1:
+                    self._state["next_ticket_id"] = ticket_id
+                    self._save_state()
             raise
 
-        # Step 3: info card inside the thread.
         info = await self.bot.send_message(
             chat_id=self.support_group_id,
-            message_thread_id=ticket.thread_id,
+            message_thread_id=thread_id,
             text=(
-                f"🎫 <b>Заявка app №{ticket.id}</b>\n"
+                f"🎫 <b>Заявка app №{ticket_id}</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
                 f"🆔 <b>Account ID:</b> <code>{device.account_id}</code>\n"
                 f"🔑 <b>App token:</b> <code>{device.id}</code>\n"
@@ -149,14 +152,21 @@ class TelegramSupportForum:
             ),
             parse_mode="HTML",
         )
-        await self._add_ticket_message(db, ticket.id, info.message_id, SupportTicketMessageFrom.INFO)
-        return ticket
 
-    async def ensure_ticket(self, db: AsyncSession, device: Device) -> SupportTicket:
-        existing = await self._get_open_ticket(db, device.account_id)
-        if existing:
-            return existing
-        return await self._create_ticket(db, device)
+        ticket = {
+            "ticket_id": ticket_id,
+            "thread_id": thread_id,
+            "target": target,
+            # Used for archiving.
+            "messages": [{"msg_id": int(info.message_id), "from": "info"}],
+        }
+
+        async with self._state_lock:
+            self._state["open_tickets"][target] = ticket
+            self._state["thread_to_target"][str(thread_id)] = target
+            self._save_state()
+
+        return ticket
 
     async def send_from_app(
         self,
@@ -171,7 +181,7 @@ class TelegramSupportForum:
         if not self.enabled:
             return None
 
-        ticket = await self.ensure_ticket(db, device)
+        ticket = await self._ensure_ticket(device)
 
         if file_bytes:
             upload_name = file_name or "upload.bin"
@@ -209,21 +219,25 @@ class TelegramSupportForum:
             else:
                 sent = await self.bot.send_document(
                     chat_id=self.support_group_id,
-                    message_thread_id=ticket.thread_id,
+                    message_thread_id=ticket["thread_id"],
                     document=upload,
                     caption=caption,
                 )
 
-            await self._add_ticket_message(db, ticket.id, sent.message_id, SupportTicketMessageFrom.APP)
+            async with self._state_lock:
+                ticket["messages"].append({"msg_id": int(sent.message_id), "from": "app"})
+                self._save_state()
             return int(sent.message_id)
 
         body = text or ""
         sent = await self.bot.send_message(
             chat_id=self.support_group_id,
-            message_thread_id=ticket.thread_id,
+            message_thread_id=ticket["thread_id"],
             text=body,
         )
-        await self._add_ticket_message(db, ticket.id, sent.message_id, SupportTicketMessageFrom.APP)
+        async with self._state_lock:
+            ticket["messages"].append({"msg_id": int(sent.message_id), "from": "app"})
+            self._save_state()
         return int(sent.message_id)
 
     @staticmethod
@@ -262,9 +276,10 @@ class TelegramSupportForum:
     def parse_update(self, update_json: dict) -> Message | None:
         try:
             update = Update.model_validate(update_json)
-        except Exception:
+        except Exception as e:
+            log.warning("Telegram update parse failed: %s", e)
             return None
-        return update.message
+        return update.message or update.edited_message or update.channel_post or update.edited_channel_post
 
     async def handle_support_message(self, db: AsyncSession, message: Message) -> dict | None:
         if not self.enabled:
@@ -280,20 +295,29 @@ class TelegramSupportForum:
         if message.from_user and int(message.from_user.id) == await self.bot_id():
             return None
 
-        ticket = await self._get_ticket_by_thread(db, int(message.message_thread_id))
-        if ticket is None or ticket.closed_at is not None:
+        thread_id = int(message.message_thread_id)
+        async with self._state_lock:
+            target_key = self._state["thread_to_target"].get(str(thread_id))
+            ticket = self._state["open_tickets"].get(target_key) if target_key else None
+            if ticket:
+                ticket["messages"].append({"msg_id": int(message.message_id), "from": "support"})
+                self._save_state()
+
+        if not ticket or not isinstance(target_key, str) or not target_key.startswith("app:"):
             return None
 
         msg_type = self._infer_type(message)
         text = message.text or message.caption
         file_id, mime_type, file_size, file_name = self._extract_file(message)
 
-        await self._add_ticket_message(db, ticket.id, int(message.message_id), SupportTicketMessageFrom.SUPPORT)
+        account_id, device_id = self._parse_target_key(target_key)
+        if not account_id:
+            return None
 
         return {
-            "ticket_id": ticket.id,
-            "account_id": ticket.account_id,
-            "device_id": ticket.device_id,
+            "ticket_id": int(ticket["ticket_id"]),
+            "account_id": account_id,
+            "device_id": device_id,
             "message_type": msg_type,
             "text": text.strip() if text else None,
             "telegram_file_id": file_id,
@@ -303,28 +327,32 @@ class TelegramSupportForum:
             "source_bot_message_id": int(message.message_id),
         }
 
-    async def archive_and_delete_topic(self, db: AsyncSession, ticket: SupportTicket) -> None:
-        archive_tid = await self.get_archive_thread_id(db)
+    async def archive_and_delete_topic(self, ticket: dict) -> None:
+        archive_tid = await self.get_archive_thread_id()
         if not archive_tid:
-            log.warning("TELEGRAM archive_thread_id not set; skipping archive for ticket_id=%s", ticket.id)
+            log.warning("TELEGRAM archive_thread_id not set; skipping archive for ticket_id=%s", ticket.get("ticket_id"))
             return
 
         await self.bot.send_message(
             chat_id=self.support_group_id,
             message_thread_id=archive_tid,
-            text=f"═══ 📂 <b>Начало заявки app №{ticket.id}</b> ═══",
+            text=f"═══ 📂 <b>Начало заявки app №{ticket.get('ticket_id')}</b> ═══",
             parse_mode="HTML",
         )
 
-        rows = await db.execute(
-            select(SupportTicketMessage).where(SupportTicketMessage.ticket_id == ticket.id).order_by(SupportTicketMessage.id.asc())
-        )
-        items = rows.scalars().all()
-        for item in items:
+        for item in ticket.get("messages", []):
             label: str | None
-            if item.sender == SupportTicketMessageFrom.INFO:
+            msg_id = None
+            sender = None
+            if isinstance(item, dict):
+                msg_id = item.get("msg_id")
+                sender = item.get("from")
+            if not isinstance(msg_id, int):
+                continue
+
+            if sender == "info":
                 label = None
-            elif item.sender == SupportTicketMessageFrom.APP:
+            elif sender == "app":
                 label = "📱 <b>От приложения:</b>"
             else:
                 label = "👨‍💻 <b>От техподдержки:</b>"
@@ -340,45 +368,53 @@ class TelegramSupportForum:
                 await self.bot.copy_message(
                     chat_id=self.support_group_id,
                     from_chat_id=self.support_group_id,
-                    message_id=int(item.message_id),
+                    message_id=int(msg_id),
                     message_thread_id=archive_tid,
                 )
             except Exception as e:
-                log.warning("Failed to archive msg_id=%s ticket_id=%s: %s", item.message_id, ticket.id, e)
+                log.warning("Failed to archive msg_id=%s ticket_id=%s: %s", msg_id, ticket.get("ticket_id"), e)
 
         await self.bot.send_message(
             chat_id=self.support_group_id,
             message_thread_id=archive_tid,
-            text=f"═══ ✅ <b>Конец заявки app №{ticket.id}</b> ═══",
+            text=f"═══ ✅ <b>Конец заявки app №{ticket.get('ticket_id')}</b> ═══",
             parse_mode="HTML",
         )
 
         try:
-            await self.bot.delete_forum_topic(chat_id=self.support_group_id, message_thread_id=int(ticket.thread_id))
+            await self.bot.delete_forum_topic(chat_id=self.support_group_id, message_thread_id=int(ticket.get("thread_id")))
         except Exception as e:
-            log.warning("Failed to delete forum topic thread_id=%s: %s", ticket.thread_id, e)
+            log.warning("Failed to delete forum topic thread_id=%s: %s", ticket.get("thread_id"), e)
 
     async def handle_topic_closed(self, db: AsyncSession, thread_id: int) -> dict | None:
         if not self.enabled:
             return None
-        ticket = await self._get_ticket_by_thread(db, int(thread_id))
-        if ticket is None or ticket.closed_at is not None:
-            return None
 
-        ticket.closed_at = datetime.now(timezone.utc)
-        await db.flush()
+        async with self._state_lock:
+            target_key = self._state["thread_to_target"].get(str(int(thread_id)))
+            ticket = self._state["open_tickets"].get(target_key) if target_key else None
+            if not ticket or not isinstance(target_key, str) or not target_key.startswith("app:"):
+                return None
+            # Remove from open lists first to avoid double-processing.
+            self._state["open_tickets"].pop(target_key, None)
+            self._state["thread_to_target"].pop(str(int(thread_id)), None)
+            self._save_state()
 
         # Best effort: archive and delete forum topic.
         try:
-            await self.archive_and_delete_topic(db, ticket)
+            await self.archive_and_delete_topic(ticket)
         except Exception as e:
-            log.warning("archive_and_delete_topic failed for ticket_id=%s: %s", ticket.id, e)
+            log.warning("archive_and_delete_topic failed for ticket_id=%s: %s", ticket.get("ticket_id"), e)
+
+        account_id, device_id = self._parse_target_key(target_key)
+        if not account_id:
+            return None
 
         return {
-            "ticket_id": ticket.id,
-            "account_id": ticket.account_id,
-            "device_id": ticket.device_id,
-            "system_text": f"Заявка app №{ticket.id} закрыта оператором.",
+            "ticket_id": int(ticket["ticket_id"]),
+            "account_id": account_id,
+            "device_id": device_id,
+            "system_text": f"Заявка app №{int(ticket['ticket_id'])} закрыта оператором.",
         }
 
 
