@@ -17,10 +17,17 @@ _META_RE = re.compile(r"^NR_REPLY\|(?P<account>[0-9]{3,32})\|(?P<msg_type>[a-z_]
 class TelegramBridge:
     def __init__(self) -> None:
         self._bot: Bot | None = None
+        self._bridge_chat_id: int | str | None = None
 
     @property
     def enabled(self) -> bool:
         return bool(settings.TELEGRAM_MESSAGE_BOT_TOKEN and settings.TELEGRAM_BRIDGE_CHAT_ID)
+
+    @property
+    def bridge_chat_id(self) -> int | str:
+        if self._bridge_chat_id is None:
+            self._bridge_chat_id = self._normalize_chat_id(settings.TELEGRAM_BRIDGE_CHAT_ID)
+        return self._bridge_chat_id
 
     @property
     def bot(self) -> Bot:
@@ -49,7 +56,7 @@ class TelegramBridge:
             return None
 
         header = f"NR_APP|{account_id}|{message_id}|{message_type.value}"
-        bridge_chat_id = settings.TELEGRAM_BRIDGE_CHAT_ID
+        bridge_chat_id = self.bridge_chat_id
 
         if file_bytes:
             upload_name = file_name or "upload.bin"
@@ -75,10 +82,32 @@ class TelegramBridge:
         return sent.message_id
 
     @staticmethod
-    def is_from_support_bridge(message: Message) -> bool:
-        if int(message.chat.id) != int(settings.TELEGRAM_BRIDGE_CHAT_ID):
+    def _normalize_chat_id(raw_chat_id: str | int) -> int | str:
+        value = str(raw_chat_id).strip()
+        if not value:
+            raise ValueError("TELEGRAM_BRIDGE_CHAT_ID is empty")
+        if value.startswith("@"):
+            return value
+        if value.startswith("-"):
+            return int(value)
+        if value.isdigit():
+            # Telegram group IDs are usually exposed without "-100" in some UIs.
+            if len(value) >= 10:
+                return int(f"-100{value}")
+            return int(value)
+        return value
+
+    def is_from_support_bridge(self, message: Message) -> bool:
+        bridge_chat_id = self.bridge_chat_id
+        if isinstance(bridge_chat_id, int):
+            if int(message.chat.id) != bridge_chat_id:
+                return False
+        else:
+            if str(message.chat.id) != bridge_chat_id and str(message.chat.username or "") != bridge_chat_id.lstrip("@"):
+                return False
+        if not message.from_user:
             return False
-        if settings.TELEGRAM_SUPPORT_BOT_ID and message.from_user:
+        if settings.TELEGRAM_SUPPORT_BOT_ID:
             return int(message.from_user.id) == int(settings.TELEGRAM_SUPPORT_BOT_ID)
         return True
 

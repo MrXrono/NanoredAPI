@@ -27,7 +27,7 @@ class Settings(BaseSettings):
 
     # Telegram bridge for support chat
     TELEGRAM_MESSAGE_BOT_TOKEN: str = os.getenv("TELEGRAM_MESSAGE_BOT_TOKEN", "")
-    TELEGRAM_BRIDGE_CHAT_ID: int = int(os.getenv("TELEGRAM_BRIDGE_CHAT_ID", "5180531069"))
+    TELEGRAM_BRIDGE_CHAT_ID: str = os.getenv("TELEGRAM_BRIDGE_CHAT_ID", "-1005180531069")
     TELEGRAM_SUPPORT_BOT_ID: int = int(os.getenv("TELEGRAM_SUPPORT_BOT_ID", "7764403235"))
 
     # GeoIP

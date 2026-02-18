@@ -130,7 +130,10 @@ async def send_support_message(
         )
         msg.bridge_message_id = bridge_message_id
     except Exception as e:
-        logging_buffer.add("error", f"Support bridge send failed: {e}")
+        logging_buffer.add(
+            "error",
+            f"Support bridge send failed: {e} (bridge_chat_id={telegram_bridge.bridge_chat_id})",
+        )
 
     logging_buffer.add("processing", f"Support message from account={device.account_id}, type={msg_type.value}")
     return _to_response(msg)
