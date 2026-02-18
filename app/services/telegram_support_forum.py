@@ -123,12 +123,18 @@ class TelegramSupportForum:
         await db.flush()  # assigns ticket.id
 
         # Step 2: create topic in support forum.
-        topic = await self.bot.create_forum_topic(
-            chat_id=self.support_group_id,
-            name=f"Заявка app №{ticket.id}",
-        )
-        ticket.thread_id = int(topic.message_thread_id)
-        await db.flush()
+        try:
+            topic = await self.bot.create_forum_topic(
+                chat_id=self.support_group_id,
+                name=f"Заявка app №{ticket.id}",
+            )
+            ticket.thread_id = int(topic.message_thread_id)
+            await db.flush()
+        except Exception:
+            # Keep DB clean if Telegram call fails.
+            await db.delete(ticket)
+            await db.flush()
+            raise
 
         # Step 3: info card inside the thread.
         info = await self.bot.send_message(
