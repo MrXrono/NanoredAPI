@@ -11,7 +11,10 @@ from app.models.support_message import SupportMessageType
 
 log = logging.getLogger(__name__)
 
-_META_RE = re.compile(r"^NR_REPLY\|(?P<account>[0-9]{3,32})\|(?P<msg_type>[a-z_]+)")
+# Supported formats:
+# - NR_REPLY|account_id|msg_type
+# - NR_REPLY|account_id|app_token|msg_type
+_META_RE = re.compile(r"^NR_REPLY\|(?P<account>[0-9]{3,32})\|(?:(?P<token>[0-9a-fA-F-]{16,128})\|)?(?P<msg_type>[a-z_]+)")
 
 
 class TelegramBridge:
@@ -45,8 +48,9 @@ class TelegramBridge:
     async def send_from_app(
         self,
         account_id: str,
-        message_id: str,
+        app_token: str,
         message_type: SupportMessageType,
+        message_id: str | None = None,
         text: str | None = None,
         file_name: str | None = None,
         mime_type: str | None = None,
@@ -55,7 +59,10 @@ class TelegramBridge:
         if not self.enabled:
             return None
 
-        header = f"NR_APP|{account_id}|{message_id}|{message_type.value}"
+        # New format (requested by support bot side):
+        # NR_APP|<telegram_account_id>|<app_token>|<msg_type>
+        # message_id is kept as an optional argument for DB-level correlation, but is not sent to Telegram.
+        header = f"NR_APP|{account_id}|{app_token}|{message_type.value}"
         bridge_chat_id = self.bridge_chat_id
 
         if file_bytes:

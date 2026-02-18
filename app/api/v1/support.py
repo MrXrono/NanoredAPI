@@ -121,8 +121,9 @@ async def send_support_message(
     try:
         bridge_message_id = await telegram_bridge.send_from_app(
             account_id=device.account_id,
-            message_id=str(msg.id),
+            app_token=str(device.id),
             message_type=msg_type,
+            message_id=str(msg.id),
             text=msg.text,
             file_name=file_name,
             mime_type=mime_type,
