@@ -21,7 +21,8 @@ class TelegramSupportForum:
         self._bot: Bot | None = None
         self._bot_id: int | None = None
         self._state_lock = asyncio.Lock()
-        self._state_file = Path(os.getenv("TELEGRAM_SUPPORT_DATA_FILE", "data.json"))
+        # Store state on a host-mounted volume by default (docker-compose mounts ./data -> /app/data).
+        self._state_file = Path(os.getenv("TELEGRAM_SUPPORT_DATA_FILE", "/app/data/data.json"))
         self._state = self._load_state()
 
     @staticmethod
@@ -54,6 +55,7 @@ class TelegramSupportForum:
         return data
 
     def _save_state(self) -> None:
+        self._state_file.parent.mkdir(parents=True, exist_ok=True)
         tmp = self._state_file.with_suffix(self._state_file.suffix + ".tmp")
         tmp.write_text(json.dumps(self._state, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(self._state_file)

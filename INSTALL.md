@@ -146,6 +146,12 @@ curl -sS "https://api.telegram.org/bot${BOT_TOKEN}/setWebhook" \\
   -d 'allowed_updates=["message","edited_message"]'
 ```
 
+Также можно настроить вебхук автоматически при старте контейнера через переменные окружения:
+```env
+TELEGRAM_WEBHOOK_URL=https://api.nanored.top/api/v1/client/support/telegram/webhook
+TELEGRAM_WEBHOOK_SECRET=
+```
+
 Проверить текущий вебхук:
 ```bash
 curl -sS "https://api.telegram.org/bot${BOT_TOKEN}/getWebhookInfo"

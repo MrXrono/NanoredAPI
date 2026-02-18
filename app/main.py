@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import time
 import traceback
 from contextlib import asynccontextmanager
@@ -33,6 +34,24 @@ from app.models.support_ticket import SupportForumMeta, SupportTicket, SupportTi
 from app.services.telegram_support_forum import telegram_support_forum
 
 logger = logging.getLogger(__name__)
+
+async def _ensure_telegram_webhook() -> None:
+    # Optional: auto-configure webhook on startup, if TELEGRAM_WEBHOOK_URL is set.
+    if not telegram_support_forum.enabled:
+        return
+    url = (settings.TELEGRAM_WEBHOOK_URL or "").strip()
+    if not url:
+        return
+    secret = (settings.TELEGRAM_WEBHOOK_SECRET or "").strip() or None
+    try:
+        await telegram_support_forum.bot.set_webhook(
+            url=url,
+            secret_token=secret,
+            allowed_updates=["message", "edited_message"],
+        )
+        logger.info("Telegram webhook set to %s", url)
+    except Exception as e:
+        logger.warning("Failed to set Telegram webhook: %s", e)
 
 
 async def _cleanup_stale_sessions():
@@ -86,6 +105,7 @@ async def lifespan(app: FastAPI):
         logger.warning(f"Admin creation skipped: {e}")
 
     cleanup_task = asyncio.create_task(_cleanup_stale_sessions())
+    await _ensure_telegram_webhook()
 
     yield
 

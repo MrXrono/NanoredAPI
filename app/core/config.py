@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     # Telegram support forum integration (app tickets)
     TELEGRAM_MESSAGE_BOT_TOKEN: str = os.getenv("TELEGRAM_MESSAGE_BOT_TOKEN", "")
     TELEGRAM_SUPPORT_GROUP_ID: int = int(os.getenv("TELEGRAM_SUPPORT_GROUP_ID", "0"))
+    TELEGRAM_WEBHOOK_URL: str = os.getenv("TELEGRAM_WEBHOOK_URL", "")
+    TELEGRAM_WEBHOOK_SECRET: str = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
 
     # GeoIP
     GEOIP_DB_PATH: str = "/app/data/GeoLite2-City.mmdb"
