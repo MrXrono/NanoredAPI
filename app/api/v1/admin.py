@@ -823,7 +823,11 @@ async def stop_device_file_browser(device_id: str, db: AsyncSession = Depends(ge
         raise HTTPException(status_code=404, detail="Device not found")
 
     redis = await get_redis()
-    current_session = await redis.get(_file_session_key(device_id))
+    current_session = await redis.hget(_file_session_key(device_id), "session_id")
+    if isinstance(current_session, bytes):
+        current_session = current_session.decode("utf-8", errors="ignore")
+    if current_session is not None:
+        current_session = str(current_session).strip()
     cmd = encode_command_payload({
         "type": "file_browser",
         "action": "stop",

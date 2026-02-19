@@ -674,7 +674,7 @@ async def file_session_close(
     return {"status": "ok", "closed": str(current or "") == req.session_id}
 
 
-@router.get("/commands")
+@router.post("/commands")
 async def get_pending_commands(
     db: AsyncSession = Depends(get_db),
     x_api_key: str = Header(..., alias="X-API-Key"),
