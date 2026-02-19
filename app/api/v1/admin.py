@@ -1,4 +1,8 @@
 import uuid
+import ipaddress
+import asyncio
+import socket
+import time
 from datetime import datetime, timezone, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Body
@@ -38,6 +42,9 @@ _PERMISSION_LABELS = {
     "android.permission.QUERY_ALL_PACKAGES": "Список приложений",
 }
 
+_IP_DOMAIN_CACHE_TTL_SEC = 60 * 60 * 6
+_ip_domain_cache: dict[str, tuple[float, str | None]] = {}
+
 
 # ==================== HELPER ====================
 
@@ -45,6 +52,77 @@ async def _device_ids_for_account(account_id: str, db: AsyncSession) -> list[uui
     """Return device IDs belonging to an account."""
     result = await db.execute(select(Device.id).where(Device.account_id == account_id))
     return [r[0] for r in result.all()]
+
+
+def _is_ip_literal(value: str | None) -> bool:
+    if not value:
+        return False
+    try:
+        ipaddress.ip_address(value.strip())
+        return True
+    except ValueError:
+        return False
+
+
+def _normalize_domain_candidate(value: str | None) -> str | None:
+    if not value:
+        return None
+    normalized = value.strip().strip(".").lower()
+    if not normalized or _is_ip_literal(normalized):
+        return None
+    return normalized
+
+
+async def _reverse_dns_name(ip: str) -> str | None:
+    try:
+        host, _, _ = await asyncio.to_thread(socket.gethostbyaddr, ip)
+        return _normalize_domain_candidate(host)
+    except Exception:
+        return None
+
+
+async def _build_ip_display_map(values: list[str], db: AsyncSession) -> dict[str, str]:
+    ips = sorted({v.strip() for v in values if _is_ip_literal(v)})
+    if not ips:
+        return {}
+
+    now = time.time()
+    display_map: dict[str, str] = {}
+    unresolved: set[str] = set(ips)
+
+    # 1) Prefer recently observed DNS mappings from telemetry.
+    dns_rows = await db.execute(
+        select(DNSLog.resolved_ip, DNSLog.domain)
+        .where(DNSLog.resolved_ip.in_(ips))
+        .order_by(desc(DNSLog.timestamp))
+    )
+    for resolved_ip, domain in dns_rows.all():
+        ip = (resolved_ip or "").strip()
+        if ip not in unresolved:
+            continue
+        mapped_domain = _normalize_domain_candidate(domain)
+        if mapped_domain:
+            display_map[ip] = f"{ip} ({mapped_domain})"
+            unresolved.discard(ip)
+
+    # 2) Use in-memory cache for reverse DNS labels.
+    for ip in list(unresolved):
+        cached = _ip_domain_cache.get(ip)
+        if cached and now - cached[0] <= _IP_DOMAIN_CACHE_TTL_SEC:
+            cached_domain = cached[1]
+            if cached_domain:
+                display_map[ip] = f"{ip} ({cached_domain})"
+            unresolved.discard(ip)
+
+    # 3) Reverse DNS fallback for remaining IPs.
+    for ip in list(unresolved):
+        domain = await _reverse_dns_name(ip)
+        _ip_domain_cache[ip] = (now, domain)
+        if domain:
+            display_map[ip] = f"{ip} ({domain})"
+        unresolved.discard(ip)
+
+    return display_map
 
 
 # ==================== DASHBOARD ====================
@@ -119,9 +197,15 @@ async def dashboard_top_sni(
         base_query.order_by(desc("hits"))
         .offset((page - 1) * per_page).limit(per_page)
     )
+    rows = result.all()
+    display_map = await _build_ip_display_map([d for d, _ in rows], db)
     return {
         "total": total, "page": page, "per_page": per_page,
-        "items": [{"domain": d, "hits": h} for d, h in result.all()],
+        "items": [{
+            "domain": d,
+            "domain_display": display_map.get(d, d),
+            "hits": h,
+        } for d, h in rows],
     }
 
 
@@ -464,6 +548,7 @@ async def list_sni(
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar()
     result = await db.execute(query.offset((page - 1) * per_page).limit(per_page))
     logs = result.scalars().all()
+    display_map = await _build_ip_display_map([l.domain for l in logs], db)
 
     return {
         "total": total, "page": page, "per_page": per_page,
@@ -472,6 +557,7 @@ async def list_sni(
             "session_id": str(l.session_id),
             "device_id": str(l.device_id),
             "domain": l.domain,
+            "domain_display": display_map.get(l.domain, l.domain),
             "hit_count": l.hit_count,
             "bytes_total": l.bytes_total,
             "first_seen": l.first_seen.isoformat() if l.first_seen else None,

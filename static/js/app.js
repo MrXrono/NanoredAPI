@@ -163,7 +163,7 @@ async function loadTopSNI(page = 1) {
         const sniList = document.getElementById('top-sni-list');
         const offset = (d.page - 1) * d.per_page;
         sniList.innerHTML = d.items.map((s, i) =>
-            `<li><span class="rank">${offset + i + 1}</span><span class="domain">${escapeHtml(s.domain)}</span><span class="hits">${s.hits}</span></li>`
+            `<li><span class="rank">${offset + i + 1}</span><span class="domain">${escapeHtml(s.domain_display || s.domain)}</span><span class="hits">${s.hits}</span></li>`
         ).join('') || '<li>Нет данных</li>';
         renderDashPagination(document.getElementById('top-sni-pagination'), d.total, d.page, d.per_page, 'loadTopSNI');
     } catch (err) { console.error('Top SNI error:', err); }
@@ -459,7 +459,7 @@ async function loadSNI(page = 1) {
     const d = await resp.json();
     document.getElementById('sni-tbody').innerHTML = d.items.map(l => `
         <tr>
-            <td>${escapeHtml(l.domain)}</td>
+            <td>${escapeHtml(l.domain_display || l.domain)}</td>
             <td>${l.hit_count}</td>
             <td>${formatBytes(l.bytes_total)}</td>
             <td title="${l.device_id}">${l.device_id.slice(0, 8)}...</td>
