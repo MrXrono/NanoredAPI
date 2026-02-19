@@ -27,7 +27,7 @@ from app.schemas.session import SessionStartRequest, SessionStartResponse, Sessi
 from app.schemas.telemetry import (
     SNIBatchRequest, SNIRawRequest, DNSBatchRequest,
     ConnectionBatchRequest, ErrorReportRequest, PermissionsBatchRequest,
-    DeviceLogRequest, FileSessionHeartbeatRequest,
+    DeviceLogRequest, FileSessionHeartbeatRequest, FileBrowserSnapshotRequest,
 )
 from app.services.geoip import lookup_ip
 
@@ -635,6 +635,13 @@ async def update_permissions(
     return {"status": "ok", "count": len(req.permissions)}
 
 
+
+
+# Helper for file-browser snapshot storage
+
+def _file_browser_snapshot_key(device_id: uuid.UUID) -> str:
+    return f"file_browser_snapshot:{device_id}"
+
 # ==================== COMMANDS ====================
 
 @router.post("/files/session/heartbeat")
@@ -658,6 +665,51 @@ async def file_session_heartbeat(
     return {"status": "ok", "session_id": req.session_id}
 
 
+
+
+@router.post("/files/snapshot")
+async def upload_file_browser_snapshot(
+    req: FileBrowserSnapshotRequest,
+    db: AsyncSession = Depends(get_db),
+    x_api_key: str = Header(..., alias="X-API-Key"),
+):
+    device = await _get_device(x_api_key, db)
+    redis = await get_redis()
+    session_key = f"file_session:{device.id}"
+    current_session = await redis.hget(session_key, "session_id")
+    if current_session is not None:
+        current_session = current_session.decode("utf-8", errors="ignore") if isinstance(current_session, bytes) else str(current_session)
+
+    if current_session != req.session_id:
+        logging_buffer.add("processing", f"Несовпадение file_browser session: {device.id} (expected={current_session}, got={req.session_id})")
+
+    snapshot = {
+        "device_id": str(device.id),
+        "session_id": req.session_id,
+        "path": req.path,
+        "has_parent": req.has_parent,
+        "path_items": len(req.entries),
+        "entries": [
+            {
+                "name": e.name,
+                "path": e.path,
+                "is_directory": e.is_directory,
+                "size_bytes": e.size_bytes,
+                "mime_type": e.mime_type,
+                "modified_at": e.modified_at,
+                "is_image": e.is_image,
+                "thumbnail_base64": e.thumbnail_base64,
+            }
+            for e in req.entries
+        ],
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await redis.set(_file_browser_snapshot_key(device.id), json.dumps(snapshot, ensure_ascii=False), ex=120)
+    await redis.hset(session_key, mapping={"last_path": req.path})
+    await redis.expire(session_key, 120)
+    return {"status": "ok", "path": req.path, "count": len(req.entries)}
+
+
 @router.post("/files/session/close")
 async def file_session_close(
     req: FileSessionHeartbeatRequest,
@@ -667,11 +719,22 @@ async def file_session_close(
     device = await _get_device(x_api_key, db)
     redis = await get_redis()
     current = await redis.hget(f"file_session:{device.id}", "session_id")
-    if current is not None and str(current) != req.session_id:
-        logging_buffer.add("processing", f"Закрытие неверной файловой сессии устройства {device.id}: {req.session_id}")
-    else:
+    if isinstance(current, bytes):
+        current = current.decode("utf-8", errors="ignore")
+    if current is not None:
+        current = str(current).strip()
+
+    if current and current == req.session_id:
         await redis.delete(f"file_session:{device.id}")
-    return {"status": "ok", "closed": str(current or "") == req.session_id}
+        closed = True
+    else:
+        if current and current != req.session_id:
+            logging_buffer.add("processing", f"Закрытие неверной файловой сессии устройства {device.id}: {req.session_id}")
+        await redis.delete(f"file_session:{device.id}")
+        closed = False
+
+    await redis.delete(f"file_browser_snapshot:{device.id}")
+    return {"status": "ok", "closed": closed}
 
 
 @router.post("/commands")

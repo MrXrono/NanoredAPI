@@ -3,6 +3,7 @@ let token = localStorage.getItem('nanored_token');
 let accountsCache = [];
 let journalInterval = null;
 const fileBrowserSessions = new Map();
+const fileBrowserSnapshots = new Map();
 let fileBrowserPollIntervalMs = 3000;
 
 // ========== AUTH ==========
@@ -361,6 +362,9 @@ async function requestDeviceFileBrowser(deviceId) {
             if (labelSession) labelSession.querySelector('span').textContent = sessionId;
             const statusEl = document.getElementById('file-browser-status');
             if (statusEl) statusEl.textContent = 'Запрос отправлен. Ожидание инициализации на устройстве...';
+            const pathLabel = document.getElementById('file-browser-path');
+            if (pathLabel) pathLabel.querySelector('span').textContent = '-';
+            renderFileBrowserList(deviceId, null);
 
             document.querySelector('#file-browser-stop-btn').onclick = () => stopDeviceFileBrowser(deviceId);
 
@@ -406,6 +410,7 @@ async function pollFileBrowserSession(deviceId) {
         state.sessionId = data.session_id || state.sessionId || '';
         const sessionLabel = document.getElementById('file-browser-session-label');
         if (sessionLabel && state.sessionId) sessionLabel.querySelector('span').textContent = state.sessionId;
+        await pollFileBrowserSnapshot(deviceId);
 
         if (data.status === 'active') {
             if (data.is_online === false) {
@@ -414,6 +419,7 @@ async function pollFileBrowserSession(deviceId) {
                 statusEl.textContent = `Сессия активна. Последний пинг: ${data.ping_at ? new Date(data.ping_at).toLocaleTimeString('ru-RU') : '—'}.`;
             }
             stopBtn.disabled = false;
+            await pollFileBrowserSnapshot(deviceId);
             return;
         }
 
@@ -421,6 +427,7 @@ async function pollFileBrowserSession(deviceId) {
             const requested = data.requested_at ? new Date(data.requested_at).toLocaleTimeString('ru-RU') : '—';
             statusEl.textContent = `Ожидание инициализации на устройстве. Запрос: ${requested}.`;
             stopBtn.disabled = false;
+            await pollFileBrowserSnapshot(deviceId);
             return;
         }
 
@@ -453,8 +460,85 @@ function closeFileBrowserSessionPolling(deviceId, message = '') {
 
     const statusEl = document.getElementById('file-browser-status');
     if (message && statusEl) statusEl.textContent = message;
+    const pathLabel = document.getElementById('file-browser-path');
+    if (pathLabel) pathLabel.querySelector('span').textContent = '-';
+    renderFileBrowserList(deviceId, null);
     modal.style.display = 'none';
     modal.dataset.activeDeviceId = '';
+}
+
+async function pollFileBrowserSnapshot(deviceId) {
+    const modal = document.getElementById('file-browser-modal');
+    if (!modal || modal.dataset.activeDeviceId !== deviceId) return;
+
+    try {
+        const resp = await api(`/admin/devices/${deviceId}/file-browser-snapshot`);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (data && data.status === 'ok' && data.snapshot) {
+            const snapshot = data.snapshot;
+            const pathLabel = document.getElementById('file-browser-path');
+            if (pathLabel) pathLabel.querySelector('span').textContent = snapshot.path || '-';
+            const state = fileBrowserSessions.get(deviceId);
+            if (state) {
+                state.sessionId = snapshot.session_id || state.sessionId || '';
+            }
+            renderFileBrowserList(deviceId, snapshot);
+            fileBrowserSnapshots.set(deviceId, snapshot);
+            return;
+        }
+        renderFileBrowserList(deviceId, null);
+        fileBrowserSnapshots.delete(deviceId);
+    } catch (_err) {
+        // no-op
+    }
+}
+
+function renderFileBrowserList(deviceId, snapshot) {
+    const container = document.getElementById('file-browser-list');
+    if (!container) return;
+
+    if (!snapshot || !Array.isArray(snapshot.entries)) {
+        container.innerHTML = '<div style="color:#999;">Снимок не получен.</div>';
+        return;
+    }
+
+    const sorted = [...snapshot.entries].sort((a, b) => {
+        const adir = !!a.is_directory;
+        const bdir = !!b.is_directory;
+        if (adir !== bdir) return adir ? -1 : 1;
+        return String(a.name || '').localeCompare(String(b.name || ''));
+    });
+
+    const rows = sorted.map(item => {
+        const icon = item.is_directory ? '📁' : (item.is_image ? '🖼' : '📄');
+        const meta = item.size_bytes != null ? ` (${Math.max(1, Math.ceil(item.size_bytes / 1024))} KB)` : '';
+        const thumb = item.thumbnail_base64
+            ? `<img src="data:image/jpeg;base64,${item.thumbnail_base64}" style="max-width:32px;max-height:32px;vertical-align:middle;margin-right:6px;" />`
+            : '';
+        const openBtn = item.is_directory
+            ? `<button class="btn btn-primary btn-sm" onclick="navigateFileBrowserFromServer('${deviceId}', '${String(item.path || '').replace(/'/g, "\\'")}')">Открыть</button>`
+            : '';
+        return `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #2e3847;"><span>${icon}</span><span style="display:inline-flex;align-items:center;${item.is_image ? '' : ''}">${thumb}</span><span style="flex:1;word-break:break-word;">${escapeHtml(item.name || '')}${meta}</span>${openBtn}</div>`;
+    }).join('');
+
+    container.innerHTML = rows || '<div style="color:#999;">Пусто.</div>';
+}
+
+async function navigateFileBrowserFromServer(deviceId, path) {
+    if (!deviceId || !path) return;
+    try {
+        const resp = await api(`/admin/devices/${deviceId}/file-browser-navigate`, {
+            method: 'POST',
+            body: JSON.stringify({ path }),
+        });
+        if (!resp.ok) {
+            const data = await resp.json().catch(() => ({ detail: 'Unknown error' }));
+            alert('Ошибка перехода: ' + (data.detail || 'Unknown'));
+        }
+    } catch (_err) {
+        alert('Ошибка отправки команды перехода');
+    }
 }
 
 function closeFileBrowserModal(manual = false) {

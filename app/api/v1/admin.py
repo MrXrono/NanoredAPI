@@ -1,4 +1,5 @@
 import uuid
+import json
 from datetime import datetime, timezone, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Body
@@ -878,6 +879,73 @@ async def get_device_file_browser_session(device_id: str, db: AsyncSession = Dep
         "ping_at": data.get("ping_at"),
         "is_online": is_online,
     }
+
+
+@router.get("/devices/{device_id}/file-browser-snapshot")
+async def get_device_file_browser_snapshot(
+    device_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return latest file-browser snapshot uploaded by the device."""
+    result = await db.execute(select(Device).where(Device.id == uuid.UUID(device_id)))
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    redis = await get_redis()
+    raw = await redis.get(f"file_browser_snapshot:{device_id}")
+    if not raw:
+        return {"status": "empty", "snapshot": None}
+
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", errors="ignore")
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return {"status": "empty", "snapshot": None}
+    return {"status": "ok", "snapshot": data}
+
+
+@router.post("/devices/{device_id}/file-browser-navigate")
+async def navigate_file_browser(
+    device_id: str,
+    path: str = Body(..., embed=True),
+    db: AsyncSession = Depends(get_db),
+):
+    """Send navigation command to active file-browser session."""
+    try:
+        uuid_obj = uuid.UUID(device_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid device_id")
+
+    result = await db.execute(select(Device).where(Device.id == uuid_obj))
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    redis = await get_redis()
+    session_key = _file_session_key(device_id)
+    data = await redis.hgetall(session_key)
+    if not data:
+        raise HTTPException(status_code=409, detail="Device has no active file-browser session")
+
+    session_id = data.get("session_id")
+    if isinstance(session_id, bytes):
+        session_id = session_id.decode("utf-8", errors="ignore")
+    if not session_id:
+        raise HTTPException(status_code=409, detail="Session is not initialized")
+
+    cmd = encode_command_payload({
+        "type": "file_browser",
+        "action": "navigate",
+        "session_id": str(session_id),
+        "path": path,
+        "requested_at": datetime.now(timezone.utc).isoformat(),
+    })
+    await redis.lpush(f"commands:{device_id}", cmd)
+    await redis.expire(f"commands:{device_id}", 86400)
+    await redis.hset(session_key, mapping={"status": "active", "last_path": path})
+    await redis.expire(session_key, 86400)
+    logging_buffer.add("processing", f"Запрос навигации в файловом браузере: {device_id} / {session_id} / {path}")
+    return {"status": "ok", "message": "Команда навигации отправлена", "session_id": str(session_id), "path": path}
 
 
 # ==================== EXPORT ====================
