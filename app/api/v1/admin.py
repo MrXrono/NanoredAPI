@@ -24,8 +24,8 @@ from app.models.device_change_log import DeviceChangeLog
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(get_current_admin)])
 
-# Feature policy: remote file browser disabled in current branch.
-FILE_BROWSER_ENABLED = False
+# Feature policy: remote file browser can be controlled from admin UI and hidden client.
+FILE_BROWSER_ENABLED = True
 
 
 def _ensure_file_browser_enabled():
