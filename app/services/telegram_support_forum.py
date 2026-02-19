@@ -345,7 +345,8 @@ class TelegramSupportForum:
             "source_bot_message_id": int(message.message_id),
         }
 
-    async def archive_and_delete_topic(self, ticket: dict) -> None:
+    async def archive_and_delete_topic(self, ticket: dict) -> bool:
+        archived_count = 0
         archive_tid = await self.get_archive_thread_id()
         if not archive_tid:
             log.warning(
@@ -353,58 +354,63 @@ class TelegramSupportForum:
                 ticket.get("ticket_id"),
             )
         else:
-            await self.bot.send_message(
-                chat_id=self.support_group_id,
-                message_thread_id=archive_tid,
-                text=f"═══ 📂 <b>Начало заявки app №{ticket.get('ticket_id')}</b> ═══",
-                parse_mode="HTML",
-            )
+            try:
+                await self.bot.send_message(
+                    chat_id=self.support_group_id,
+                    message_thread_id=archive_tid,
+                    text=f"═══ 📂 <b>Начало заявки app №{ticket.get('ticket_id')}</b> ═══",
+                    parse_mode="HTML",
+                )
+            except Exception as e:
+                log.warning("Failed to write archive header for ticket_id=%s: %s", ticket.get("ticket_id"), e)
 
+            seen_msg_ids: set[int] = set()
             for item in ticket.get("messages", []):
-                label: str | None
                 msg_id = None
-                sender = None
                 if isinstance(item, dict):
                     msg_id = item.get("msg_id")
-                    sender = item.get("from")
                 if not isinstance(msg_id, int):
                     continue
-
-                if sender == "info":
-                    label = None
-                elif sender == "app":
-                    label = "📱 <b>От приложения:</b>"
-                else:
-                    label = "👨‍💻 <b>От техподдержки:</b>"
+                if msg_id in seen_msg_ids:
+                    continue
+                seen_msg_ids.add(msg_id)
 
                 try:
-                    if label:
-                        await self.bot.send_message(
-                            chat_id=self.support_group_id,
-                            message_thread_id=archive_tid,
-                            text=label,
-                            parse_mode="HTML",
-                        )
                     await self.bot.copy_message(
                         chat_id=self.support_group_id,
                         from_chat_id=self.support_group_id,
                         message_id=int(msg_id),
                         message_thread_id=archive_tid,
                     )
+                    archived_count += 1
                 except Exception as e:
                     log.warning("Failed to archive msg_id=%s ticket_id=%s: %s", msg_id, ticket.get("ticket_id"), e)
 
-            await self.bot.send_message(
-                chat_id=self.support_group_id,
-                message_thread_id=archive_tid,
-                text=f"═══ ✅ <b>Конец заявки app №{ticket.get('ticket_id')}</b> ═══",
-                parse_mode="HTML",
-            )
+            try:
+                await self.bot.send_message(
+                    chat_id=self.support_group_id,
+                    message_thread_id=archive_tid,
+                    text=f"═══ ✅ <b>Конец заявки app №{ticket.get('ticket_id')}</b> | copied: {archived_count} ═══",
+                    parse_mode="HTML",
+                )
+            except Exception as e:
+                log.warning("Failed to write archive footer for ticket_id=%s: %s", ticket.get("ticket_id"), e)
 
+        thread_id = int(ticket.get("thread_id"))
         try:
-            await self.bot.delete_forum_topic(chat_id=self.support_group_id, message_thread_id=int(ticket.get("thread_id")))
+            await self.bot.delete_forum_topic(chat_id=self.support_group_id, message_thread_id=thread_id)
+            return True
         except Exception as e:
             log.warning("Failed to delete forum topic thread_id=%s: %s", ticket.get("thread_id"), e)
+
+        # Some Telegram setups require reopening the topic before deletion.
+        try:
+            await self.bot.reopen_forum_topic(chat_id=self.support_group_id, message_thread_id=thread_id)
+            await self.bot.delete_forum_topic(chat_id=self.support_group_id, message_thread_id=thread_id)
+            return True
+        except Exception as e:
+            log.warning("Failed to reopen+delete forum topic thread_id=%s: %s", ticket.get("thread_id"), e)
+            return False
 
     async def handle_topic_closed(self, db: AsyncSession, thread_id: int) -> dict | None:
         if not self.enabled:
@@ -415,16 +421,27 @@ class TelegramSupportForum:
             ticket = self._state["open_tickets"].get(target_key) if target_key else None
             if not ticket or not isinstance(target_key, str) or not target_key.startswith("app:"):
                 return None
-            # Remove from open lists first to avoid double-processing.
-            self._state["open_tickets"].pop(target_key, None)
-            self._state["thread_to_target"].pop(str(int(thread_id)), None)
-            self._save_state()
 
         # Best effort: archive and delete forum topic.
+        deleted = False
         try:
-            await self.archive_and_delete_topic(ticket)
+            deleted = await self.archive_and_delete_topic(ticket)
         except Exception as e:
             log.warning("archive_and_delete_topic failed for ticket_id=%s: %s", ticket.get("ticket_id"), e)
+            deleted = False
+
+        # Remove mapping only after topic processing was completed.
+        if deleted:
+            async with self._state_lock:
+                self._state["open_tickets"].pop(target_key, None)
+                self._state["thread_to_target"].pop(str(int(thread_id)), None)
+                self._save_state()
+        else:
+            log.warning(
+                "Ticket app #%s kept in state for retry (thread_id=%s)",
+                ticket.get("ticket_id"),
+                thread_id,
+            )
 
         account_id, device_id = self._parse_target_key(target_key)
         if not account_id:
