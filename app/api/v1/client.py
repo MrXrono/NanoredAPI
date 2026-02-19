@@ -168,6 +168,42 @@ def resolve_server_ip(address: str | None) -> str | None:
     return None
 
 
+def normalize_ip(address: str | None) -> str | None:
+    if not address:
+        return None
+    value = address.strip()
+    if not value:
+        return None
+    try:
+        ipaddress.ip_address(value)
+        return value
+    except ValueError:
+        return None
+
+
+def extract_client_ip(request: Request, req: SessionStartRequest) -> str | None:
+    ip = normalize_ip(req.client_exit_ip)
+    if ip:
+        return ip
+
+    ip = normalize_ip(request.headers.get("X-Client-Exit-IP"))
+    if ip:
+        return ip
+
+    xff = request.headers.get("X-Forwarded-For")
+    if xff:
+        first_hop = xff.split(",")[0].strip()
+        ip = normalize_ip(first_hop)
+        if ip:
+            return ip
+
+    ip = normalize_ip(request.headers.get("X-Real-IP"))
+    if ip:
+        return ip
+
+    return normalize_ip(request.client.host if request.client else None)
+
+
 @router.post("/session/start", response_model=SessionStartResponse)
 async def session_start(
     req: SessionStartRequest,
@@ -176,8 +212,8 @@ async def session_start(
     x_api_key: str = Header(..., alias="X-API-Key"),
 ):
     device = await _get_device(x_api_key, db)
-    client_ip = request.headers.get("X-Real-IP") or request.client.host
-    geo = lookup_ip(client_ip)
+    client_ip = extract_client_ip(request, req)
+    geo = lookup_ip(client_ip) if client_ip else {"country": None, "city": None}
 
     session = Session(
         device_id=device.id,
