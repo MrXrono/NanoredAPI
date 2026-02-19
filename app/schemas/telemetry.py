@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 class SNIEntry(BaseModel):
@@ -64,26 +64,3 @@ class DeviceLogRequest(BaseModel):
     log_type: str = "logcat"  # logcat, crash, custom
     content: str
     app_version: str | None = None
-
-
-class FileSessionHeartbeatRequest(BaseModel):
-    session_id: str
-
-
-
-class FileBrowserEntry(BaseModel):
-    name: str
-    path: str
-    is_directory: bool
-    size_bytes: int | None = None
-    mime_type: str | None = None
-    modified_at: str | None = None
-    is_image: bool = False
-    thumbnail_base64: str | None = None
-
-
-class FileBrowserSnapshotRequest(BaseModel):
-    session_id: str
-    path: str
-    has_parent: bool = False
-    entries: list[FileBrowserEntry] = Field(default_factory=list)

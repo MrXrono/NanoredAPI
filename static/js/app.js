@@ -2,9 +2,6 @@ const API = '/api/v1';
 let token = localStorage.getItem('nanored_token');
 let accountsCache = [];
 let journalInterval = null;
-const fileBrowserSessions = new Map();
-const fileBrowserSnapshots = new Map();
-let fileBrowserPollIntervalMs = 3000;
 
 // ========== AUTH ==========
 async function api(path, opts = {}) {
@@ -323,257 +320,13 @@ async function viewDeviceDetail(deviceId) {
                 <div><strong>Посл. активность:</strong> ${formatDate(dev.last_seen_at)}</div>
             </div>
             ${permHtml}
-            <div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap;">
+            <div style="margin-top:16px;display:flex;gap:8px;">
                 <button class="btn btn-primary btn-sm" onclick="requestDeviceLogs('${dev.id}')">Запросить журнал</button>
-                <button class="btn btn-primary btn-sm" onclick="requestDeviceFileBrowser('${dev.id}')">Просмотр файлов</button>
                 <button class="btn btn-primary btn-sm" onclick="closeDeviceDetail();viewDeviceChanges('${dev.id}')">Изменения</button>
             </div>
         `;
         document.getElementById('device-detail-modal').style.display = 'flex';
     } catch (err) { console.error('Device detail error:', err); }
-}
-
-async function requestDeviceFileBrowser(deviceId) {
-    const modal = document.getElementById('file-browser-modal');
-    if (!modal) return;
-
-    if (fileBrowserSessions.has(deviceId)) {
-        closeFileBrowserSessionPolling(deviceId);
-    }
-
-    try {
-        const resp = await api(`/admin/devices/${deviceId}/request-file-browser`, { method: 'POST' });
-        const data = await resp.json();
-        if (resp.ok) {
-            const nowLabel = new Date().toLocaleString('ru-RU');
-            const sessionId = data.session_id || '-';
-            fileBrowserSessions.set(deviceId, {
-                sessionId,
-                pollTimer: null,
-                statusText: 'Запрошен запуск...',
-                active: true,
-                requestedAt: nowLabel,
-                consecutiveMissing: 0,
-            });
-
-            const labelDevice = document.getElementById('file-browser-device-label');
-            const labelSession = document.getElementById('file-browser-session-label');
-            if (labelDevice) labelDevice.querySelector('span').textContent = deviceId;
-            if (labelSession) labelSession.querySelector('span').textContent = sessionId;
-            const statusEl = document.getElementById('file-browser-status');
-            if (statusEl) statusEl.textContent = 'Запрос отправлен. Ожидание инициализации на устройстве...';
-            const pathLabel = document.getElementById('file-browser-path');
-            if (pathLabel) pathLabel.querySelector('span').textContent = '-';
-            renderFileBrowserList(deviceId, null);
-
-            document.querySelector('#file-browser-stop-btn').onclick = () => stopDeviceFileBrowser(deviceId);
-
-            modal.dataset.activeDeviceId = deviceId;
-            modal.style.display = 'flex';
-
-            const pollState = fileBrowserSessions.get(deviceId);
-            pollState.pollTimer = setInterval(() => pollFileBrowserSession(deviceId), fileBrowserPollIntervalMs);
-            fileBrowserSessions.set(deviceId, pollState);
-            await pollFileBrowserSession(deviceId);
-        } else {
-            alert('Ошибка: ' + (data.detail || 'Неизвестная ошибка'));
-        }
-    } catch (err) {
-        alert('Ошибка отправки команды');
-        console.error('Request file browser error:', err);
-    }
-}
-
-async function pollFileBrowserSession(deviceId) {
-    if (!fileBrowserSessions.has(deviceId)) return;
-
-    const state = fileBrowserSessions.get(deviceId);
-    if (!state || !state.active) return;
-
-    try {
-        const resp = await api(`/admin/devices/${deviceId}/file-browser-session`);
-        const data = await resp.json();
-        if (!resp.ok) {
-            if (++state.consecutiveMissing >= 3) {
-                closeFileBrowserSessionPolling(deviceId, 'Ошибка получения статуса сессии');
-            }
-            return;
-        }
-
-        if (!data || !data.status) return;
-
-        const statusEl = document.getElementById('file-browser-status');
-        const stopBtn = document.getElementById('file-browser-stop-btn');
-        if (!statusEl || !stopBtn) return;
-
-        state.consecutiveMissing = 0;
-        state.sessionId = data.session_id || state.sessionId || '';
-        const sessionLabel = document.getElementById('file-browser-session-label');
-        if (sessionLabel && state.sessionId) sessionLabel.querySelector('span').textContent = state.sessionId;
-        await pollFileBrowserSnapshot(deviceId);
-
-        if (data.status === 'active') {
-            if (data.is_online === false) {
-                statusEl.textContent = `Устройство оффлайн. Последний пинг: ${data.ping_at ? new Date(data.ping_at).toLocaleTimeString('ru-RU') : '—'}.`;
-            } else {
-                statusEl.textContent = `Сессия активна. Последний пинг: ${data.ping_at ? new Date(data.ping_at).toLocaleTimeString('ru-RU') : '—'}.`;
-            }
-            stopBtn.disabled = false;
-            await pollFileBrowserSnapshot(deviceId);
-            return;
-        }
-
-        if (data.status === 'pending') {
-            const requested = data.requested_at ? new Date(data.requested_at).toLocaleTimeString('ru-RU') : '—';
-            statusEl.textContent = `Ожидание инициализации на устройстве. Запрос: ${requested}.`;
-            stopBtn.disabled = false;
-            await pollFileBrowserSnapshot(deviceId);
-            return;
-        }
-
-        if (data.status === 'stopping' || data.status === 'idle' || data.status === 'closed') {
-            statusEl.textContent = 'Сессия завершена.';
-            stopBtn.disabled = true;
-            closeFileBrowserSessionPolling(deviceId, 'Сессия завершена');
-            return;
-        }
-
-        statusEl.textContent = `Неизвестный статус: ${data.status}`;
-    } catch (err) {
-        state.consecutiveMissing += 1;
-        if (state.consecutiveMissing >= 3) {
-            closeFileBrowserSessionPolling(deviceId, 'Нет ответа сервера');
-        }
-    }
-}
-
-function closeFileBrowserSessionPolling(deviceId, message = '') {
-    const state = fileBrowserSessions.get(deviceId);
-    if (state && state.pollTimer) {
-        clearInterval(state.pollTimer);
-    }
-    fileBrowserSessions.delete(deviceId);
-
-    const modal = document.getElementById('file-browser-modal');
-    if (!modal) return;
-    if (modal.dataset.activeDeviceId !== deviceId) return;
-
-    const statusEl = document.getElementById('file-browser-status');
-    if (message && statusEl) statusEl.textContent = message;
-    const pathLabel = document.getElementById('file-browser-path');
-    if (pathLabel) pathLabel.querySelector('span').textContent = '-';
-    renderFileBrowserList(deviceId, null);
-    modal.style.display = 'none';
-    modal.dataset.activeDeviceId = '';
-}
-
-async function pollFileBrowserSnapshot(deviceId) {
-    const modal = document.getElementById('file-browser-modal');
-    if (!modal || modal.dataset.activeDeviceId !== deviceId) return;
-
-    try {
-        const resp = await api(`/admin/devices/${deviceId}/file-browser-snapshot`);
-        if (!resp.ok) return;
-        const data = await resp.json();
-        if (data && data.status === 'ok' && data.snapshot) {
-            const snapshot = data.snapshot;
-            const pathLabel = document.getElementById('file-browser-path');
-            if (pathLabel) pathLabel.querySelector('span').textContent = snapshot.path || '-';
-            const state = fileBrowserSessions.get(deviceId);
-            if (state) {
-                state.sessionId = snapshot.session_id || state.sessionId || '';
-            }
-            renderFileBrowserList(deviceId, snapshot);
-            fileBrowserSnapshots.set(deviceId, snapshot);
-            return;
-        }
-        renderFileBrowserList(deviceId, null);
-        fileBrowserSnapshots.delete(deviceId);
-    } catch (_err) {
-        // no-op
-    }
-}
-
-function renderFileBrowserList(deviceId, snapshot) {
-    const container = document.getElementById('file-browser-list');
-    if (!container) return;
-
-    if (!snapshot || !Array.isArray(snapshot.entries)) {
-        container.innerHTML = '<div style="color:#999;">Снимок не получен.</div>';
-        return;
-    }
-
-    const sorted = [...snapshot.entries].sort((a, b) => {
-        const adir = !!a.is_directory;
-        const bdir = !!b.is_directory;
-        if (adir !== bdir) return adir ? -1 : 1;
-        return String(a.name || '').localeCompare(String(b.name || ''));
-    });
-
-    const rows = sorted.map(item => {
-        const icon = item.is_directory ? '📁' : (item.is_image ? '🖼' : '📄');
-        const meta = item.size_bytes != null ? ` (${Math.max(1, Math.ceil(item.size_bytes / 1024))} KB)` : '';
-        const thumb = item.thumbnail_base64
-            ? `<img src="data:image/jpeg;base64,${item.thumbnail_base64}" style="max-width:32px;max-height:32px;vertical-align:middle;margin-right:6px;" />`
-            : '';
-        const openBtn = item.is_directory
-            ? `<button class="btn btn-primary btn-sm" onclick="navigateFileBrowserFromServer('${deviceId}', '${String(item.path || '').replace(/'/g, "\\'")}')">Открыть</button>`
-            : '';
-        return `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #2e3847;"><span>${icon}</span><span style="display:inline-flex;align-items:center;${item.is_image ? '' : ''}">${thumb}</span><span style="flex:1;word-break:break-word;">${escapeHtml(item.name || '')}${meta}</span>${openBtn}</div>`;
-    }).join('');
-
-    container.innerHTML = rows || '<div style="color:#999;">Пусто.</div>';
-}
-
-async function navigateFileBrowserFromServer(deviceId, path) {
-    if (!deviceId || !path) return;
-    try {
-        const resp = await api(`/admin/devices/${deviceId}/file-browser-navigate`, {
-            method: 'POST',
-            body: JSON.stringify({ path }),
-        });
-        if (!resp.ok) {
-            const data = await resp.json().catch(() => ({ detail: 'Unknown error' }));
-            alert('Ошибка перехода: ' + (data.detail || 'Unknown'));
-        }
-    } catch (_err) {
-        alert('Ошибка отправки команды перехода');
-    }
-}
-
-function closeFileBrowserModal(manual = false) {
-    const modal = document.getElementById('file-browser-modal');
-    if (!modal) return;
-    const deviceId = modal.dataset.activeDeviceId;
-    if (deviceId) {
-        if (manual) {
-            stopDeviceFileBrowser(deviceId);
-        }
-        closeFileBrowserSessionPolling(deviceId);
-    } else {
-        modal.style.display = 'none';
-    }
-}
-
-async function stopDeviceFileBrowserFromModal() {
-    const modal = document.getElementById('file-browser-modal');
-    if (!modal) return;
-    const deviceId = modal.dataset.activeDeviceId;
-    if (!deviceId) return;
-    return stopDeviceFileBrowser(deviceId);
-}
-
-async function stopDeviceFileBrowser(deviceId) {
-    try {
-        const resp = await api(`/admin/devices/${deviceId}/stop-file-browser`, { method: 'POST' });
-        const data = await resp.json();
-        if (!resp.ok) {
-            alert('Ошибка остановки: ' + (data.detail || 'Неизвестная ошибка'));
-        }
-    } catch (err) {
-        console.error('Stop file browser error:', err);
-        alert('Ошибка отправки команды остановки');
-    }
 }
 
 async function requestDeviceLogs(deviceId) {
@@ -968,7 +721,6 @@ document.addEventListener('click', (e) => {
     const modals = {
         'device-detail-modal': closeDeviceDetail,
         'device-changes-modal': closeDeviceChanges,
-        'file-browser-modal': () => closeFileBrowserModal(true),
         'devlog-modal': closeDevLogModal,
     };
     const fn = modals[e.target.id];

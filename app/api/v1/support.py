@@ -120,7 +120,7 @@ async def send_support_message(
     await db.flush()
 
     try:
-        telegram_sent = await telegram_support_forum.send_from_app(
+        telegram_message_id = await telegram_support_forum.send_from_app(
             db=db,
             device=device,
             message_type=msg_type,
@@ -129,13 +129,8 @@ async def send_support_message(
             mime_type=mime_type,
             file_bytes=file_bytes,
         )
-        if telegram_sent:
-            telegram_message_id = telegram_sent.get("message_id")
-            msg.bridge_message_id = telegram_message_id
-            msg.source_bot_message_id = telegram_message_id
-            # Keep file_id for app->support attachments so the client can render/download later.
-            if telegram_sent.get("telegram_file_id"):
-                msg.telegram_file_id = telegram_sent.get("telegram_file_id")
+        msg.bridge_message_id = telegram_message_id
+        msg.source_bot_message_id = telegram_message_id
     except Exception as e:
         logging_buffer.add(
             "error",
@@ -167,15 +162,8 @@ async def get_support_messages(
         if after_ts:
             query = query.where(SupportMessage.created_at > after_ts)
 
-    if after_id:
-        # Incremental tail (newer than after_id).
-        result = await db.execute(query.order_by(SupportMessage.created_at.asc()).limit(limit))
-        items = result.scalars().all()
-    else:
-        # Initial load should return the most recent messages, not the oldest ones.
-        # We fetch a descending page, then reverse it so the client can render oldest->newest.
-        result = await db.execute(query.order_by(SupportMessage.created_at.desc()).limit(limit))
-        items = list(reversed(result.scalars().all()))
+    result = await db.execute(query.order_by(SupportMessage.created_at.asc()).limit(limit))
+    items = result.scalars().all()
 
     unread_count_q = await db.execute(
         select(func.count(SupportMessage.id)).where(

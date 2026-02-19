@@ -140,26 +140,6 @@
             </div>
         </div>
 
-        <!-- FILE BROWSER MODAL -->
-        <div id="file-browser-modal" class="modal-overlay" style="display:none;">
-            <div class="modal-content" style="max-width:900px;">
-                <div class="modal-header">
-                    <h3>Просмотр файлов на устройстве</h3>
-                    <button class="btn btn-sm btn-danger" onclick="closeFileBrowserModal(true)">&times;</button>
-                </div>
-                <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px;">
-                    <div><strong>Сессия:</strong> <span id="file-browser-session-label"><span>-</span></span></div>
-                    <div><strong>Устройство:</strong> <span id="file-browser-device-label"><span>-</span></span></div>
-                </div>
-                <div id="file-browser-path"><strong>Путь:</strong> <span>-</span></div>
-                <div id="file-browser-status" style="margin-top:8px;color:#9aa3b2;">Инициализация...</div>
-                <div id="file-browser-list" style="margin-top:12px;max-height:420px;overflow:auto;border-top:1px solid #2f3a4b;padding-top:10px;"></div>
-                <div style="margin-top:14px;text-align:right;">
-                    <button class="btn btn-danger btn-sm" id="file-browser-stop-btn">Остановить просмотр</button>
-                </div>
-            </div>
-        </div>
-
         <!-- DEVICE CHANGES MODAL -->
         <div id="device-changes-modal" class="modal-overlay" style="display:none;">
             <div class="modal-content" style="max-width:750px;">

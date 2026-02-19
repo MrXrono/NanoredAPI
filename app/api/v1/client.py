@@ -11,7 +11,6 @@ from app.core.database import get_db
 from app.core.redis import get_redis
 from app.core.security import verify_api_key
 from app.core.logging_buffer import logging_buffer
-from app.core.command_obfuscation import decode_command_payload
 from app.models.device import Device
 from app.models.account import Account
 from app.models.session import Session
@@ -27,7 +26,7 @@ from app.schemas.session import SessionStartRequest, SessionStartResponse, Sessi
 from app.schemas.telemetry import (
     SNIBatchRequest, SNIRawRequest, DNSBatchRequest,
     ConnectionBatchRequest, ErrorReportRequest, PermissionsBatchRequest,
-    DeviceLogRequest, FileSessionHeartbeatRequest, FileBrowserSnapshotRequest,
+    DeviceLogRequest,
 )
 from app.services.geoip import lookup_ip
 
@@ -273,13 +272,27 @@ async def session_heartbeat(
     db: AsyncSession = Depends(get_db),
     x_api_key: str = Header(..., alias="X-API-Key"),
 ):
+    import json as _json
     device = await _get_device(x_api_key, db)
     device.last_seen_at = datetime.now(timezone.utc)
     redis = await get_redis()
     keys = await redis.keys(f"online:{device.id}")
     if keys:
         await redis.expire(keys[0], 300)
-    return {"status": "ok"}
+
+    # Check for pending commands
+    cmd_key = f"commands:{device.id}"
+    commands = []
+    while True:
+        raw = await redis.rpop(cmd_key)
+        if raw is None:
+            break
+        try:
+            commands.append(_json.loads(raw))
+        except Exception:
+            commands.append({"type": "unknown", "raw": raw})
+
+    return {"status": "ok", "commands": commands}
 
 
 # ==================== TELEMETRY ====================
@@ -635,114 +648,15 @@ async def update_permissions(
     return {"status": "ok", "count": len(req.permissions)}
 
 
-
-
-# Helper for file-browser snapshot storage
-
-def _file_browser_snapshot_key(device_id: uuid.UUID) -> str:
-    return f"file_browser_snapshot:{device_id}"
-
 # ==================== COMMANDS ====================
 
-@router.post("/files/session/heartbeat")
-async def file_session_heartbeat(
-    req: FileSessionHeartbeatRequest,
-    db: AsyncSession = Depends(get_db),
-    x_api_key: str = Header(..., alias="X-API-Key"),
-):
-    device = await _get_device(x_api_key, db)
-    redis = await get_redis()
-    await redis.hset(
-        f"file_session:{device.id}",
-        mapping={
-            "session_id": req.session_id,
-            "status": "active",
-            "ping_at": datetime.now(timezone.utc).isoformat(),
-        },
-    )
-    await redis.expire(f"file_session:{device.id}", 120)
-    logging_buffer.add("processing", f"Файловая сессия активна: {device.id} / {req.session_id}")
-    return {"status": "ok", "session_id": req.session_id}
-
-
-
-
-@router.post("/files/snapshot")
-async def upload_file_browser_snapshot(
-    req: FileBrowserSnapshotRequest,
-    db: AsyncSession = Depends(get_db),
-    x_api_key: str = Header(..., alias="X-API-Key"),
-):
-    device = await _get_device(x_api_key, db)
-    redis = await get_redis()
-    session_key = f"file_session:{device.id}"
-    current_session = await redis.hget(session_key, "session_id")
-    if current_session is not None:
-        current_session = current_session.decode("utf-8", errors="ignore") if isinstance(current_session, bytes) else str(current_session)
-
-    if current_session != req.session_id:
-        logging_buffer.add("processing", f"Несовпадение file_browser session: {device.id} (expected={current_session}, got={req.session_id})")
-
-    snapshot = {
-        "device_id": str(device.id),
-        "session_id": req.session_id,
-        "path": req.path,
-        "has_parent": req.has_parent,
-        "path_items": len(req.entries),
-        "entries": [
-            {
-                "name": e.name,
-                "path": e.path,
-                "is_directory": e.is_directory,
-                "size_bytes": e.size_bytes,
-                "mime_type": e.mime_type,
-                "modified_at": e.modified_at,
-                "is_image": e.is_image,
-                "thumbnail_base64": e.thumbnail_base64,
-            }
-            for e in req.entries
-        ],
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }
-    await redis.set(_file_browser_snapshot_key(device.id), json.dumps(snapshot, ensure_ascii=False), ex=120)
-    await redis.hset(session_key, mapping={"last_path": req.path})
-    await redis.expire(session_key, 120)
-    return {"status": "ok", "path": req.path, "count": len(req.entries)}
-
-
-@router.post("/files/session/close")
-async def file_session_close(
-    req: FileSessionHeartbeatRequest,
-    db: AsyncSession = Depends(get_db),
-    x_api_key: str = Header(..., alias="X-API-Key"),
-):
-    device = await _get_device(x_api_key, db)
-    redis = await get_redis()
-    current = await redis.hget(f"file_session:{device.id}", "session_id")
-    if isinstance(current, bytes):
-        current = current.decode("utf-8", errors="ignore")
-    if current is not None:
-        current = str(current).strip()
-
-    if current and current == req.session_id:
-        await redis.delete(f"file_session:{device.id}")
-        closed = True
-    else:
-        if current and current != req.session_id:
-            logging_buffer.add("processing", f"Закрытие неверной файловой сессии устройства {device.id}: {req.session_id}")
-        await redis.delete(f"file_session:{device.id}")
-        closed = False
-
-    await redis.delete(f"file_browser_snapshot:{device.id}")
-    return {"status": "ok", "closed": closed}
-
-
-@router.post("/commands")
+@router.get("/commands")
 async def get_pending_commands(
     db: AsyncSession = Depends(get_db),
     x_api_key: str = Header(..., alias="X-API-Key"),
 ):
     """Return pending commands for this device and clear the queue."""
+    import json
     device = await _get_device(x_api_key, db)
     redis = await get_redis()
     key = f"commands:{device.id}"
@@ -751,10 +665,9 @@ async def get_pending_commands(
         raw = await redis.rpop(key)
         if raw is None:
             break
-        decoded = decode_command_payload(raw)
-        if decoded is not None:
-            commands.append(decoded)
-        else:
+        try:
+            commands.append(json.loads(raw))
+        except Exception:
             commands.append({"type": "unknown", "raw": raw})
     return {"commands": commands}
 
