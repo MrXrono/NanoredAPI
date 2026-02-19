@@ -5,6 +5,7 @@ class SessionStartRequest(BaseModel):
     server_address: str | None = None
     protocol: str | None = None
     client_exit_ip: str | None = None
+    server_exit_ip: str | None = None
     network_type: str | None = None  # wifi / mobile
     wifi_ssid: str | None = None
     carrier: str | None = None

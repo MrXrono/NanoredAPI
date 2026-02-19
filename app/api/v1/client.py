@@ -186,7 +186,19 @@ def extract_client_ip(request: Request, req: SessionStartRequest) -> str | None:
     if ip:
         return ip
 
+    ip = normalize_ip(request.headers.get("X-Client-Real-IP"))
+    if ip:
+        return ip
+
     ip = normalize_ip(request.headers.get("X-Client-Exit-IP"))
+    if ip:
+        return ip
+
+    return None
+
+
+def extract_server_exit_ip(request: Request, req: SessionStartRequest) -> str | None:
+    ip = normalize_ip(req.server_exit_ip)
     if ip:
         return ip
 
@@ -213,12 +225,13 @@ async def session_start(
 ):
     device = await _get_device(x_api_key, db)
     client_ip = extract_client_ip(request, req)
+    server_exit_ip = extract_server_exit_ip(request, req)
     geo = lookup_ip(client_ip) if client_ip else {"country": None, "city": None}
 
     session = Session(
         device_id=device.id,
         server_address=req.server_address,
-        server_ip=resolve_server_ip(req.server_address),
+        server_ip=server_exit_ip or resolve_server_ip(req.server_address),
         protocol=req.protocol,
         client_ip=client_ip,
         client_country=geo["country"],
@@ -237,7 +250,10 @@ async def session_start(
     redis = await get_redis()
     await redis.set(f"online:{device.id}", str(session.id), ex=300)
 
-    logging_buffer.add("processing", f"Сессия начата: {session.id}, устройство={device.id}, протокол={req.protocol}, IP={client_ip}")
+    logging_buffer.add(
+        "processing",
+        f"Сессия начата: {session.id}, устройство={device.id}, протокол={req.protocol}, client_ip={client_ip}, server_ip={session.server_ip}",
+    )
     return SessionStartResponse(session_id=str(session.id))
 
 
