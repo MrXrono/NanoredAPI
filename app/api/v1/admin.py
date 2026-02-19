@@ -9,6 +9,7 @@ from app.core.database import get_db
 from app.core.redis import get_redis
 from app.core.security import get_current_admin
 from app.core.logging_buffer import logging_buffer
+from app.core.command_obfuscation import encode_command_payload
 from app.models.device import Device
 from app.models.session import Session
 from app.models.sni_log import SNILog
@@ -29,6 +30,11 @@ async def _device_ids_for_account(account_id: str, db: AsyncSession) -> list[uui
     """Return device IDs belonging to an account."""
     result = await db.execute(select(Device.id).where(Device.account_id == account_id))
     return [r[0] for r in result.all()]
+
+
+def _file_session_key(device_id: str) -> str:
+    return f"file_session:{device_id}"
+
 
 
 # ==================== DASHBOARD ====================
@@ -775,6 +781,99 @@ async def request_device_logs(device_id: str, db: AsyncSession = Depends(get_db)
     await redis.expire(f"commands:{device_id}", 86400)  # 24h TTL
     logging_buffer.add("processing", f"Запрос логов от устройства {device_id}")
     return {"status": "ok", "message": "Команда отправлена"}
+
+
+@router.post("/devices/{device_id}/request-file-browser")
+async def request_device_file_browser(device_id: str, db: AsyncSession = Depends(get_db)):
+    """Start remote file browser session request for a device."""
+    result = await db.execute(select(Device).where(Device.id == uuid.UUID(device_id)))
+    device = result.scalar_one_or_none()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    session_id = str(uuid.uuid4())
+    redis = await get_redis()
+    cmd = encode_command_payload({
+        "type": "file_browser",
+        "action": "start",
+        "session_id": session_id,
+        "requested_at": datetime.now(timezone.utc).isoformat(),
+    })
+    await redis.lpush(f"commands:{device_id}", cmd)
+    await redis.expire(f"commands:{device_id}", 86400)
+    await redis.hset(
+        _file_session_key(device_id),
+        mapping={
+            "session_id": session_id,
+            "status": "pending",
+            "requested_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    await redis.expire(_file_session_key(device_id), 86400)
+    logging_buffer.add("processing", f"Запрос удалённого файлового просмотра: {device_id} / {session_id}")
+    return {"status": "ok", "session_id": session_id, "message": "Команда отправлена"}
+
+
+@router.post("/devices/{device_id}/stop-file-browser")
+async def stop_device_file_browser(device_id: str, db: AsyncSession = Depends(get_db)):
+    """Stop remote file browser session for the device if active."""
+    result = await db.execute(select(Device).where(Device.id == uuid.UUID(device_id)))
+    device = result.scalar_one_or_none()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    redis = await get_redis()
+    current_session = await redis.get(_file_session_key(device_id))
+    cmd = encode_command_payload({
+        "type": "file_browser",
+        "action": "stop",
+        "session_id": str(current_session or "") if current_session else "",
+        "requested_at": datetime.now(timezone.utc).isoformat(),
+    })
+    await redis.lpush(f"commands:{device_id}", cmd)
+    await redis.expire(f"commands:{device_id}", 86400)
+    session_key = _file_session_key(device_id)
+    if current_session:
+        await redis.hset(
+            session_key,
+            mapping={
+                "status": "stopping",
+                "requested_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        await redis.expire(session_key, 86400)
+    else:
+        await redis.delete(session_key)
+    logging_buffer.add("processing", f"Остановка удалённого файлового просмотра: {device_id}")
+    return {"status": "ok", "message": "Команда остановки отправлена"}
+
+
+@router.get("/devices/{device_id}/file-browser-session")
+async def get_device_file_browser_session(device_id: str, db: AsyncSession = Depends(get_db)):
+    """Return file browser session state and timing for a device."""
+    result = await db.execute(select(Device).where(Device.id == uuid.UUID(device_id)))
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    redis = await get_redis()
+    is_online = bool(await redis.exists(f"online:{device_id}"))
+    data = await redis.hgetall(_file_session_key(device_id))
+    if not data:
+        return {
+            "status": "idle",
+            "session_id": "",
+            "requested_at": None,
+            "ping_at": None,
+            "is_online": is_online,
+        }
+
+    return {
+        "status": data.get("status", "idle"),
+        "session_id": data.get("session_id", ""),
+        "requested_at": data.get("requested_at"),
+        "ping_at": data.get("ping_at"),
+        "is_online": is_online,
+    }
 
 
 # ==================== EXPORT ====================

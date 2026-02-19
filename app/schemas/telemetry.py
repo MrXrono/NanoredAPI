@@ -64,3 +64,7 @@ class DeviceLogRequest(BaseModel):
     log_type: str = "logcat"  # logcat, crash, custom
     content: str
     app_version: str | None = None
+
+
+class FileSessionHeartbeatRequest(BaseModel):
+    session_id: str
