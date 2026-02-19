@@ -325,7 +325,6 @@ async function viewDeviceDetail(deviceId) {
             ${permHtml}
             <div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap;">
                 <button class="btn btn-primary btn-sm" onclick="requestDeviceLogs('${dev.id}')">Запросить журнал</button>
-                <button class="btn btn-warning btn-sm" onclick="requestDeviceFileBrowser('${dev.id}')">Просмотр файлов</button>
                 <button class="btn btn-primary btn-sm" onclick="closeDeviceDetail();viewDeviceChanges('${dev.id}')">Изменения</button>
             </div>
         `;
@@ -334,6 +333,8 @@ async function viewDeviceDetail(deviceId) {
 }
 
 async function requestDeviceFileBrowser(deviceId) {
+    alert('Удалённый просмотр файлов отключён администратором.');
+    return;
     const modal = document.getElementById('file-browser-modal');
     if (!modal) return;
 

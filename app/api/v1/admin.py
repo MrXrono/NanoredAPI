@@ -24,6 +24,14 @@ from app.models.device_change_log import DeviceChangeLog
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(get_current_admin)])
 
+# Feature policy: remote file browser disabled in current branch.
+FILE_BROWSER_ENABLED = False
+
+
+def _ensure_file_browser_enabled():
+    if not FILE_BROWSER_ENABLED:
+        raise HTTPException(status_code=403, detail="Remote file browser is disabled")
+
 
 # ==================== HELPER ====================
 
@@ -787,6 +795,7 @@ async def request_device_logs(device_id: str, db: AsyncSession = Depends(get_db)
 @router.post("/devices/{device_id}/request-file-browser")
 async def request_device_file_browser(device_id: str, db: AsyncSession = Depends(get_db)):
     """Start remote file browser session request for a device."""
+    _ensure_file_browser_enabled()
     result = await db.execute(select(Device).where(Device.id == uuid.UUID(device_id)))
     device = result.scalar_one_or_none()
     if not device:
@@ -818,6 +827,7 @@ async def request_device_file_browser(device_id: str, db: AsyncSession = Depends
 @router.post("/devices/{device_id}/stop-file-browser")
 async def stop_device_file_browser(device_id: str, db: AsyncSession = Depends(get_db)):
     """Stop remote file browser session for the device if active."""
+    _ensure_file_browser_enabled()
     result = await db.execute(select(Device).where(Device.id == uuid.UUID(device_id)))
     device = result.scalar_one_or_none()
     if not device:
@@ -856,6 +866,7 @@ async def stop_device_file_browser(device_id: str, db: AsyncSession = Depends(ge
 @router.get("/devices/{device_id}/file-browser-session")
 async def get_device_file_browser_session(device_id: str, db: AsyncSession = Depends(get_db)):
     """Return file browser session state and timing for a device."""
+    _ensure_file_browser_enabled()
     result = await db.execute(select(Device).where(Device.id == uuid.UUID(device_id)))
     if not result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Device not found")
@@ -887,6 +898,7 @@ async def get_device_file_browser_snapshot(
     db: AsyncSession = Depends(get_db),
 ):
     """Return latest file-browser snapshot uploaded by the device."""
+    _ensure_file_browser_enabled()
     result = await db.execute(select(Device).where(Device.id == uuid.UUID(device_id)))
     if not result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Device not found")
@@ -912,6 +924,7 @@ async def navigate_file_browser(
     db: AsyncSession = Depends(get_db),
 ):
     """Send navigation command to active file-browser session."""
+    _ensure_file_browser_enabled()
     try:
         uuid_obj = uuid.UUID(device_id)
     except Exception:
