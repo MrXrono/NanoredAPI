@@ -22,6 +22,22 @@ from app.models.device_change_log import DeviceChangeLog
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(get_current_admin)])
 
+_PERMISSION_LABELS = {
+    "android.permission.CAMERA": "Камера",
+    "android.permission.READ_MEDIA_IMAGES": "Фото/изображения",
+    "android.permission.READ_MEDIA_VIDEO": "Видео",
+    "android.permission.READ_MEDIA_AUDIO": "Аудио",
+    "android.permission.READ_EXTERNAL_STORAGE": "Файлы (чтение)",
+    "android.permission.WRITE_EXTERNAL_STORAGE": "Файлы (запись)",
+    "android.permission.POST_NOTIFICATIONS": "Уведомления",
+    "android.permission.REQUEST_INSTALL_PACKAGES": "Установка APK",
+    "android.permission.ACCESS_NETWORK_STATE": "Состояние сети",
+    "android.permission.INTERNET": "Интернет",
+    "android.permission.FOREGROUND_SERVICE": "Фоновый сервис",
+    "android.permission.FOREGROUND_SERVICE_DATA_SYNC": "Фоновая синхронизация",
+    "android.permission.QUERY_ALL_PACKAGES": "Список приложений",
+}
+
 
 # ==================== HELPER ====================
 
@@ -262,7 +278,11 @@ async def get_device(device_id: str, db: AsyncSession = Depends(get_db)):
     perm_result = await db.execute(
         select(DevicePermission).where(DevicePermission.device_id == device.id)
     )
-    permissions = [{"name": p.permission_name, "granted": p.granted} for p in perm_result.scalars().all()]
+    permissions = [{
+        "name": p.permission_name,
+        "label": _PERMISSION_LABELS.get(p.permission_name, p.permission_name),
+        "granted": p.granted,
+    } for p in perm_result.scalars().all()]
 
     # Get battery level from last session
     last_session = (await db.execute(

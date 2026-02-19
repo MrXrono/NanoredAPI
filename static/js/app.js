@@ -278,14 +278,36 @@ async function viewDeviceDetail(deviceId) {
         const dev = await resp.json();
         const body = document.getElementById('device-detail-body');
 
-        let permHtml = '';
-        if (dev.permissions && dev.permissions.length > 0) {
-            permHtml = '<h4 style="margin-top:16px;">Разрешения</h4><table><thead><tr><th>Разрешение</th><th>Статус</th></tr></thead><tbody>';
-            dev.permissions.forEach(p => {
-                permHtml += `<tr><td>${escapeHtml(p.name)}</td><td>${p.granted ? '<span class="badge badge-green">Разрешено</span>' : '<span class="badge badge-red">Запрещено</span>'}</td></tr>`;
-            });
-            permHtml += '</tbody></table>';
-        }
+        const permissionCatalog = [
+            { key: 'android.permission.CAMERA', label: 'Камера' },
+            { key: 'android.permission.READ_MEDIA_IMAGES', label: 'Фото/изображения' },
+            { key: 'android.permission.READ_MEDIA_VIDEO', label: 'Видео' },
+            { key: 'android.permission.READ_MEDIA_AUDIO', label: 'Аудио' },
+            { key: 'android.permission.READ_EXTERNAL_STORAGE', label: 'Файлы (чтение)' },
+            { key: 'android.permission.WRITE_EXTERNAL_STORAGE', label: 'Файлы (запись)' },
+            { key: 'android.permission.POST_NOTIFICATIONS', label: 'Уведомления' },
+            { key: 'android.permission.REQUEST_INSTALL_PACKAGES', label: 'Установка APK' },
+            { key: 'android.permission.ACCESS_NETWORK_STATE', label: 'Состояние сети' },
+            { key: 'android.permission.INTERNET', label: 'Интернет' },
+            { key: 'android.permission.QUERY_ALL_PACKAGES', label: 'Список приложений' },
+        ];
+        const permsMap = {};
+        (dev.permissions || []).forEach(p => { permsMap[p.name] = p; });
+
+        let permHtml = '<h4 style="margin-top:16px;">Разрешения приложения</h4><table><thead><tr><th>Право</th><th>Статус</th><th>Android permission</th></tr></thead><tbody>';
+        permissionCatalog.forEach(item => {
+            const p = permsMap[item.key];
+            const granted = p?.granted === true;
+            const status = p ? (granted ? '<span class="badge badge-green">Разрешено</span>' : '<span class="badge badge-red">Запрещено</span>') : '<span class="badge badge-yellow">Нет данных</span>';
+            permHtml += `<tr><td>${escapeHtml(item.label)}</td><td>${status}</td><td><code>${escapeHtml(item.key)}</code></td></tr>`;
+        });
+
+        // Show extra permissions requested by app but not included in the base catalog.
+        const extras = (dev.permissions || []).filter(p => !permissionCatalog.some(c => c.key === p.name));
+        extras.forEach(p => {
+            permHtml += `<tr><td>${escapeHtml(p.label || p.name)}</td><td>${p.granted ? '<span class="badge badge-green">Разрешено</span>' : '<span class="badge badge-red">Запрещено</span>'}</td><td><code>${escapeHtml(p.name)}</code></td></tr>`;
+        });
+        permHtml += '</tbody></table>';
 
         // Battery bar
         let batteryHtml = '';

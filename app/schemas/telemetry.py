@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, Field
 
 
 class SNIEntry(BaseModel):
@@ -52,7 +52,8 @@ class ErrorReportRequest(BaseModel):
 
 
 class PermissionEntry(BaseModel):
-    name: str
+    # Backward-compatible: client may send either "name" or legacy "permission_name".
+    name: str = Field(validation_alias=AliasChoices("name", "permission_name"))
     granted: bool = False
 
 

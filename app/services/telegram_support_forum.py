@@ -365,7 +365,14 @@ class TelegramSupportForum:
                 log.warning("Failed to write archive header for ticket_id=%s: %s", ticket.get("ticket_id"), e)
 
             seen_msg_ids: set[int] = set()
-            for item in ticket.get("messages", []):
+            items = ticket.get("messages", [])
+            # Preserve chronological order in archive.
+            if isinstance(items, list):
+                items = sorted(
+                    items,
+                    key=lambda x: int(x.get("msg_id", 0)) if isinstance(x, dict) else 0,
+                )
+            for item in items:
                 msg_id = None
                 if isinstance(item, dict):
                     msg_id = item.get("msg_id")
@@ -384,7 +391,23 @@ class TelegramSupportForum:
                     )
                     archived_count += 1
                 except Exception as e:
-                    log.warning("Failed to archive msg_id=%s ticket_id=%s: %s", msg_id, ticket.get("ticket_id"), e)
+                    # Some Telegram content cannot be copied in all contexts; fallback to forward.
+                    try:
+                        await self.bot.forward_message(
+                            chat_id=self.support_group_id,
+                            from_chat_id=self.support_group_id,
+                            message_id=int(msg_id),
+                            message_thread_id=archive_tid,
+                        )
+                        archived_count += 1
+                    except Exception as e2:
+                        log.warning(
+                            "Failed to archive msg_id=%s ticket_id=%s: copy=%s, forward=%s",
+                            msg_id,
+                            ticket.get("ticket_id"),
+                            e,
+                            e2,
+                        )
 
             try:
                 await self.bot.send_message(

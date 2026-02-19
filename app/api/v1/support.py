@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime, timezone
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile, status
 from sqlalchemy import func, select
@@ -17,6 +18,17 @@ from app.services.telegram_support_forum import telegram_support_forum
 router = APIRouter(prefix="/client/support", tags=["client-support"])
 
 _MAX_ATTACHMENT_SIZE = 50 * 1024 * 1024
+
+
+def _build_content_disposition(filename: str) -> str:
+    """
+    RFC 6266/5987-safe Content-Disposition for non-ASCII filenames.
+    Prevents latin-1 encode crashes on Cyrillic and other Unicode names.
+    """
+    cleaned = (filename or "").replace("\r", " ").replace("\n", " ").strip() or "attachment.bin"
+    ascii_fallback = cleaned.encode("ascii", "ignore").decode("ascii").strip() or "attachment.bin"
+    utf8_quoted = quote(cleaned.encode("utf-8"))
+    return f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{utf8_quoted}"
 
 
 async def _get_device(api_key: str, db: AsyncSession) -> Device:
@@ -256,7 +268,7 @@ async def download_media(
     content = await telegram_support_forum.download_file(msg.telegram_file_id)
     media_type = msg.mime_type or "application/octet-stream"
     filename = msg.file_name or f"support-{message_id}"
-    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    headers = {"Content-Disposition": _build_content_disposition(filename)}
     return Response(content=content, media_type=media_type, headers=headers)
 
 
