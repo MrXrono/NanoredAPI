@@ -132,7 +132,7 @@ async def send_support_message(
     await db.flush()
 
     try:
-        telegram_message_id = await telegram_support_forum.send_from_app(
+        sent_meta = await telegram_support_forum.send_from_app(
             db=db,
             device=device,
             message_type=msg_type,
@@ -141,8 +141,19 @@ async def send_support_message(
             mime_type=mime_type,
             file_bytes=file_bytes,
         )
-        msg.bridge_message_id = telegram_message_id
-        msg.source_bot_message_id = telegram_message_id
+        if isinstance(sent_meta, dict):
+            telegram_message_id = sent_meta.get("message_id")
+            msg.bridge_message_id = telegram_message_id
+            msg.source_bot_message_id = telegram_message_id
+
+            # Persist Telegram media metadata for app->support attachments so app can fetch/open them later.
+            msg.telegram_file_id = sent_meta.get("telegram_file_id")
+            if sent_meta.get("mime_type"):
+                msg.mime_type = sent_meta.get("mime_type")
+            if sent_meta.get("file_name"):
+                msg.file_name = sent_meta.get("file_name")
+            if sent_meta.get("file_size"):
+                msg.file_size = sent_meta.get("file_size")
     except Exception as e:
         logging_buffer.add(
             "error",

@@ -179,7 +179,7 @@ class TelegramSupportForum:
         file_name: str | None = None,
         mime_type: str | None = None,
         file_bytes: bytes | None = None,
-    ) -> int | None:
+    ) -> dict | None:
         if not self.enabled:
             return None
 
@@ -226,10 +226,18 @@ class TelegramSupportForum:
                     caption=caption,
                 )
 
+            telegram_file_id, sent_mime, sent_size, sent_name = self._extract_file(sent)
+
             async with self._state_lock:
                 ticket["messages"].append({"msg_id": int(sent.message_id), "from": "app"})
                 self._save_state()
-            return int(sent.message_id)
+            return {
+                "message_id": int(sent.message_id),
+                "telegram_file_id": telegram_file_id,
+                "mime_type": sent_mime or mime_type,
+                "file_size": sent_size,
+                "file_name": sent_name or file_name,
+            }
 
         body = text or ""
         sent = await self.bot.send_message(
@@ -240,7 +248,7 @@ class TelegramSupportForum:
         async with self._state_lock:
             ticket["messages"].append({"msg_id": int(sent.message_id), "from": "app"})
             self._save_state()
-        return int(sent.message_id)
+        return {"message_id": int(sent.message_id)}
 
     @staticmethod
     def _infer_type(message: Message) -> SupportMessageType:
