@@ -12,30 +12,26 @@ _SCHEMA_INIT_LOCK = asyncio.Lock()
 _SCHEMA_READY = False
 
 
-def _table_ensure_error_is_ignorable(exc: Exception) -> bool:
-    msg = str(exc).lower()
-    return (
-        "already exists" in msg
-        or "duplicate" in msg
-        or "relation already exists" in msg
-        or "constraint" in msg and "already exists" in msg
-    )
+def _normalize_schema_name(schema_name: str | None) -> str | None:
+    if not schema_name:
+        return None
+    return schema_name
 
 
-def _create_tables_sync(connection) -> None:
+def _table_exists(inspector, table) -> bool:
+    schema = _normalize_schema_name(table.schema)
+    tables = set(inspector.get_table_names(schema=schema))
+    return table.name in tables
+
+
+def _create_missing_tables_sync(connection) -> None:
     metadata = Base.metadata
+    inspector = inspect(connection)
+
     for table in metadata.sorted_tables:
-        try:
-            table.create(bind=connection, checkfirst=True)
-        except Exception as exc:
-            if _table_ensure_error_is_ignorable(exc):
-                logger.warning("Schema bootstrap: table/index already exists while creating %s: %s", table.name, exc)
-                try:
-                    connection.rollback()
-                except Exception:
-                    pass
-                continue
-            raise
+        if _table_exists(inspector, table):
+            continue
+        table.create(bind=connection, checkfirst=False)
 
 
 async def ensure_base_schema_ready(force: bool = False) -> bool:
@@ -53,10 +49,13 @@ async def ensure_base_schema_ready(force: bool = False) -> bool:
 
         try:
             async with engine.begin() as conn:
-                await conn.run_sync(_create_tables_sync)
+                await conn.run_sync(_create_missing_tables_sync)
+
             # Validate that core tables are now visible for current metadata.
             async with engine.connect() as conn:
-                existing = await conn.run_sync(lambda c: set(inspect(c).get_table_names()))
+                existing = await conn.run_sync(
+                    lambda c: set(inspect(c).get_table_names())
+                )
             required = {t.name for t in Base.metadata.sorted_tables}
             if not required.issubset(existing):
                 missing = sorted(required.difference(existing))
