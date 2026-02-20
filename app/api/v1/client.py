@@ -778,6 +778,7 @@ async def ingest_remnawave_logs(
     inserted = 0
     account_last_activity: dict[str, datetime] = {}
     dns_unique_points: dict[str, tuple[datetime, datetime]] = {}
+    query_rows: list[dict] = []
 
     for entry in req.entries:
         account_login = (entry.account or "").strip()
@@ -797,47 +798,52 @@ async def ingest_remnawave_logs(
             first_seen, last_seen = prev_dns
             dns_unique_points[dns_root] = (min(first_seen, ts), max(last_seen, ts))
 
-        db.add(
-            RemnawaveDNSQuery(
-                account_login=account_login,
-                dns=dns_root,
-                node_name=(entry.node or "").strip() or None,
-                requested_at=ts,
-            )
+        query_rows.append(
+            {
+                "id": uuid.uuid4(),
+                "account_login": account_login,
+                "dns": dns_root,
+                "node_name": (entry.node or "").strip() or None,
+                "requested_at": ts,
+            }
         )
         inserted += 1
 
     if not inserted:
         return {"status": "ok", "inserted": 0, "accounts_upserted": 0}
 
+    async def _upsert_accounts_once() -> None:
+        for account_login in sorted(account_last_activity):
+            ts = account_last_activity[account_login]
+            account_stmt = pg_insert(RemnawaveAccount).values(
+                account_login=account_login,
+                last_activity_at=ts,
+                created_at=now,
+                updated_at=now,
+            )
+            account_stmt = account_stmt.on_conflict_do_update(
+                index_elements=[RemnawaveAccount.account_login],
+                set_={
+                    "last_activity_at": func.greatest(RemnawaveAccount.last_activity_at, account_stmt.excluded.last_activity_at),
+                    "updated_at": now,
+                },
+            )
+            await db.execute(account_stmt)
+
     try:
-        await db.flush()
+        await _upsert_accounts_once()
     except Exception as exc:
         if any(tag in str(exc).lower() for tag in ("does not exist", "undefinedtable", "undefined table")):
             if not await ensure_base_schema_ready(force=True):
                 raise
-            await db.flush()
+            await _upsert_accounts_once()
         else:
             raise
 
-    for account_login in sorted(account_last_activity):
-        ts = account_last_activity[account_login]
-        account_stmt = pg_insert(RemnawaveAccount).values(
-            account_login=account_login,
-            last_activity_at=ts,
-            created_at=now,
-            updated_at=now,
-        )
-        account_stmt = account_stmt.on_conflict_do_update(
-            index_elements=[RemnawaveAccount.account_login],
-            set_={
-                "last_activity_at": func.greatest(RemnawaveAccount.last_activity_at, account_stmt.excluded.last_activity_at),
-                "updated_at": now,
-            },
-        )
-        await db.execute(account_stmt)
-
     accounts_upserted = len(account_last_activity)
+
+    for i in range(0, len(query_rows), 1000):
+        await db.execute(pg_insert(RemnawaveDNSQuery).values(query_rows[i : i + 1000]))
 
     if await ensure_adult_schema_ready():
         for dns_root in sorted(dns_unique_points):
