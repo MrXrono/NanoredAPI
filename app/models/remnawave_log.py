@@ -43,11 +43,11 @@ class RemnawaveDNSUnique(Base):
     last_marked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     mark_source: Mapped[list[str] | None] = mapped_column(ARRAY(String(24)), default=list, nullable=True)
     mark_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    need_recheck: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    need_recheck: Mapped[bool] = mapped_column(Boolean, default=False)
 
     __table_args__ = (
         Index(
-            "ix_remnawave_dns_unique_need_recheck",
+            "ix_remnawave_dns_unique_need_recheck_true",
             "need_recheck",
             postgresql_where=text("need_recheck IS TRUE"),
         ),

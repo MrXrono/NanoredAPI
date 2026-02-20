@@ -43,6 +43,7 @@ from app.services.remnawave_adult import background_remnawave_adult_tasks
 from app.services.telegram_support_forum import telegram_support_forum
 
 logger = logging.getLogger(__name__)
+SCHEMA_SETUP_LOCK_ID = 1
 
 def _join_url(base: str, path: str) -> str:
     b = (base or "").strip().rstrip("/")
@@ -106,14 +107,34 @@ async def _cleanup_stale_sessions():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    async with engine.begin() as conn:
-        await conn.execute(text("SELECT pg_advisory_lock(1)"))
+    async with engine.connect() as conn:
+        lock_acquired = False
+        try:
+            await conn.execute(text(f"SELECT pg_advisory_lock({SCHEMA_SETUP_LOCK_ID})"))
+            lock_acquired = True
+        except Exception as e:
+            logger.exception("Failed to acquire schema advisory lock: %s", e)
+            raise
         try:
             await conn.run_sync(Base.metadata.create_all)
         except Exception as e:
-            logger.warning(f"Table creation skipped (already exists): {e}")
+            if lock_acquired:
+                try:
+                    await conn.rollback()
+                except Exception:
+                    logger.debug("Failed to rollback after schema init error")
+            message = str(e).lower()
+            if "already exists" in message:
+                logger.warning("Schema create_all skipped (already exists): %s", e)
+            else:
+                logger.error("Schema create_all failed: %s", e)
+                raise
         finally:
-            await conn.execute(text("SELECT pg_advisory_unlock(1)"))
+            if lock_acquired:
+                try:
+                    await conn.execute(text(f"SELECT pg_advisory_unlock({SCHEMA_SETUP_LOCK_ID})"))
+                except Exception as e:
+                    logger.warning("Failed to release schema advisory lock: %s", e)
 
     try:
         async with async_session() as db:
