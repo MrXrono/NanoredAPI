@@ -33,7 +33,7 @@ from app.models.remnawave_log import (
     AdultSyncState,
 )
 
-from app.services.remnawave_adult import normalize_remnawave_domain
+from app.services.remnawave_adult import normalize_remnawave_domain, sync_adult_catalog
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(get_current_admin)])
 
@@ -55,6 +55,7 @@ _PERMISSION_LABELS = {
 
 _IP_DOMAIN_CACHE_TTL_SEC = 60 * 60 * 6
 _ip_domain_cache: dict[str, tuple[float, str | None]] = {}
+_adult_manual_sync_task: asyncio.Task | None = None
 
 
 # ==================== HELPER ====================
@@ -455,6 +456,23 @@ async def database_status(db: AsyncSession = Depends(get_db)):
         "rsyslog": rsyslog_stats,
         "adult_sync": adult_sync,
     }
+
+
+@router.post("/adult-sync/run")
+async def run_adult_sync_now():
+    global _adult_manual_sync_task
+
+    if _adult_manual_sync_task and not _adult_manual_sync_task.done():
+        return {"ok": True, "started": False, "message": "sync is already running"}
+
+    async def _runner():
+        try:
+            await sync_adult_catalog()
+        except Exception:
+            pass
+
+    _adult_manual_sync_task = asyncio.create_task(_runner())
+    return {"ok": True, "started": True, "message": "sync started"}
 
 
 @router.get("/dashboard")

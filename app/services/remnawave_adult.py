@@ -40,6 +40,7 @@ OISD_ROOT_URL = "https://oisd.nl/includedlists/nsfw"
 V2FLY_ROOT_URL = "https://raw.githubusercontent.com/v2fly/domain-list-community/refs/heads/master/data/category-porn"
 
 ADULT_SYNC_HTTP_MAX_CONCURRENCY = max(1, int(os.getenv("ADULT_SYNC_HTTP_MAX_CONCURRENCY", "1")))
+ADULT_SYNC_STARTUP_DELAY_SECONDS = max(0, int(os.getenv("ADULT_SYNC_STARTUP_DELAY_SECONDS", "3600")))
 KNOWN_E_TLD_SUFFIXES = {
     "co.uk",
     "com.au",
@@ -484,6 +485,13 @@ async def _adult_catalog_needs_bootstrap_sync() -> bool:
 async def _run_startup_adult_catalog_sync(stop_event: asyncio.Event) -> None:
     if stop_event.is_set():
         return
+
+    if ADULT_SYNC_STARTUP_DELAY_SECONDS > 0:
+        logger.info("adult sync: startup bootstrap delayed by %s sec", ADULT_SYNC_STARTUP_DELAY_SECONDS)
+        await _sleep_with_stop(stop_event, ADULT_SYNC_STARTUP_DELAY_SECONDS)
+        if stop_event.is_set():
+            return
+
     try:
         if not await _adult_catalog_needs_bootstrap_sync():
             return

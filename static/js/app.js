@@ -124,6 +124,22 @@ function escapeHtml(str) {
 }
 
 // ========== DATABASE STATUS ==========
+async function runAdultSyncNow() {
+    const btn = document.getElementById('run-adult-sync-btn');
+    if (btn) btn.disabled = true;
+    try {
+        const resp = await api('/admin/adult-sync/run', { method: 'POST' });
+        const data = await resp.json();
+        if (data && data.message) alert(data.message);
+        await loadDatabaseStatus();
+    } catch (err) {
+        console.error('run adult sync error:', err);
+        alert('Не удалось запустить sync');
+    } finally {
+        if (btn) btn.disabled = false;
+    }
+}
+
 async function loadDatabaseStatus() {
     try {
         const resp = await api('/admin/database-status');
