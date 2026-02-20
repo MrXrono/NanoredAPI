@@ -68,7 +68,10 @@ document.querySelectorAll('.nav-link').forEach(link => {
         else if (section === 'errors') loadErrors();
         else if (section === 'device-logs') loadDeviceLogs();
         else if (section === 'journal') refreshLogs();
-        else if (section === 'remnawave-logs') loadRemnawaveAccounts();
+        else if (section === 'remnawave-logs') {
+            loadRemnawaveNodes();
+            loadRemnawaveAccounts();
+        }
     });
 });
 
@@ -723,6 +726,19 @@ async function refreshLogs() {
 
 
 // ========== REMNAWAVE LOGS ==========
+async function loadRemnawaveNodes(page = 1) {
+    const resp = await api(`/admin/remnawave-logs/nodes?page=${page}&per_page=50`);
+    const d = await resp.json();
+    const tbody = document.getElementById('rnw-nodes-tbody');
+    tbody.innerHTML = d.items.map(i => `
+        <tr>
+            <td>${escapeHtml(i.node)}</td>
+            <td>${formatDate(i.last_message)}</td>
+        </tr>
+    `).join('') || '<tr><td colspan="2">Нет данных</td></tr>';
+    renderPagination(document.getElementById('rnw-nodes-pagination'), d.total, d.page, d.per_page, 'loadRemnawaveNodes');
+}
+
 async function loadRemnawaveAccounts(page = 1) {
     const search = document.getElementById('rnw-account-search')?.value || '';
     const resp = await api(`/admin/remnawave-logs/accounts?page=${page}&per_page=50&search=${encodeURIComponent(search)}`);

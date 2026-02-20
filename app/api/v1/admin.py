@@ -977,6 +977,44 @@ async def remnawave_accounts_summary(
     return {'total': total, 'page': page, 'per_page': per_page, 'items': items}
 
 
+@router.get('/remnawave-logs/nodes')
+async def remnawave_nodes_summary(
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    node_col = func.trim(RemnawaveDNSQuery.node_name).label("node")
+    last_message_col = func.max(RemnawaveDNSQuery.requested_at).label("last_message")
+
+    grouped = (
+        select(node_col, last_message_col)
+        .where(RemnawaveDNSQuery.node_name.isnot(None))
+        .group_by(node_col)
+        .having(node_col != "")
+    )
+
+    total = (await db.execute(select(func.count()).select_from(grouped.subquery()))).scalar() or 0
+    rows = (await db.execute(
+        grouped
+        .order_by(desc(last_message_col), node_col)
+        .offset((page - 1) * per_page)
+        .limit(per_page)
+    )).all()
+
+    return {
+        'total': total,
+        'page': page,
+        'per_page': per_page,
+        'items': [
+            {
+                'node': row[0],
+                'last_message': row[1].isoformat() if row[1] else None,
+            }
+            for row in rows
+        ],
+    }
+
+
 @router.get('/remnawave-logs/{account_login}/top-domains')
 async def remnawave_top_domains(
     account_login: str,

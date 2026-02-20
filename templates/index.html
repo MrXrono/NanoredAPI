@@ -165,6 +165,22 @@
             <h2>Remnawave logs</h2>
             <div class="table-container">
                 <div class="table-header">
+                    <h3>Nodes (rsync)</h3>
+                </div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Node</th>
+                            <th>Последнее сообщение</th>
+                        </tr>
+                    </thead>
+                    <tbody id="rnw-nodes-tbody"></tbody>
+                </table>
+                <div class="pagination" id="rnw-nodes-pagination"></div>
+            </div>
+
+            <div class="table-container">
+                <div class="table-header">
                     <h3>Аккаунты</h3>
                     <div class="table-filters">
                         <input type="text" id="rnw-account-search" placeholder="Поиск логина..." onkeyup="loadRemnawaveAccounts(1)">
