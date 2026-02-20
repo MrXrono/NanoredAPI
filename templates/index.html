@@ -166,41 +166,6 @@
                     <div class="label">Rsyslog: средний размер/сообщение</div>
                     <div class="value yellow" id="db-rsyslog-avg-1m">-</div>
                 </div>
-                <div class="stat-card">
-                    <div class="label">18+ sync: статус</div>
-                    <div class="value" id="db-adult-sync-status">-</div>
-                </div>
-                <div class="stat-card">
-                    <div class="label">18+ sync: последний запуск</div>
-                    <div class="value" id="db-adult-sync-last-run">-</div>
-                </div>
-                <div class="stat-card">
-                    <div class="label">18+ catalog: enabled / total</div>
-                    <div class="value blue" id="db-adult-catalog-counts">-</div>
-                </div>
-                <div class="stat-card">
-                    <div class="label">18+ unique: adult / total</div>
-                    <div class="value red" id="db-adult-unique-counts">-</div>
-                </div>
-                <div class="stat-card">
-                    <div class="label">18+ need recheck</div>
-                    <div class="value yellow" id="db-adult-need-recheck">-</div>
-                </div>
-                <div class="stat-card">
-                    <div class="label">18+ coverage (%)</div>
-                    <div class="value green" id="db-adult-coverage">-</div>
-                </div>
-                <div class="stat-card">
-                    <div class="label">18+ sync: версия листа</div>
-                    <div class="value" id="db-adult-sync-version">-</div>
-                </div>
-                <div class="stat-card">
-                    <div class="label">18+ sync: обновлено доменов</div>
-                    <div class="value" id="db-adult-sync-updated">-</div>
-                </div>
-                <div class="stat-card">
-                    <div class="label">18+ sync: ожидаемо следующий</div>
-                    <div class="value" id="db-adult-next-sync">-</div>
                 </div>
             </div>
 
@@ -238,18 +203,33 @@
                 </div>
             </div>
 
-            <div class="table-container" style="margin-top:14px;">
-                <div class="table-header">
-                    <h3>Крупные таблицы</h3>
+            <div class="dashboard-columns" style="margin-top:14px;">
+                <div class="table-container">
+                    <div class="table-header">
+                        <h3>Крупные таблицы</h3>
+                    </div>
+                    <table>
+                        <thead>
+                            <tr><th>Таблица</th><th>Размер</th><th>Live rows</th><th>Dead rows</th></tr>
+                        </thead>
+                        <tbody id="db-table-sizes-tbody">
+                            <tr><td>Загрузка...</td><td>-</td><td>-</td><td>-</td></tr>
+                        </tbody>
+                    </table>
                 </div>
-                <table>
-                    <thead>
-                        <tr><th>Таблица</th><th>Размер</th><th>Live rows</th><th>Dead rows</th></tr>
-                    </thead>
-                    <tbody id="db-table-sizes-tbody">
-                        <tr><td>Загрузка...</td><td>-</td><td>-</td><td>-</td></tr>
-                    </tbody>
-                </table>
+                <div class="table-container">
+                    <div class="table-header">
+                        <h3>18+ Sync</h3>
+                    </div>
+                    <table>
+                        <thead>
+                            <tr><th>Параметр</th><th>Значение</th></tr>
+                        </thead>
+                        <tbody id="db-adult-sync-tbody">
+                            <tr><td>Загрузка...</td><td>-</td></tr>
+                        </tbody>
+                    </table>
+                </div>
             </div>
         </div>
 
