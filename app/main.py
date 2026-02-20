@@ -123,7 +123,8 @@ async def lifespan(app: FastAPI):
         except Exception:
             if lock_acquired:
                 try:
-                    await conn.rollback()
+                    if conn.in_transaction():
+                        await conn.rollback()
                 except Exception:
                     logger.debug("Failed to rollback after schema init error")
             raise
