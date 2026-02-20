@@ -14,3 +14,4 @@ tldextract==5.1.3
 requests==2.32.4
 
 aiogram==3.21.0
+psutil==6.1.1
