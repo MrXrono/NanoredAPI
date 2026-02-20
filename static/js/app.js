@@ -133,6 +133,7 @@ async function loadDatabaseStatus() {
         const redis = d.redis || {};
         const queue = redis.command_queue || {};
         const rsyslog = d.rsyslog || {};
+        const adult = d.adult_sync || {};
 
         const maxConn = Number(pg.max_connections || 0);
         const activeConn = Number(pgConn.active || 0);
@@ -146,6 +147,16 @@ async function loadDatabaseStatus() {
         document.getElementById('db-rsyslog-bytes-1m').textContent = formatBytes(Number(rsyslog.bytes_1m || 0));
         document.getElementById('db-rsyslog-avg-1m').textContent = formatBytes(Number(rsyslog.bytes_per_entry_1m || 0));
         document.getElementById('db-redis-memory').textContent = `Redis memory: ${redis.memory_used_human || '-'}, clients: ${redis.connected_clients || 0}`;
+
+        document.getElementById('db-adult-sync-status').textContent = String(adult.status || 'unknown');
+        document.getElementById('db-adult-sync-last-run').textContent = formatDate(adult.last_run_at);
+        document.getElementById('db-adult-catalog-counts').textContent = `${Number(adult.catalog_domains_enabled || 0)} / ${Number(adult.catalog_domains_total || 0)}`;
+        document.getElementById('db-adult-unique-counts').textContent = `${Number(adult.unique_adult_total || 0)} / ${Number(adult.unique_domains_total || 0)}`;
+        document.getElementById('db-adult-need-recheck').textContent = Number(adult.unique_need_recheck || 0);
+        document.getElementById('db-adult-coverage').textContent = `${Number(adult.adult_coverage_percent || 0)}%`;
+        document.getElementById('db-adult-sync-version').textContent = String(adult.last_version || '-');
+        document.getElementById('db-adult-sync-updated').textContent = Number(adult.last_updated_rows || 0);
+        document.getElementById('db-adult-next-sync').textContent = formatDate(adult.next_sync_eta);
 
         document.getElementById('db-pg-states-tbody').innerHTML = `
             <tr><td>active</td><td>${Number(pgConn.active || 0)}</td></tr>

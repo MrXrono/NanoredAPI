@@ -23,7 +23,13 @@ from app.models.account import Account
 from app.models.device_permission import DevicePermission
 from app.models.device_log import DeviceLog
 from app.models.device_change_log import DeviceChangeLog
-from app.models.remnawave_log import RemnawaveAccount, RemnawaveDNSQuery, RemnawaveDNSUnique
+from app.models.remnawave_log import (
+    RemnawaveAccount,
+    RemnawaveDNSQuery,
+    RemnawaveDNSUnique,
+    AdultDomainCatalog,
+    AdultSyncState,
+)
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(get_current_admin)])
 
@@ -226,6 +232,68 @@ async def database_status(db: AsyncSession = Depends(get_db)):
     except Exception:
         rsyslog_stats = {"count_1m": 0, "bytes_1m": 0, "bytes_per_entry_1m": 0}
 
+    adult_sync = {
+        "status": "unknown",
+        "last_run_at": None,
+        "next_sync_eta": None,
+        "last_version": "-",
+        "last_updated_rows": 0,
+        "catalog_domains_enabled": 0,
+        "catalog_domains_total": 0,
+        "unique_domains_total": 0,
+        "unique_adult_total": 0,
+        "unique_need_recheck": 0,
+        "adult_coverage_percent": 0.0,
+    }
+
+    try:
+        sync_state = await db.get(AdultSyncState, "adult_domain_sync")
+        if sync_state:
+            state_stats = sync_state.stats_json or {}
+            last_run = sync_state.last_run_at
+            adult_sync["status"] = sync_state.status or "unknown"
+            adult_sync["last_run_at"] = last_run.isoformat() if last_run else None
+            adult_sync["next_sync_eta"] = (last_run + timedelta(days=7)).isoformat() if last_run else None
+            adult_sync["last_version"] = (
+                str(state_stats.get("version"))
+                if state_stats.get("version")
+                else (sync_state.last_watermark or "-")
+            )
+            adult_sync["last_updated_rows"] = int(state_stats.get("updated", 0) or 0)
+    except Exception:
+        pass
+
+    try:
+        row = await db.execute(
+            select(
+                func.count(AdultDomainCatalog.domain).label("catalog_total"),
+                func.count(AdultDomainCatalog.domain).filter(AdultDomainCatalog.is_enabled.is_(True)).label("catalog_enabled"),
+            )
+        )
+        data = row.mappings().first() or {}
+        adult_sync["catalog_domains_total"] = int(data.get("catalog_total", 0) or 0)
+        adult_sync["catalog_domains_enabled"] = int(data.get("catalog_enabled", 0) or 0)
+    except Exception:
+        pass
+
+    try:
+        row = await db.execute(
+            select(
+                func.count(RemnawaveDNSUnique.dns_root).label("unique_total"),
+                func.count(RemnawaveDNSUnique.dns_root).filter(RemnawaveDNSUnique.is_adult.is_(True)).label("adult_total"),
+                func.count(RemnawaveDNSUnique.dns_root).filter(RemnawaveDNSUnique.need_recheck.is_(True)).label("need_recheck"),
+            )
+        )
+        data = row.mappings().first() or {}
+        unique_total = int(data.get("unique_total", 0) or 0)
+        unique_adult = int(data.get("adult_total", 0) or 0)
+        adult_sync["unique_domains_total"] = unique_total
+        adult_sync["unique_adult_total"] = unique_adult
+        adult_sync["unique_need_recheck"] = int(data.get("need_recheck", 0) or 0)
+        adult_sync["adult_coverage_percent"] = round((unique_adult / unique_total) * 100, 2) if unique_total else 0.0
+    except Exception:
+        pass
+
     db_tables = []
     try:
         db_tables = await db.execute(
@@ -277,6 +345,7 @@ async def database_status(db: AsyncSession = Depends(get_db)):
             for name, size_bytes in db_tables
         ],
         "rsyslog": rsyslog_stats,
+        "adult_sync": adult_sync,
     }
 
 
