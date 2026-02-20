@@ -26,6 +26,7 @@ from app.models.device_log import DeviceLog
 from app.models.device_change_log import DeviceChangeLog
 from app.models.remnawave_log import RemnawaveAccount, RemnawaveDNSQuery, RemnawaveDNSUnique
 from app.services.remnawave_adult import ensure_adult_schema_ready, normalize_remnawave_domain
+from app.services.schema_bootstrap import ensure_base_schema_ready
 from app.schemas.device import DeviceRegisterRequest, DeviceRegisterResponse
 from app.schemas.session import SessionStartRequest, SessionStartResponse, SessionEndRequest, ServerChangeRequest
 from app.schemas.telemetry import (
@@ -788,7 +789,23 @@ async def ingest_remnawave_logs(
 
         account_obj = cache.get(account_login)
         if account_obj is None:
-            res = await db.execute(select(RemnawaveAccount).where(RemnawaveAccount.account_login == account_login))
+            try:
+                res = await db.execute(select(RemnawaveAccount).where(RemnawaveAccount.account_login == account_login))
+            except Exception as exc:
+                # table may be missing on first startup in already-running DB; bootstrap schema and retry once
+                if any(tag in str(exc).lower() for tag in ("does not exist", "undefinedtable", "undefined table")):
+                    if await ensure_base_schema_ready(force=True):
+                        try:
+                            res = await db.execute(
+                                select(RemnawaveAccount).where(RemnawaveAccount.account_login == account_login)
+                            )
+                        except Exception:
+                            raise
+                    else:
+                        raise
+                else:
+                    raise
+
             account_obj = res.scalar_one_or_none()
             if account_obj is None:
                 account_obj = RemnawaveAccount(account_login=account_login, last_activity_at=ts)

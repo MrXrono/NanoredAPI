@@ -12,7 +12,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import Base, async_session, engine
+from app.core.database import async_session, engine
+from app.services.schema_bootstrap import ensure_base_schema_ready
 from app.models.remnawave_log import AdultDomainCatalog, AdultSyncState, RemnawaveDNSUnique
 
 logger = logging.getLogger(__name__)
@@ -86,17 +87,15 @@ async def _ensure_adult_schema() -> bool:
         if _adult_schema_ready and await _required_adult_tables_exist():
             return True
 
-        try:
-            async with engine.begin() as conn:
-                await conn.run_sync(Base.metadata.create_all)
-            _adult_schema_ready = await _required_adult_tables_exist()
-            if not _adult_schema_ready:
-                logger.warning("adult schema ensure: tables still missing after create_all")
-                return False
-            return True
-        except Exception:
-            logger.exception("adult schema ensure failed")
+        if not await ensure_base_schema_ready():
+            logger.warning("adult schema ensure: global schema bootstrap failed")
             return False
+
+        _adult_schema_ready = await _required_adult_tables_exist()
+        if not _adult_schema_ready:
+            logger.warning("adult schema ensure: remnawave tables still missing after global bootstrap")
+            return False
+        return True
 
 
 async def ensure_adult_schema_ready() -> bool:

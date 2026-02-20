@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select, text
 
 from app.core.config import settings
-from app.core.database import engine, Base, async_session
+from app.core.database import engine, async_session
 from app.core.redis import close_redis, get_redis
 from app.core.security import hash_password
 from app.core.logging_buffer import logging_buffer
@@ -39,6 +39,7 @@ from app.models.remnawave_log import (
     RemnawaveDNSQuery,
     RemnawaveDNSUnique,
 )
+from app.services.schema_bootstrap import ensure_base_schema_ready
 from app.services.remnawave_adult import background_remnawave_adult_tasks
 from app.services.telegram_support_forum import telegram_support_forum
 
@@ -116,19 +117,16 @@ async def lifespan(app: FastAPI):
             logger.exception("Failed to acquire schema advisory lock: %s", e)
             raise
         try:
-            await conn.run_sync(Base.metadata.create_all)
-        except Exception as e:
+            created = await ensure_base_schema_ready()
+            if not created:
+                raise RuntimeError("Schema bootstrap failed")
+        except Exception:
             if lock_acquired:
                 try:
                     await conn.rollback()
                 except Exception:
                     logger.debug("Failed to rollback after schema init error")
-            message = str(e).lower()
-            if "already exists" in message:
-                logger.warning("Schema create_all skipped (already exists): %s", e)
-            else:
-                logger.error("Schema create_all failed: %s", e)
-                raise
+            raise
         finally:
             if lock_acquired:
                 try:
