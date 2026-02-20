@@ -205,6 +205,49 @@ async def database_status(db: AsyncSession = Depends(get_db)):
     except Exception:
         db_size_bytes = 0
 
+    pg_perf = {
+        "cache_hit_ratio": 0.0,
+        "xact_commit": 0,
+        "xact_rollback": 0,
+        "deadlocks": 0,
+        "temp_bytes": 0,
+    }
+    try:
+        perf_row = await db.execute(
+            text(
+                """
+                SELECT
+                    CASE
+                        WHEN (blks_hit + blks_read) > 0
+                            THEN round((blks_hit::numeric / (blks_hit + blks_read)) * 100, 2)
+                        ELSE 0
+                    END AS cache_hit_ratio,
+                    xact_commit,
+                    xact_rollback,
+                    deadlocks,
+                    temp_bytes
+                FROM pg_stat_database
+                WHERE datname = current_database()
+                """
+            )
+        )
+        perf = perf_row.mappings().first() or {}
+        pg_perf = {
+            "cache_hit_ratio": float(perf.get("cache_hit_ratio", 0.0) or 0.0),
+            "xact_commit": int(perf.get("xact_commit", 0) or 0),
+            "xact_rollback": int(perf.get("xact_rollback", 0) or 0),
+            "deadlocks": int(perf.get("deadlocks", 0) or 0),
+            "temp_bytes": int(perf.get("temp_bytes", 0) or 0),
+        }
+    except Exception:
+        pg_perf = {
+            "cache_hit_ratio": 0.0,
+            "xact_commit": 0,
+            "xact_rollback": 0,
+            "deadlocks": 0,
+            "temp_bytes": 0,
+        }
+
     rsyslog_stats = {"count_1m": 0, "bytes_1m": 0, "bytes_per_entry_1m": 0}
     try:
         minute_ago = datetime.now(timezone.utc) - timedelta(minutes=1)
@@ -299,10 +342,14 @@ async def database_status(db: AsyncSession = Depends(get_db)):
         db_tables = await db.execute(
             text(
                 """
-                SELECT relname, pg_total_relation_size(format('%I.%I', schemaname, relname)) AS size_bytes
+                SELECT
+                    relname,
+                    pg_total_relation_size(format('%I.%I', schemaname, relname)) AS size_bytes,
+                    COALESCE(n_live_tup, 0) AS live_rows,
+                    COALESCE(n_dead_tup, 0) AS dead_rows
                 FROM pg_stat_user_tables
                 ORDER BY size_bytes DESC
-                LIMIT 5
+                LIMIT 8
                 """
             )
         )
@@ -328,6 +375,7 @@ async def database_status(db: AsyncSession = Depends(get_db)):
                 "total": int(conn_stats.get("total", 0) or 0),
             },
             "size_bytes": int(db_size_bytes or 0),
+            "performance": pg_perf,
         },
         "redis": {
             "online_devices": online_devices,
@@ -341,8 +389,13 @@ async def database_status(db: AsyncSession = Depends(get_db)):
             },
         },
         "database_tables": [
-            {"name": name, "size_bytes": int(size_bytes or 0)}
-            for name, size_bytes in db_tables
+            {
+                "name": name,
+                "size_bytes": int(size_bytes or 0),
+                "live_rows": int(live_rows or 0),
+                "dead_rows": int(dead_rows or 0),
+            }
+            for name, size_bytes, live_rows, dead_rows in db_tables
         ],
         "rsyslog": rsyslog_stats,
         "adult_sync": adult_sync,

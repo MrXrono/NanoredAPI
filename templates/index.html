@@ -123,6 +123,26 @@
                     <div class="value green" id="db-pg-size">-</div>
                 </div>
                 <div class="stat-card">
+                    <div class="label">PostgreSQL: utilization (%)</div>
+                    <div class="value" id="db-pg-utilization">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">PostgreSQL: cache hit (%)</div>
+                    <div class="value green" id="db-pg-cache-hit">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">PostgreSQL: commit / rollback</div>
+                    <div class="value" id="db-pg-xact">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">PostgreSQL: deadlocks</div>
+                    <div class="value red" id="db-pg-deadlocks">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">PostgreSQL: temp bytes</div>
+                    <div class="value yellow" id="db-pg-temp-bytes">-</div>
+                </div>
+                <div class="stat-card">
                     <div class="label">Redis: онлайн устройства</div>
                     <div class="value yellow" id="db-redis-online">-</div>
                 </div>
@@ -224,10 +244,10 @@
                 </div>
                 <table>
                     <thead>
-                        <tr><th>Таблица</th><th>Размер</th></tr>
+                        <tr><th>Таблица</th><th>Размер</th><th>Live rows</th><th>Dead rows</th></tr>
                     </thead>
                     <tbody id="db-table-sizes-tbody">
-                        <tr><td>Загрузка...</td><td>-</td></tr>
+                        <tr><td>Загрузка...</td><td>-</td><td>-</td><td>-</td></tr>
                     </tbody>
                 </table>
             </div>

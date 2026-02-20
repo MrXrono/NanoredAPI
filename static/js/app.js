@@ -130,6 +130,7 @@ async function loadDatabaseStatus() {
         const d = await resp.json();
         const pg = d.postgres || {};
         const pgConn = pg.connections || {};
+        const pgPerf = pg.performance || {};
         const redis = d.redis || {};
         const queue = redis.command_queue || {};
         const rsyslog = d.rsyslog || {};
@@ -140,6 +141,12 @@ async function loadDatabaseStatus() {
         document.getElementById('db-pg-active-ratio').textContent = `${activeConn} / ${maxConn}`;
         document.getElementById('db-pg-total-connections').textContent = `${pgConn.total || 0}`;
         document.getElementById('db-pg-size').textContent = formatBytes(Number(pg.size_bytes || 0));
+        const pgUtil = maxConn > 0 ? ((activeConn / maxConn) * 100) : 0;
+        document.getElementById('db-pg-utilization').textContent = `${pgUtil.toFixed(2)}%`;
+        document.getElementById('db-pg-cache-hit').textContent = `${Number(pgPerf.cache_hit_ratio || 0).toFixed(2)}%`;
+        document.getElementById('db-pg-xact').textContent = `${Number(pgPerf.xact_commit || 0)} / ${Number(pgPerf.xact_rollback || 0)}`;
+        document.getElementById('db-pg-deadlocks').textContent = Number(pgPerf.deadlocks || 0);
+        document.getElementById('db-pg-temp-bytes').textContent = formatBytes(Number(pgPerf.temp_bytes || 0));
         document.getElementById('db-redis-online').textContent = Number(redis.online_devices || 0);
         document.getElementById('db-redis-commands').textContent = Number(queue.total || 0);
         document.getElementById('db-redis-devices').textContent = Number(queue.devices_with_pending || 0);
@@ -176,10 +183,10 @@ async function loadDatabaseStatus() {
 
         const tableRows = (d.database_tables || []);
         if (tableRows.length === 0) {
-            document.getElementById('db-table-sizes-tbody').innerHTML = '<tr><td>Нет данных</td><td>-</td></tr>';
+            document.getElementById('db-table-sizes-tbody').innerHTML = '<tr><td>Нет данных</td><td>-</td><td>-</td><td>-</td></tr>';
         } else {
             document.getElementById('db-table-sizes-tbody').innerHTML = tableRows.map(item => `
-                <tr><td>${escapeHtml(item.name || '-')}</td><td>${formatBytes(Number(item.size_bytes || 0))}</td></tr>
+                <tr><td>${escapeHtml(item.name || '-')}</td><td>${formatBytes(Number(item.size_bytes || 0))}</td><td>${Number(item.live_rows || 0)}</td><td>${Number(item.dead_rows || 0)}</td></tr>
             `).join('');
         }
     } catch (err) {
