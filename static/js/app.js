@@ -3,6 +3,7 @@ let token = localStorage.getItem('nanored_token');
 let accountsCache = [];
 let journalInterval = null;
 let remnawaveSelectedAccount = null;
+let dbStatusInterval = null;
 
 // ========== AUTH ==========
 async function api(path, opts = {}) {
@@ -26,6 +27,7 @@ function logout() {
     document.getElementById('login-page').style.display = 'flex';
     document.getElementById('app').style.display = 'none';
     if (journalInterval) { clearInterval(journalInterval); journalInterval = null; }
+    if (dbStatusInterval) { clearInterval(dbStatusInterval); dbStatusInterval = null; }
 }
 
 document.getElementById('login-form').addEventListener('submit', async (e) => {
@@ -59,6 +61,9 @@ document.querySelectorAll('.nav-link').forEach(link => {
         link.classList.add('active');
         document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
         document.getElementById(`section-${section}`).classList.add('active');
+
+        if (dbStatusInterval) { clearInterval(dbStatusInterval); dbStatusInterval = null; }
+
         if (section === 'dashboard') loadDashboard();
         else if (section === 'devices') loadDevices();
         else if (section === 'sessions') loadSessions();
@@ -67,6 +72,14 @@ document.querySelectorAll('.nav-link').forEach(link => {
         else if (section === 'connections') loadConnections();
         else if (section === 'errors') loadErrors();
         else if (section === 'device-logs') loadDeviceLogs();
+        else if (section === 'database-status') {
+            loadDatabaseStatus();
+            dbStatusInterval = setInterval(() => {
+                if (document.getElementById('section-database-status').classList.contains('active')) {
+                    loadDatabaseStatus();
+                }
+            }, 10000);
+        }
         else if (section === 'journal') refreshLogs();
         else if (section === 'remnawave-logs') {
             loadRemnawaveNodes();
@@ -105,6 +118,55 @@ function renderPagination(container, total, page, perPage, callback) {
 function escapeHtml(str) {
     if (!str) return '';
     return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ========== DATABASE STATUS ==========
+async function loadDatabaseStatus() {
+    try {
+        const resp = await api('/admin/database-status');
+        const d = await resp.json();
+        const pg = d.postgres || {};
+        const pgConn = pg.connections || {};
+        const redis = d.redis || {};
+        const queue = redis.command_queue || {};
+
+        const maxConn = Number(pg.max_connections || 0);
+        const activeConn = Number(pgConn.active || 0);
+        document.getElementById('db-pg-active-ratio').textContent = `${activeConn} / ${maxConn}`;
+        document.getElementById('db-pg-total-connections').textContent = `${pgConn.total || 0}`;
+        document.getElementById('db-pg-size').textContent = formatBytes(Number(pg.size_bytes || 0));
+        document.getElementById('db-redis-online').textContent = Number(redis.online_devices || 0);
+        document.getElementById('db-redis-commands').textContent = Number(queue.total || 0);
+        document.getElementById('db-redis-devices').textContent = Number(queue.devices_with_pending || 0);
+        document.getElementById('db-redis-memory').textContent = `Redis memory: ${redis.memory_used_human || '-'}, clients: ${redis.connected_clients || 0}`;
+
+        document.getElementById('db-pg-states-tbody').innerHTML = `
+            <tr><td>active</td><td>${Number(pgConn.active || 0)}</td></tr>
+            <tr><td>idle</td><td>${Number(pgConn.idle || 0)}</td></tr>
+            <tr><td>idle in transaction</td><td>${Number(pgConn.idle_in_transaction || 0)}</td></tr>
+            <tr><td>waiting</td><td>${Number(pgConn.waiting || 0)}</td></tr>
+        `;
+
+        const topQueues = (queue.top_devices || []);
+        if (topQueues.length === 0) {
+            document.getElementById('db-queue-top-tbody').innerHTML = '<tr><td>Нет активных очередей</td><td>0</td></tr>';
+        } else {
+            document.getElementById('db-queue-top-tbody').innerHTML = topQueues.map(item => `
+                <tr><td title="${escapeHtml(item.device_id)}">${escapeHtml(item.device_id.slice(0, 8))}...</td><td>${Number(item.pending || 0)}</td></tr>
+            `).join('');
+        }
+
+        const tableRows = (d.database_tables || []);
+        if (tableRows.length === 0) {
+            document.getElementById('db-table-sizes-tbody').innerHTML = '<tr><td>Нет данных</td><td>-</td></tr>';
+        } else {
+            document.getElementById('db-table-sizes-tbody').innerHTML = tableRows.map(item => `
+                <tr><td>${escapeHtml(item.name || '-')}</td><td>${formatBytes(Number(item.size_bytes || 0))}</td></tr>
+            `).join('');
+        }
+    } catch (err) {
+        console.error('Database status error:', err);
+    }
 }
 
 // ========== ACCOUNTS ==========

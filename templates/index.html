@@ -24,7 +24,8 @@
 <!-- APP -->
 <div id="app" style="display:none;">
     <nav class="sidebar">
-        <div class="logo">NanoredVPN <span style="font-size:11px;color:var(--text-secondary);">v1.5.8</span></div>
+        <div class="logo">NanoredVPN <span style="font-size:11px;color:var(--text-secondary);">v{{ app_version }}</span></div>
+        <a href="#" class="nav-link" data-section="database-status">Статус базы данных</a>
         <a href="#" class="nav-link active" data-section="dashboard">Панель</a>
         <a href="#" class="nav-link" data-section="devices">Устройства</a>
         <a href="#" class="nav-link" data-section="sessions">Сессии</a>
@@ -101,6 +102,85 @@
                     </table>
                     <div class="pagination" id="account-stats-pagination"></div>
                 </div>
+            </div>
+        </div>
+
+        <!-- DATABASE STATUS -->
+        <div id="section-database-status" class="section">
+            <h2>Статус базы данных</h2>
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="label">PostgreSQL: активные / max</div>
+                    <div class="value blue" id="db-pg-active-ratio">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">PostgreSQL: всего соединений</div>
+                    <div class="value" id="db-pg-total-connections">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">PostgreSQL: размер БД</div>
+                    <div class="value green" id="db-pg-size">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">Redis: онлайн устройства</div>
+                    <div class="value yellow" id="db-redis-online">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">Redis: очередь команд</div>
+                    <div class="value" id="db-redis-commands">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">Очереди: устройств с задачами</div>
+                    <div class="value red" id="db-redis-devices">-</div>
+                </div>
+            </div>
+
+            <div class="dashboard-columns">
+                <div class="table-container">
+                    <div class="table-header">
+                        <h3>Подробно по соединениям PostgreSQL</h3>
+                    </div>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Состояние</th><th>Количество</th>
+                            </tr>
+                        </thead>
+                        <tbody id="db-pg-states-tbody">
+                            <tr><td>Загрузка...</td><td>-</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="table-container">
+                    <div class="table-header">
+                        <h3>Топ очередей</h3>
+                        <div class="table-filters">
+                            <span class="journal-status" id="db-redis-memory">---</span>
+                        </div>
+                    </div>
+                    <table>
+                        <thead>
+                            <tr><th>Устройство</th><th>Команд в очереди</th></tr>
+                        </thead>
+                        <tbody id="db-queue-top-tbody">
+                            <tr><td>Загрузка...</td><td>-</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="table-container" style="margin-top:14px;">
+                <div class="table-header">
+                    <h3>Крупные таблицы</h3>
+                </div>
+                <table>
+                    <thead>
+                        <tr><th>Таблица</th><th>Размер</th></tr>
+                    </thead>
+                    <tbody id="db-table-sizes-tbody">
+                        <tr><td>Загрузка...</td><td>-</td></tr>
+                    </tbody>
+                </table>
             </div>
         </div>
 

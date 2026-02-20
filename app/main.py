@@ -191,7 +191,10 @@ app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 
 @app.get("/")
 async def admin_panel(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+    return templates.TemplateResponse(
+        "index.html",
+        {"request": request, "app_version": settings.VERSION},
+    )
 
 
 @app.get("/health")

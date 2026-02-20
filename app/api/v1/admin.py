@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timezone, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Body
-from sqlalchemy import select, func, desc, and_, or_, delete
+from sqlalchemy import select, func, desc, and_, or_, delete, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -127,6 +127,130 @@ async def _build_ip_display_map(values: list[str], db: AsyncSession) -> dict[str
 
 
 # ==================== DASHBOARD ====================
+
+
+@router.get("/database-status")
+async def database_status(db: AsyncSession = Depends(get_db)):
+    redis = await get_redis()
+
+    command_total = 0
+    command_devices_with_pending = 0
+    top_queues = []
+
+    # Redis stats
+    try:
+        async for key in redis.scan_iter("commands:*"):
+            queue_len = await redis.llen(key)
+            if queue_len > 0:
+                command_devices_with_pending += 1
+            command_total += queue_len
+            device_id = key.replace("commands:", "", 1)
+            if device_id and queue_len > 0:
+                top_queues.append({"device_id": device_id, "pending": queue_len})
+    except Exception:
+        command_total = 0
+        command_devices_with_pending = 0
+        top_queues = []
+
+    top_queues.sort(key=lambda x: x["pending"], reverse=True)
+
+    redis_info = {}
+    try:
+        redis_info = await redis.info()
+    except Exception:
+        redis_info = {}
+
+    # PostgreSQL connections and size
+    conn_stats = {}
+    try:
+        conn_row = await db.execute(
+            text(
+                """
+                SELECT
+                    COUNT(*) FILTER (WHERE state = 'active') AS active,
+                    COUNT(*) FILTER (WHERE state = 'idle') AS idle,
+                    COUNT(*) FILTER (WHERE state = 'idle in transaction') AS idle_in_transaction,
+                    COUNT(*) FILTER (WHERE wait_event_type IS NOT NULL) AS waiting,
+                    COUNT(*) AS total
+                FROM pg_stat_activity
+                WHERE datname = current_database()
+                """
+            )
+        )
+        conn_stats = conn_row.mappings().first() or {}
+    except Exception:
+        conn_stats = {}
+
+    max_connections = 0
+    try:
+        max_conn_row = await db.execute(
+            text("SELECT setting::int AS max_connections FROM pg_settings WHERE name='max_connections'")
+        )
+        max_connections = max_conn_row.scalar() or 0
+    except Exception:
+        max_connections = 0
+
+    db_size_bytes = 0
+    try:
+        db_size_row = await db.execute(
+            text("SELECT pg_database_size(current_database()) AS db_size")
+        )
+        db_size_bytes = db_size_row.scalar() or 0
+    except Exception:
+        db_size_bytes = 0
+
+    db_tables = []
+    try:
+        db_tables = await db.execute(
+            text(
+                """
+                SELECT relname, pg_total_relation_size(format('%I.%I', schemaname, relname)) AS size_bytes
+                FROM pg_stat_user_tables
+                ORDER BY size_bytes DESC
+                LIMIT 5
+                """
+            )
+        )
+        db_tables = db_tables.all()
+    except Exception:
+        db_tables = []
+
+    online_devices = 0
+    try:
+        online_devices = len(await redis.keys("online:*"))
+    except Exception:
+        online_devices = 0
+
+    return {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "postgres": {
+            "max_connections": max_connections,
+            "connections": {
+                "active": int(conn_stats.get("active", 0) or 0),
+                "idle": int(conn_stats.get("idle", 0) or 0),
+                "idle_in_transaction": int(conn_stats.get("idle_in_transaction", 0) or 0),
+                "waiting": int(conn_stats.get("waiting", 0) or 0),
+                "total": int(conn_stats.get("total", 0) or 0),
+            },
+            "size_bytes": int(db_size_bytes or 0),
+        },
+        "redis": {
+            "online_devices": online_devices,
+            "memory_used_human": redis_info.get("used_memory_human", "-"),
+            "connected_clients": int(redis_info.get("connected_clients", 0) or 0),
+            "command_queue": {
+                "total": command_total,
+                "devices_with_pending": command_devices_with_pending,
+                "avg_per_device": round((command_total / command_devices_with_pending) if command_devices_with_pending else 0, 2),
+                "top_devices": top_queues[:10],
+            },
+        },
+        "database_tables": [
+            {"name": name, "size_bytes": int(size_bytes or 0)}
+            for name, size_bytes in db_tables
+        ],
+    }
+
 
 @router.get("/dashboard")
 async def dashboard(db: AsyncSession = Depends(get_db)):
