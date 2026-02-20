@@ -135,6 +135,7 @@ async function loadDatabaseStatus() {
         const queue = redis.command_queue || {};
         const rsyslog = d.rsyslog || {};
         const adult = d.adult_sync || {};
+        const system = d.system || {};
 
         const maxConn = Number(pg.max_connections || 0);
         const activeConn = Number(pgConn.active || 0);
@@ -147,6 +148,8 @@ async function loadDatabaseStatus() {
         document.getElementById('db-pg-xact').textContent = `${Number(pgPerf.xact_commit || 0)} / ${Number(pgPerf.xact_rollback || 0)}`;
         document.getElementById('db-pg-deadlocks').textContent = Number(pgPerf.deadlocks || 0);
         document.getElementById('db-pg-temp-bytes').textContent = formatBytes(Number(pgPerf.temp_bytes || 0));
+        document.getElementById('db-sys-cpu').textContent = `${Number(system.cpu_percent || 0).toFixed(2)}%`;
+        document.getElementById('db-sys-memory').textContent = `${Number(system.memory_percent || 0).toFixed(2)}%`;
         document.getElementById('db-redis-online').textContent = Number(redis.online_devices || 0);
         document.getElementById('db-redis-commands').textContent = Number(queue.total || 0);
         document.getElementById('db-redis-devices').textContent = Number(queue.devices_with_pending || 0);
@@ -155,13 +158,17 @@ async function loadDatabaseStatus() {
         document.getElementById('db-rsyslog-avg-1m').textContent = formatBytes(Number(rsyslog.bytes_per_entry_1m || 0));
         document.getElementById('db-redis-memory').textContent = `Redis memory: ${redis.memory_used_human || '-'}, clients: ${redis.connected_clients || 0}`;
 
+        const adultCatalogEnabled = Number(adult.catalog_domains_enabled || 0);
+        const adultCatalogTotal = Number(adult.catalog_domains_total || 0);
         const adultSyncRows = [
             ['Статус', String(adult.status || 'unknown')],
+            ['Комментарий', String(adult.status_hint || '-')],
             ['Последний запуск', formatDate(adult.last_run_at)],
             ['Версия листа', String(adult.last_version || '-')],
             ['Обновлено доменов', Number(adult.last_updated_rows || 0)],
             ['Следующий sync (ETA)', formatDate(adult.next_sync_eta)],
-            ['Catalog (enabled / total)', `${Number(adult.catalog_domains_enabled || 0)} / ${Number(adult.catalog_domains_total || 0)}`],
+            ['Catalog (enabled / total)', `${adultCatalogEnabled} / ${adultCatalogTotal}`],
+            ['Catalog by source', `BLP: ${Number((adult.catalog_sources || {}).blocklistproject || 0)}, OISD: ${Number((adult.catalog_sources || {}).oisd || 0)}, V2Fly: ${Number((adult.catalog_sources || {}).v2fly || 0)}`],
             ['Unique 18+ / total', `${Number(adult.unique_adult_total || 0)} / ${Number(adult.unique_domains_total || 0)}`],
             ['Need recheck', Number(adult.unique_need_recheck || 0)],
             ['Coverage', `${Number(adult.adult_coverage_percent || 0)}%`],

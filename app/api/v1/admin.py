@@ -3,6 +3,7 @@ import ipaddress
 import asyncio
 import socket
 import time
+import psutil
 from datetime import datetime, timezone, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Body
@@ -279,13 +280,19 @@ async def database_status(db: AsyncSession = Depends(get_db)):
         rsyslog_stats = {"count_1m": 0, "bytes_1m": 0, "bytes_per_entry_1m": 0}
 
     adult_sync = {
-        "status": "unknown",
+        "status": "not_started",
+        "status_hint": "sync has not run yet",
         "last_run_at": None,
         "next_sync_eta": None,
         "last_version": "-",
         "last_updated_rows": 0,
         "catalog_domains_enabled": 0,
         "catalog_domains_total": 0,
+        "catalog_sources": {
+            "blocklistproject": 0,
+            "oisd": 0,
+            "v2fly": 0,
+        },
         "unique_domains_total": 0,
         "unique_adult_total": 0,
         "unique_need_recheck": 0,
@@ -306,6 +313,8 @@ async def database_status(db: AsyncSession = Depends(get_db)):
                 else (sync_state.last_watermark or "-")
             )
             adult_sync["last_updated_rows"] = int(state_stats.get("updated", 0) or 0)
+            if state_stats.get("status"):
+                adult_sync["status_hint"] = str(state_stats.get("status"))
     except Exception:
         pass
 
@@ -314,11 +323,34 @@ async def database_status(db: AsyncSession = Depends(get_db)):
             select(
                 func.count(AdultDomainCatalog.domain).label("catalog_total"),
                 func.count(AdultDomainCatalog.domain).filter(AdultDomainCatalog.is_enabled.is_(True)).label("catalog_enabled"),
+                func.count(AdultDomainCatalog.domain).filter(
+                    and_(
+                        AdultDomainCatalog.is_enabled.is_(True),
+                        AdultDomainCatalog.source_mask.op("&")(1) != 0,
+                    )
+                ).label("src_blocklist"),
+                func.count(AdultDomainCatalog.domain).filter(
+                    and_(
+                        AdultDomainCatalog.is_enabled.is_(True),
+                        AdultDomainCatalog.source_mask.op("&")(2) != 0,
+                    )
+                ).label("src_oisd"),
+                func.count(AdultDomainCatalog.domain).filter(
+                    and_(
+                        AdultDomainCatalog.is_enabled.is_(True),
+                        AdultDomainCatalog.source_mask.op("&")(4) != 0,
+                    )
+                ).label("src_v2fly"),
             )
         )
         data = row.mappings().first() or {}
         adult_sync["catalog_domains_total"] = int(data.get("catalog_total", 0) or 0)
         adult_sync["catalog_domains_enabled"] = int(data.get("catalog_enabled", 0) or 0)
+        adult_sync["catalog_sources"] = {
+            "blocklistproject": int(data.get("src_blocklist", 0) or 0),
+            "oisd": int(data.get("src_oisd", 0) or 0),
+            "v2fly": int(data.get("src_v2fly", 0) or 0),
+        }
     except Exception:
         pass
 
@@ -339,6 +371,22 @@ async def database_status(db: AsyncSession = Depends(get_db)):
         adult_sync["adult_coverage_percent"] = round((unique_adult / unique_total) * 100, 2) if unique_total else 0.0
     except Exception:
         pass
+
+    if adult_sync["status"] in {"not_started", "unknown"}:
+        if adult_sync["catalog_domains_enabled"] > 0:
+            adult_sync["status"] = "loaded"
+            adult_sync["status_hint"] = "catalog loaded, waiting scheduled sync"
+        elif adult_sync["unique_domains_total"] > 0:
+            adult_sync["status"] = "catalog_empty"
+            adult_sync["status_hint"] = "domains exist in logs, but adult catalog is empty"
+
+    try:
+        cpu_percent = float(await asyncio.to_thread(psutil.cpu_percent, 0.2))
+        memory_percent = float(psutil.virtual_memory().percent)
+    except Exception:
+        cpu_percent = 0.0
+        memory_percent = 0.0
+
 
     db_tables = []
     try:
@@ -390,6 +438,10 @@ async def database_status(db: AsyncSession = Depends(get_db)):
                 "avg_per_device": round((command_total / command_devices_with_pending) if command_devices_with_pending else 0, 2),
                 "top_devices": top_queues[:10],
             },
+        },
+        "system": {
+            "cpu_percent": round(cpu_percent, 2),
+            "memory_percent": round(memory_percent, 2),
         },
         "database_tables": [
             {
