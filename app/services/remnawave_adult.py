@@ -1,6 +1,7 @@
 import asyncio
 import ipaddress
 import logging
+import os
 import re
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urljoin
@@ -38,6 +39,7 @@ BLOCKLIST_URL = "https://blocklistproject.github.io/Lists/alt-version/porn-nl.tx
 OISD_ROOT_URL = "https://oisd.nl/includedlists/nsfw"
 V2FLY_ROOT_URL = "https://raw.githubusercontent.com/v2fly/domain-list-community/refs/heads/master/data/category-porn"
 
+ADULT_SYNC_HTTP_MAX_CONCURRENCY = max(1, int(os.getenv("ADULT_SYNC_HTTP_MAX_CONCURRENCY", "1")))
 KNOWN_E_TLD_SUFFIXES = {
     "co.uk",
     "com.au",
@@ -283,11 +285,15 @@ async def collect_adult_domain_map(timeout: int = 25, max_retries: int = 4) -> d
     domain_map: dict[str, int] = {}
 
     async with httpx.AsyncClient(timeout=timeout, headers={"User-Agent": "NanoRed/RemnawaveAuditor"}) as client:
+        logger.info("adult sync: http concurrency limit=%s", ADULT_SYNC_HTTP_MAX_CONCURRENCY)
+        fetch_semaphore = asyncio.Semaphore(ADULT_SYNC_HTTP_MAX_CONCURRENCY)
+
         async def _fetch_text(url: str) -> str:
             last_error: Exception | None = None
             for _ in range(max_retries):
                 try:
-                    resp = await client.get(url)
+                    async with fetch_semaphore:
+                        resp = await client.get(url)
                     if resp.status_code >= 400:
                         raise RuntimeError(f"{url} -> HTTP {resp.status_code}")
                     return resp.text
