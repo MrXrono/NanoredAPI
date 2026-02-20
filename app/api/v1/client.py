@@ -775,9 +775,9 @@ async def ingest_remnawave_logs(
         return {"status": "ok", "inserted": 0, "accounts_upserted": 0}
 
     now = datetime.now(timezone.utc)
-    cache: dict[str, RemnawaveAccount] = {}
     inserted = 0
-    accounts_upserted = 0
+    account_last_activity: dict[str, datetime] = {}
+    dns_unique_points: dict[str, tuple[datetime, datetime]] = {}
 
     for entry in req.entries:
         account_login = (entry.account or "").strip()
@@ -786,35 +786,16 @@ async def ingest_remnawave_logs(
             continue
 
         ts = entry.timestamp or now
+        prev_ts = account_last_activity.get(account_login)
+        if prev_ts is None or ts > prev_ts:
+            account_last_activity[account_login] = ts
 
-        account_obj = cache.get(account_login)
-        if account_obj is None:
-            try:
-                res = await db.execute(select(RemnawaveAccount).where(RemnawaveAccount.account_login == account_login))
-            except Exception as exc:
-                # table may be missing on first startup in already-running DB; bootstrap schema and retry once
-                if any(tag in str(exc).lower() for tag in ("does not exist", "undefinedtable", "undefined table")):
-                    if await ensure_base_schema_ready(force=True):
-                        try:
-                            res = await db.execute(
-                                select(RemnawaveAccount).where(RemnawaveAccount.account_login == account_login)
-                            )
-                        except Exception:
-                            raise
-                    else:
-                        raise
-                else:
-                    raise
-
-            account_obj = res.scalar_one_or_none()
-            if account_obj is None:
-                account_obj = RemnawaveAccount(account_login=account_login, last_activity_at=ts)
-                db.add(account_obj)
-                accounts_upserted += 1
-            cache[account_login] = account_obj
-
-        if account_obj.last_activity_at is None or ts > account_obj.last_activity_at:
-            account_obj.last_activity_at = ts
+        prev_dns = dns_unique_points.get(dns_root)
+        if prev_dns is None:
+            dns_unique_points[dns_root] = (ts, ts)
+        else:
+            first_seen, last_seen = prev_dns
+            dns_unique_points[dns_root] = (min(first_seen, ts), max(last_seen, ts))
 
         db.add(
             RemnawaveDNSQuery(
@@ -824,14 +805,49 @@ async def ingest_remnawave_logs(
                 requested_at=ts,
             )
         )
+        inserted += 1
 
-        if await ensure_adult_schema_ready():
+    if not inserted:
+        return {"status": "ok", "inserted": 0, "accounts_upserted": 0}
+
+    try:
+        await db.flush()
+    except Exception as exc:
+        if any(tag in str(exc).lower() for tag in ("does not exist", "undefinedtable", "undefined table")):
+            if not await ensure_base_schema_ready(force=True):
+                raise
+            await db.flush()
+        else:
+            raise
+
+    for account_login in sorted(account_last_activity):
+        ts = account_last_activity[account_login]
+        account_stmt = pg_insert(RemnawaveAccount).values(
+            account_login=account_login,
+            last_activity_at=ts,
+            created_at=now,
+            updated_at=now,
+        )
+        account_stmt = account_stmt.on_conflict_do_update(
+            index_elements=[RemnawaveAccount.account_login],
+            set_={
+                "last_activity_at": func.greatest(RemnawaveAccount.last_activity_at, account_stmt.excluded.last_activity_at),
+                "updated_at": now,
+            },
+        )
+        await db.execute(account_stmt)
+
+    accounts_upserted = len(account_last_activity)
+
+    if await ensure_adult_schema_ready():
+        for dns_root in sorted(dns_unique_points):
+            first_seen, last_seen = dns_unique_points[dns_root]
             try:
                 dns_unique_stmt = pg_insert(RemnawaveDNSUnique).values(
                     dns_root=dns_root,
                     is_adult=False,
-                    first_seen=ts,
-                    last_seen=ts,
+                    first_seen=first_seen,
+                    last_seen=last_seen,
                     need_recheck=True,
                 )
                 dns_unique_stmt = dns_unique_stmt.on_conflict_do_update(
@@ -848,12 +864,10 @@ async def ingest_remnawave_logs(
                 if "does not exist" in msg or "undefinedtable" in msg:
                     logger.warning(
                         "Remnawave DNS unique table missing during ingest, skipping dns_unique upsert for %s",
-                        account_login,
+                        dns_root,
                     )
                 else:
                     raise
-
-        inserted += 1
 
     logging_buffer.add(
         "processing",
