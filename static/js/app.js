@@ -905,14 +905,33 @@ async function loadRemnawaveAudit(page = 1) {
     const resp = await api(url);
     const d = await resp.json();
     const tbody = document.getElementById('rnw-audit-tbody');
-    tbody.innerHTML = d.items.map(i => `
+    tbody.innerHTML = d.items.map(i => {
+        const domain = escapeHtml(i.dns_root || '');
+        const rawDomainJson = JSON.stringify(String(i.dns_root || ''));
+        return `
         <tr>
             <td>${formatDate(i.time)}</td>
             <td>${escapeHtml(i.account_login)}</td>
-            <td>${escapeHtml(i.dns_root || '')}</td>
+            <td>${domain}</td>
+            <td><button class="btn btn-danger btn-sm" onclick='excludeRemnawaveDomain(${rawDomainJson})'>Исключить</button></td>
         </tr>
-    `).join('') || '<tr><td colspan="3">Нет данных</td></tr>';
+    `;
+    }).join('') || '<tr><td colspan="4">Нет данных</td></tr>';
     renderPagination(document.getElementById('rnw-audit-pagination'), d.total, d.page, d.per_page, 'loadRemnawaveAudit');
+}
+
+async function excludeRemnawaveDomain(domain) {
+    if (!domain) return;
+    if (!confirm(`Исключить домен ${domain} из DNS 18+?`)) return;
+    const resp = await api('/admin/remnawave-audit/exclude', {
+        method: 'POST',
+        body: JSON.stringify({ domain, reason: 'manual_exclude_ui' }),
+    });
+    if (!resp.ok) {
+        alert('Не удалось исключить домен');
+        return;
+    }
+    loadRemnawaveAudit(1);
 }
 
 // ========== EXPORT ==========

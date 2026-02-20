@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timezone, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Body
-from sqlalchemy import select, func, desc, and_, or_, delete, text
+from sqlalchemy import select, func, desc, and_, or_, delete, text, exists, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -28,8 +28,11 @@ from app.models.remnawave_log import (
     RemnawaveDNSQuery,
     RemnawaveDNSUnique,
     AdultDomainCatalog,
+    AdultDomainExclusion,
     AdultSyncState,
 )
+
+from app.services.remnawave_adult import normalize_remnawave_domain
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(get_current_admin)])
 
@@ -1311,6 +1314,11 @@ async def remnawave_audit(
                 RemnawaveDNSUnique.is_adult.is_(True),
             ),
         )
+        .where(
+            ~exists(
+                select(1).where(AdultDomainExclusion.domain == RemnawaveDNSQuery.dns)
+            )
+        )
     )
 
     if account:
@@ -1348,6 +1356,40 @@ async def remnawave_audit(
             for row in rows
         ],
     }
+
+
+@router.post('/remnawave-audit/exclude')
+async def remnawave_audit_exclude_domain(
+    payload: dict = Body(...),
+    db: AsyncSession = Depends(get_db),
+):
+    raw_domain = str((payload or {}).get("domain", "")).strip()
+    reason = str((payload or {}).get("reason", "")).strip() or "manual_exclude"
+    normalized = normalize_remnawave_domain(raw_domain)
+    if not normalized:
+        raise HTTPException(status_code=400, detail="Invalid domain")
+
+    now = datetime.now(timezone.utc)
+    existing = await db.get(AdultDomainExclusion, normalized)
+    if existing:
+        existing.reason = reason
+        existing.updated_at = now
+    else:
+        db.add(AdultDomainExclusion(domain=normalized, reason=reason, created_at=now, updated_at=now))
+
+    await db.execute(
+        update(RemnawaveDNSUnique)
+        .where(RemnawaveDNSUnique.dns_root == normalized)
+        .values(
+            is_adult=False,
+            need_recheck=False,
+            mark_source=["manual_exclude"],
+            mark_version="manual_exclude",
+            last_marked_at=now,
+        )
+    )
+    await db.commit()
+    return {"ok": True, "domain": normalized, "excluded": True}
 
 
 @router.get('/remnawave-logs/{account_login}/top-domains')

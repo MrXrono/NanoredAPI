@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import async_session, engine
 from app.services.schema_bootstrap import ensure_base_schema_ready
-from app.models.remnawave_log import AdultDomainCatalog, AdultSyncState, RemnawaveDNSUnique
+from app.models.remnawave_log import AdultDomainCatalog, AdultDomainExclusion, AdultSyncState, RemnawaveDNSUnique
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +64,7 @@ _ADULT_TABLES = {
     "adult_domain_catalog",
     "remnawave_dns_unique",
     "adult_sync_state",
+    "adult_domain_exclusions",
 }
 _adult_schema_ready = False
 
@@ -538,9 +539,26 @@ async def _process_dns_unique_recheck_batch(db: AsyncSession, limit: int) -> int
         for domain, mask, list_version in catalog_rows
     }
 
+    excluded_rows = (
+        await db.execute(
+            select(AdultDomainExclusion.domain)
+            .where(AdultDomainExclusion.domain.in_(roots))
+        )
+    ).scalars().all()
+    excluded_set = set(excluded_rows)
+
     now = datetime.now(timezone.utc)
     processed = 0
     for row in rows:
+        if row.dns_root in excluded_set:
+            row.is_adult = False
+            row.mark_source = ["manual_exclude"]
+            row.mark_version = "manual_exclude"
+            row.last_marked_at = now
+            row.need_recheck = False
+            processed += 1
+            continue
+
         item = catalog_map.get(row.dns_root)
         if item is None:
             row.is_adult = False

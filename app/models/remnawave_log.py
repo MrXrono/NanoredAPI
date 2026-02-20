@@ -74,3 +74,12 @@ class AdultSyncState(Base):
     last_watermark: Mapped[str | None] = mapped_column(String(128), nullable=True)
     status: Mapped[str | None] = mapped_column(String(32), nullable=True)
     stats_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class AdultDomainExclusion(Base):
+    __tablename__ = "adult_domain_exclusions"
+
+    domain: Mapped[str] = mapped_column(String(255), primary_key=True)
+    reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
