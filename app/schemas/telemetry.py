@@ -71,10 +71,8 @@ class DeviceLogRequest(BaseModel):
 class RemnawaveDNSIngestEntry(BaseModel):
     account: str
     dns: str
-    ip: str | None = None
     timestamp: datetime | None = None
     node: str | None = None
-    raw: str | None = None
 
 
 class RemnawaveDNSIngestRequest(BaseModel):

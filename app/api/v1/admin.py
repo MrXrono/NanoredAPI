@@ -205,7 +205,14 @@ async def database_status(db: AsyncSession = Depends(get_db)):
         rsyslog_row = await db.execute(
             select(
                 func.count(RemnawaveDNSQuery.id).label("count_1m"),
-                func.coalesce(func.sum(func.length(RemnawaveDNSQuery.raw_line)), 0).label("bytes_1m"),
+                func.coalesce(
+                    func.sum(
+                        func.coalesce(func.length(RemnawaveDNSQuery.account_login), 0)
+                        + func.coalesce(func.length(RemnawaveDNSQuery.dns), 0)
+                        + func.coalesce(func.length(RemnawaveDNSQuery.node_name), 0)
+                    ),
+                    0,
+                ).label("bytes_1m"),
             ).where(RemnawaveDNSQuery.requested_at >= minute_ago)
         )
         rsyslog_data = rsyslog_row.mappings().first() or {}
@@ -1178,21 +1185,20 @@ async def remnawave_top_domains(
     rows = (await db.execute(
         select(
             RemnawaveDNSQuery.dns,
-            RemnawaveDNSQuery.resolved_ip,
             func.count(RemnawaveDNSQuery.id).label('hits'),
         )
         .where(
             RemnawaveDNSQuery.account_login == account_login,
             RemnawaveDNSQuery.requested_at >= since,
         )
-        .group_by(RemnawaveDNSQuery.dns, RemnawaveDNSQuery.resolved_ip)
+        .group_by(RemnawaveDNSQuery.dns)
         .order_by(desc('hits'))
         .limit(limit)
     )).all()
 
     return {
         'account': account_login,
-        'items': [{'dns': r[0], 'ip': r[1], 'hits': r[2]} for r in rows],
+        'items': [{'dns': r[0], 'hits': r[1]} for r in rows],
     }
 
 
@@ -1215,10 +1221,9 @@ async def remnawave_recent_queries(
     if q:
         ql = q.strip()
         if ql:
-            query = query.where(or_(
-                RemnawaveDNSQuery.dns.ilike(f"%{ql}%"),
-                RemnawaveDNSQuery.resolved_ip.ilike(f"%{ql}%"),
-            ))
+            query = query.where(
+                RemnawaveDNSQuery.dns.ilike(f"%{ql}%")
+            )
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
     rows = (await db.execute(
@@ -1234,7 +1239,6 @@ async def remnawave_recent_queries(
         'items': [
             {
                 'dns': r.dns,
-                'ip': r.resolved_ip,
                 'requested_at': r.requested_at.isoformat() if r.requested_at else None,
                 'node': r.node_name,
             }

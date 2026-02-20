@@ -839,10 +839,9 @@ async function loadRemnawaveTop() {
     tbody.innerHTML = d.items.map(i => `
         <tr>
             <td>${escapeHtml(i.dns)}</td>
-            <td>${escapeHtml(i.ip || '-')}</td>
             <td>${i.hits}</td>
         </tr>
-    `).join('') || '<tr><td colspan="3">Нет данных</td></tr>';
+    `).join('') || '<tr><td colspan="2">Нет данных</td></tr>';
 }
 
 async function loadRemnawaveRecent(page = 1) {
@@ -862,10 +861,9 @@ async function loadRemnawaveRecent(page = 1) {
     tbody.innerHTML = d.items.map(i => `
         <tr>
             <td>${escapeHtml(i.dns)}</td>
-            <td>${escapeHtml(i.ip || '-')}</td>
             <td>${formatDate(i.requested_at)}</td>
         </tr>
-    `).join('') || '<tr><td colspan="3">Нет данных</td></tr>';
+    `).join('') || '<tr><td colspan="2">Нет данных</td></tr>';
 
     renderPagination(document.getElementById('rnw-recent-pagination'), d.total, d.page, d.per_page, 'loadRemnawaveRecent');
 }

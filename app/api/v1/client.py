@@ -38,27 +38,6 @@ import bcrypt
 router = APIRouter(prefix="/client", tags=["client"])
 
 
-def _extract_node_from_raw(raw_line: str | None) -> str | None:
-    if not raw_line:
-        return None
-    raw = raw_line.strip()
-    if not raw:
-        return None
-
-    # Syslog style: "Feb 20 03:54:57 node1.example ..."
-    m = re.match(r'^[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+([^\s]+)', raw)
-    if m:
-        node = m.group(1).strip()
-        return node or None
-
-    # ISO style: "2026-02-20T03:54:57Z node1.example ..."
-    m = re.match(r'^\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?\s+([^\s]+)', raw)
-    if m:
-        node = m.group(1).strip()
-        return node or None
-
-    return None
-
 
 async def _get_device(api_key: str, db: AsyncSession) -> Device:
     """Validate API key and return device."""
@@ -818,10 +797,8 @@ async def ingest_remnawave_logs(
             RemnawaveDNSQuery(
                 account_login=account_login,
                 dns=dns,
-                resolved_ip=(entry.ip or "").strip() or None,
-                node_name=((entry.node or "").strip() or _extract_node_from_raw(entry.raw)),
+                node_name=(entry.node or "").strip() or None,
                 requested_at=ts,
-                raw_line=entry.raw,
             )
         )
         inserted += 1
