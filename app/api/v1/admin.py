@@ -983,14 +983,21 @@ async def remnawave_nodes_summary(
     per_page: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
 ):
-    node_col = func.trim(RemnawaveDNSQuery.node_name).label("node")
+    node_name_trimmed = func.nullif(func.trim(RemnawaveDNSQuery.node_name), "")
+    node_from_raw = func.nullif(
+        func.substring(
+            RemnawaveDNSQuery.raw_line,
+            r'^[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+([^\s]+)',
+        ),
+        "",
+    )
+    node_col = func.coalesce(node_name_trimmed, node_from_raw).label("node")
     last_message_col = func.max(RemnawaveDNSQuery.requested_at).label("last_message")
 
     grouped = (
         select(node_col, last_message_col)
-        .where(RemnawaveDNSQuery.node_name.isnot(None))
+        .where(node_col.isnot(None))
         .group_by(node_col)
-        .having(node_col != "")
     )
 
     total = (await db.execute(select(func.count()).select_from(grouped.subquery()))).scalar() or 0
