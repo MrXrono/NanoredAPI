@@ -52,6 +52,9 @@ KNOWN_E_TLD_SUFFIXES = {
     "net.cn",
 }
 
+_CATALOG_SYNC_LOCK = asyncio.Lock()
+_CATALOG_STARTUP_CHECK_DAYS = 7
+
 
 def _is_ip_literal(value: str | None) -> bool:
     if not value:
@@ -309,6 +312,11 @@ async def _upsert_sync_state(*, status: str, stats: dict, version: str, last_wat
 
 
 async def sync_adult_catalog() -> dict:
+    async with _CATALOG_SYNC_LOCK:
+        return await _sync_adult_catalog_internal()
+
+
+async def _sync_adult_catalog_internal() -> dict:
     start = datetime.now(timezone.utc)
     version = start.strftime("%Y%m%dT%H%M%SZ")
     domain_map = await collect_adult_domain_map()
@@ -395,6 +403,30 @@ async def sync_adult_catalog() -> dict:
         return stats
 
 
+async def _adult_catalog_needs_bootstrap_sync() -> bool:
+    async with async_session() as db:
+        state = await db.get(AdultSyncState, ADULT_SYNC_JOB)
+    if not state:
+        return True
+    if state.status != "ok" or state.last_run_at is None:
+        return True
+    cutoff = datetime.now(timezone.utc) - timedelta(days=_CATALOG_STARTUP_CHECK_DAYS)
+    return state.last_run_at < cutoff
+
+
+async def _run_startup_adult_catalog_sync(stop_event: asyncio.Event) -> None:
+    if stop_event.is_set():
+        return
+    try:
+        if not await _adult_catalog_needs_bootstrap_sync():
+            return
+        logger.info("adult sync: startup bootstrap triggered (stale/missing catalog)")
+        stats = await sync_adult_catalog()
+        logger.info("adult sync: startup bootstrap finished: %s", stats)
+    except Exception:
+        logger.exception("adult sync: startup bootstrap failed")
+
+
 async def process_dns_unique_recheck_batch(limit: int = 5000, session: AsyncSession | None = None) -> int:
     if session is None:
         async with async_session() as db:
@@ -468,6 +500,7 @@ def _next_sunday_3utc(now: datetime) -> datetime:
 
 
 async def background_remnawave_adult_tasks(stop_event: asyncio.Event) -> None:
+    asyncio.create_task(_run_startup_adult_catalog_sync(stop_event))
     next_sync = _next_sunday_3utc(datetime.now(timezone.utc))
     while True:
         if stop_event.is_set():
