@@ -129,6 +129,7 @@ async function loadDatabaseStatus() {
         const pgConn = pg.connections || {};
         const redis = d.redis || {};
         const queue = redis.command_queue || {};
+        const rsyslog = d.rsyslog || {};
 
         const maxConn = Number(pg.max_connections || 0);
         const activeConn = Number(pgConn.active || 0);
@@ -138,6 +139,9 @@ async function loadDatabaseStatus() {
         document.getElementById('db-redis-online').textContent = Number(redis.online_devices || 0);
         document.getElementById('db-redis-commands').textContent = Number(queue.total || 0);
         document.getElementById('db-redis-devices').textContent = Number(queue.devices_with_pending || 0);
+        document.getElementById('db-rsyslog-requests-1m').textContent = Number(rsyslog.count_1m || 0);
+        document.getElementById('db-rsyslog-bytes-1m').textContent = formatBytes(Number(rsyslog.bytes_1m || 0));
+        document.getElementById('db-rsyslog-avg-1m').textContent = formatBytes(Number(rsyslog.bytes_per_entry_1m || 0));
         document.getElementById('db-redis-memory').textContent = `Redis memory: ${redis.memory_used_human || '-'}, clients: ${redis.connected_clients || 0}`;
 
         document.getElementById('db-pg-states-tbody').innerHTML = `

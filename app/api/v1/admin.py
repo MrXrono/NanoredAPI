@@ -199,6 +199,26 @@ async def database_status(db: AsyncSession = Depends(get_db)):
     except Exception:
         db_size_bytes = 0
 
+    rsyslog_stats = {"count_1m": 0, "bytes_1m": 0, "bytes_per_entry_1m": 0}
+    try:
+        minute_ago = datetime.now(timezone.utc) - timedelta(minutes=1)
+        rsyslog_row = await db.execute(
+            select(
+                func.count(RemnawaveDNSQuery.id).label("count_1m"),
+                func.coalesce(func.sum(func.length(RemnawaveDNSQuery.raw_line)), 0).label("bytes_1m"),
+            ).where(RemnawaveDNSQuery.requested_at >= minute_ago)
+        )
+        rsyslog_data = rsyslog_row.mappings().first() or {}
+        rsyslog_count = int(rsyslog_data.get("count_1m", 0) or 0)
+        rsyslog_bytes = int(rsyslog_data.get("bytes_1m", 0) or 0)
+        rsyslog_stats = {
+            "count_1m": rsyslog_count,
+            "bytes_1m": rsyslog_bytes,
+            "bytes_per_entry_1m": round(rsyslog_bytes / rsyslog_count, 2) if rsyslog_count else 0,
+        }
+    except Exception:
+        rsyslog_stats = {"count_1m": 0, "bytes_1m": 0, "bytes_per_entry_1m": 0}
+
     db_tables = []
     try:
         db_tables = await db.execute(
@@ -249,6 +269,7 @@ async def database_status(db: AsyncSession = Depends(get_db)):
             {"name": name, "size_bytes": int(size_bytes or 0)}
             for name, size_bytes in db_tables
         ],
+        "rsyslog": rsyslog_stats,
     }
 
 
