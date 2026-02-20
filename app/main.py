@@ -31,6 +31,7 @@ from app.models.device_log import DeviceLog
 from app.models.device_change_log import DeviceChangeLog
 from app.models.support_message import SupportMessage
 from app.models.support_ticket import SupportForumMeta, SupportTicket, SupportTicketMessage
+from app.models.remnawave_log import RemnawaveAccount, RemnawaveDNSQuery
 from app.services.telegram_support_forum import telegram_support_forum
 
 logger = logging.getLogger(__name__)

@@ -2,6 +2,7 @@ const API = '/api/v1';
 let token = localStorage.getItem('nanored_token');
 let accountsCache = [];
 let journalInterval = null;
+let remnawaveSelectedAccount = null;
 
 // ========== AUTH ==========
 async function api(path, opts = {}) {
@@ -67,6 +68,7 @@ document.querySelectorAll('.nav-link').forEach(link => {
         else if (section === 'errors') loadErrors();
         else if (section === 'device-logs') loadDeviceLogs();
         else if (section === 'journal') refreshLogs();
+        else if (section === 'remnawave-logs') loadRemnawaveAccounts();
     });
 });
 
@@ -716,6 +718,74 @@ async function refreshLogs() {
 
         terminal.scrollTop = 0;
     } catch (err) { console.error('Journal error:', err); }
+}
+
+
+
+// ========== REMNAWAVE LOGS ==========
+async function loadRemnawaveAccounts(page = 1) {
+    const search = document.getElementById('rnw-account-search')?.value || '';
+    const resp = await api(`/admin/remnawave-logs/accounts?page=${page}&per_page=50&search=${encodeURIComponent(search)}`);
+    const d = await resp.json();
+    const tbody = document.getElementById('rnw-accounts-tbody');
+    tbody.innerHTML = d.items.map(i => `
+        <tr onclick="selectRemnawaveAccount('${escapeHtml(i.account)}')" style="cursor:pointer;">
+            <td>${escapeHtml(i.account)}</td>
+            <td>${formatDate(i.last_activity)}</td>
+            <td>${i.requests_24h}</td>
+            <td>${i.requests_7d}</td>
+            <td>${i.requests_30d}</td>
+            <td>${i.requests_365d}</td>
+        </tr>
+    `).join('') || '<tr><td colspan="6">Нет данных</td></tr>';
+    renderPagination(document.getElementById('rnw-accounts-pagination'), d.total, d.page, d.per_page, 'loadRemnawaveAccounts');
+}
+
+async function selectRemnawaveAccount(account) {
+    remnawaveSelectedAccount = account;
+    document.getElementById('rnw-top-title').textContent = `Топ 25 доменов: ${account}`;
+    document.getElementById('rnw-last-title').textContent = `Последние запросы: ${account}`;
+    await loadRemnawaveTop();
+    await loadRemnawaveRecent(1);
+}
+
+async function loadRemnawaveTop() {
+    if (!remnawaveSelectedAccount) return;
+    const resp = await api(`/admin/remnawave-logs/${encodeURIComponent(remnawaveSelectedAccount)}/top-domains?limit=25&days=365`);
+    const d = await resp.json();
+    const tbody = document.getElementById('rnw-top-tbody');
+    tbody.innerHTML = d.items.map(i => `
+        <tr>
+            <td>${escapeHtml(i.dns)}</td>
+            <td>${escapeHtml(i.ip || '-')}</td>
+            <td>${i.hits}</td>
+        </tr>
+    `).join('') || '<tr><td colspan="3">Нет данных</td></tr>';
+}
+
+async function loadRemnawaveRecent(page = 1) {
+    if (!remnawaveSelectedAccount) return;
+    const fromVal = document.getElementById('rnw-from')?.value || '';
+    const toVal = document.getElementById('rnw-to')?.value || '';
+    const qVal = document.getElementById('rnw-q')?.value || '';
+
+    let url = `/admin/remnawave-logs/${encodeURIComponent(remnawaveSelectedAccount)}/queries?page=${page}&per_page=50`;
+    if (fromVal) url += `&from_ts=${encodeURIComponent(new Date(fromVal).toISOString())}`;
+    if (toVal) url += `&to_ts=${encodeURIComponent(new Date(toVal).toISOString())}`;
+    if (qVal) url += `&q=${encodeURIComponent(qVal)}`;
+
+    const resp = await api(url);
+    const d = await resp.json();
+    const tbody = document.getElementById('rnw-recent-tbody');
+    tbody.innerHTML = d.items.map(i => `
+        <tr>
+            <td>${escapeHtml(i.dns)}</td>
+            <td>${escapeHtml(i.ip || '-')}</td>
+            <td>${formatDate(i.requested_at)}</td>
+        </tr>
+    `).join('') || '<tr><td colspan="3">Нет данных</td></tr>';
+
+    renderPagination(document.getElementById('rnw-recent-pagination'), d.total, d.page, d.per_page, 'loadRemnawaveRecent');
 }
 
 // ========== EXPORT ==========

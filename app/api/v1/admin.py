@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timezone, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Body
-from sqlalchemy import select, func, desc, and_, delete
+from sqlalchemy import select, func, desc, and_, or_, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -23,6 +23,7 @@ from app.models.account import Account
 from app.models.device_permission import DevicePermission
 from app.models.device_log import DeviceLog
 from app.models.device_change_log import DeviceChangeLog
+from app.models.remnawave_log import RemnawaveAccount, RemnawaveDNSQuery
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(get_current_admin)])
 
@@ -916,3 +917,137 @@ async def export_sni_csv(
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename=sni_export_{days}d.csv"},
     )
+
+
+# ==================== REMNAWAVE LOGS ====================
+
+@router.get('/remnawave-logs/accounts')
+async def remnawave_accounts_summary(
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=1, le=200),
+    search: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    q = select(RemnawaveAccount)
+    if search:
+        q = q.where(RemnawaveAccount.account_login.ilike(f"%{search}%"))
+
+    total = (await db.execute(select(func.count()).select_from(q.subquery()))).scalar() or 0
+    rows = (await db.execute(
+        q.order_by(desc(RemnawaveAccount.last_activity_at), RemnawaveAccount.account_login)
+        .offset((page - 1) * per_page)
+        .limit(per_page)
+    )).scalars().all()
+
+    now = datetime.now(timezone.utc)
+    t24 = now - timedelta(hours=24)
+    t7 = now - timedelta(days=7)
+    t30 = now - timedelta(days=30)
+    t365 = now - timedelta(days=365)
+
+    items = []
+    for acc in rows:
+        login = acc.account_login
+        c24 = (await db.execute(select(func.count(RemnawaveDNSQuery.id)).where(
+            RemnawaveDNSQuery.account_login == login,
+            RemnawaveDNSQuery.requested_at >= t24,
+        ))).scalar() or 0
+        c7 = (await db.execute(select(func.count(RemnawaveDNSQuery.id)).where(
+            RemnawaveDNSQuery.account_login == login,
+            RemnawaveDNSQuery.requested_at >= t7,
+        ))).scalar() or 0
+        c30 = (await db.execute(select(func.count(RemnawaveDNSQuery.id)).where(
+            RemnawaveDNSQuery.account_login == login,
+            RemnawaveDNSQuery.requested_at >= t30,
+        ))).scalar() or 0
+        c365 = (await db.execute(select(func.count(RemnawaveDNSQuery.id)).where(
+            RemnawaveDNSQuery.account_login == login,
+            RemnawaveDNSQuery.requested_at >= t365,
+        ))).scalar() or 0
+
+        items.append({
+            'account': login,
+            'last_activity': acc.last_activity_at.isoformat() if acc.last_activity_at else None,
+            'requests_24h': c24,
+            'requests_7d': c7,
+            'requests_30d': c30,
+            'requests_365d': c365,
+        })
+
+    return {'total': total, 'page': page, 'per_page': per_page, 'items': items}
+
+
+@router.get('/remnawave-logs/{account_login}/top-domains')
+async def remnawave_top_domains(
+    account_login: str,
+    limit: int = Query(25, ge=1, le=100),
+    days: int = Query(365, ge=1, le=3650),
+    db: AsyncSession = Depends(get_db),
+):
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    rows = (await db.execute(
+        select(
+            RemnawaveDNSQuery.dns,
+            RemnawaveDNSQuery.resolved_ip,
+            func.count(RemnawaveDNSQuery.id).label('hits'),
+        )
+        .where(
+            RemnawaveDNSQuery.account_login == account_login,
+            RemnawaveDNSQuery.requested_at >= since,
+        )
+        .group_by(RemnawaveDNSQuery.dns, RemnawaveDNSQuery.resolved_ip)
+        .order_by(desc('hits'))
+        .limit(limit)
+    )).all()
+
+    return {
+        'account': account_login,
+        'items': [{'dns': r[0], 'ip': r[1], 'hits': r[2]} for r in rows],
+    }
+
+
+@router.get('/remnawave-logs/{account_login}/queries')
+async def remnawave_recent_queries(
+    account_login: str,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=1, le=200),
+    from_ts: datetime | None = None,
+    to_ts: datetime | None = None,
+    q: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    query = select(RemnawaveDNSQuery).where(RemnawaveDNSQuery.account_login == account_login)
+
+    if from_ts:
+        query = query.where(RemnawaveDNSQuery.requested_at >= from_ts)
+    if to_ts:
+        query = query.where(RemnawaveDNSQuery.requested_at <= to_ts)
+    if q:
+        ql = q.strip()
+        if ql:
+            query = query.where(or_(
+                RemnawaveDNSQuery.dns.ilike(f"%{ql}%"),
+                RemnawaveDNSQuery.resolved_ip.ilike(f"%{ql}%"),
+            ))
+
+    total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
+    rows = (await db.execute(
+        query.order_by(desc(RemnawaveDNSQuery.requested_at))
+        .offset((page - 1) * per_page)
+        .limit(per_page)
+    )).scalars().all()
+
+    return {
+        'total': total,
+        'page': page,
+        'per_page': per_page,
+        'items': [
+            {
+                'dns': r.dns,
+                'ip': r.resolved_ip,
+                'requested_at': r.requested_at.isoformat() if r.requested_at else None,
+                'node': r.node_name,
+            }
+            for r in rows
+        ],
+    }

@@ -34,6 +34,7 @@
         <a href="#" class="nav-link" data-section="errors">Ошибки</a>
         <a href="#" class="nav-link" data-section="device-logs">Логи устройств</a>
         <a href="#" class="nav-link" data-section="journal">Журнал</a>
+        <a href="#" class="nav-link" data-section="remnawave-logs">Remnawave logs</a>
         <a href="#" class="logout" onclick="logout()">Выйти</a>
     </nav>
 
@@ -156,6 +157,64 @@
                 <div class="pagination" id="device-changes-pagination"></div>
             </div>
         </div>
+
+
+
+        <!-- REMNAWAVE LOGS -->
+        <div id="section-remnawave-logs" class="section">
+            <h2>Remnawave logs</h2>
+            <div class="table-container">
+                <div class="table-header">
+                    <h3>Аккаунты</h3>
+                    <div class="table-filters">
+                        <input type="text" id="rnw-account-search" placeholder="Поиск логина..." onkeyup="loadRemnawaveAccounts(1)">
+                    </div>
+                </div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Аккаунт</th>
+                            <th>Последняя активность</th>
+                            <th>Запросы 24ч</th>
+                            <th>Запросы 7д</th>
+                            <th>Запросы 30д</th>
+                            <th>Запросы 365д</th>
+                        </tr>
+                    </thead>
+                    <tbody id="rnw-accounts-tbody"></tbody>
+                </table>
+                <div class="pagination" id="rnw-accounts-pagination"></div>
+            </div>
+
+            <div class="dashboard-columns" style="margin-top:14px;">
+                <div class="table-container">
+                    <div class="table-header">
+                        <h3 id="rnw-top-title">Топ 25 доменов</h3>
+                    </div>
+                    <table>
+                        <thead><tr><th>DNS</th><th>IP</th><th>Запросы (365д)</th></tr></thead>
+                        <tbody id="rnw-top-tbody"><tr><td colspan="3">Выберите аккаунт</td></tr></tbody>
+                    </table>
+                </div>
+                <div class="table-container">
+                    <div class="table-header">
+                        <h3 id="rnw-last-title">Последние запросы</h3>
+                        <div class="table-filters">
+                            <input type="datetime-local" id="rnw-from">
+                            <input type="datetime-local" id="rnw-to">
+                            <input type="text" id="rnw-q" placeholder="DNS или IP">
+                            <button class="btn btn-primary btn-sm" onclick="loadRemnawaveRecent(1)">Фильтр</button>
+                        </div>
+                    </div>
+                    <table>
+                        <thead><tr><th>DNS</th><th>IP</th><th>Последнее обращение</th></tr></thead>
+                        <tbody id="rnw-recent-tbody"><tr><td colspan="3">Выберите аккаунт</td></tr></tbody>
+                    </table>
+                    <div class="pagination" id="rnw-recent-pagination"></div>
+                </div>
+            </div>
+        </div>
+
 
         <!-- SESSIONS -->
         <div id="section-sessions" class="section">

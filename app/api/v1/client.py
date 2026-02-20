@@ -8,6 +8,7 @@ from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.config import settings
 from app.core.redis import get_redis
 from app.core.security import verify_api_key
 from app.core.logging_buffer import logging_buffer
@@ -21,12 +22,14 @@ from app.models.error_log import ErrorLog
 from app.models.device_permission import DevicePermission
 from app.models.device_log import DeviceLog
 from app.models.device_change_log import DeviceChangeLog
+from app.models.remnawave_log import RemnawaveAccount, RemnawaveDNSQuery
 from app.schemas.device import DeviceRegisterRequest, DeviceRegisterResponse
 from app.schemas.session import SessionStartRequest, SessionStartResponse, SessionEndRequest, ServerChangeRequest
 from app.schemas.telemetry import (
     SNIBatchRequest, SNIRawRequest, DNSBatchRequest,
     ConnectionBatchRequest, ErrorReportRequest, PermissionsBatchRequest,
     DeviceLogRequest,
+    RemnawaveDNSIngestRequest,
 )
 from app.services.geoip import lookup_ip
 
@@ -744,3 +747,65 @@ async def upload_device_log(
     db.add(log)
     logging_buffer.add("processing", f"Лог от устройства {device.id}: тип={req.log_type}, размер={len(req.content)}")
     return {"status": "ok"}
+
+
+# ==================== REMNAWAVE LOGS INGEST ====================
+
+@router.post("/remnawave/ingest")
+async def ingest_remnawave_logs(
+    req: RemnawaveDNSIngestRequest,
+    db: AsyncSession = Depends(get_db),
+    x_remnawave_token: str | None = Header(default=None, alias="X-Remnawave-Token"),
+):
+    token = (settings.REMNAWAVE_LOG_INGEST_TOKEN or "").strip()
+    if not token:
+        raise HTTPException(status_code=503, detail="REMNAWAVE_LOG_INGEST_TOKEN is not configured")
+    if not x_remnawave_token or x_remnawave_token != token:
+        raise HTTPException(status_code=401, detail="Invalid ingest token")
+
+    if not req.entries:
+        return {"status": "ok", "inserted": 0, "accounts_upserted": 0}
+
+    now = datetime.now(timezone.utc)
+    cache: dict[str, RemnawaveAccount] = {}
+    inserted = 0
+    accounts_upserted = 0
+
+    for entry in req.entries:
+        account_login = (entry.account or "").strip()
+        dns = (entry.dns or "").strip().lower().strip(".")
+        if not account_login or not dns:
+            continue
+
+        ts = entry.timestamp or now
+
+        account_obj = cache.get(account_login)
+        if account_obj is None:
+            res = await db.execute(select(RemnawaveAccount).where(RemnawaveAccount.account_login == account_login))
+            account_obj = res.scalar_one_or_none()
+            if account_obj is None:
+                account_obj = RemnawaveAccount(account_login=account_login, last_activity_at=ts)
+                db.add(account_obj)
+                accounts_upserted += 1
+            cache[account_login] = account_obj
+
+        if account_obj.last_activity_at is None or ts > account_obj.last_activity_at:
+            account_obj.last_activity_at = ts
+
+        db.add(
+            RemnawaveDNSQuery(
+                account_login=account_login,
+                dns=dns,
+                resolved_ip=(entry.ip or "").strip() or None,
+                node_name=(entry.node or "").strip() or None,
+                requested_at=ts,
+                raw_line=entry.raw,
+            )
+        )
+        inserted += 1
+
+    logging_buffer.add(
+        "processing",
+        f"Remnawave ingest: entries={len(req.entries)}, inserted={inserted}, accounts={accounts_upserted}",
+    )
+    return {"status": "ok", "inserted": inserted, "accounts_upserted": accounts_upserted}

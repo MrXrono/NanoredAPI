@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import AliasChoices, BaseModel, Field
 
 
@@ -28,7 +30,6 @@ class DNSEntry(BaseModel):
 class DNSBatchRequest(BaseModel):
     session_id: str
     entries: list[DNSEntry]
-
 
 
 class ConnectionEntry(BaseModel):
@@ -65,3 +66,16 @@ class DeviceLogRequest(BaseModel):
     log_type: str = "logcat"  # logcat, crash, custom
     content: str
     app_version: str | None = None
+
+
+class RemnawaveDNSIngestEntry(BaseModel):
+    account: str
+    dns: str
+    ip: str | None = None
+    timestamp: datetime | None = None
+    node: str | None = None
+    raw: str | None = None
+
+
+class RemnawaveDNSIngestRequest(BaseModel):
+    entries: list[RemnawaveDNSIngestEntry]

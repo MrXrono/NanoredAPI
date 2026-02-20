@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     # Example: https://api.nanored.top
     PUBLIC_BASE_URL: str = os.getenv("PUBLIC_BASE_URL", "")
 
+
+    # Remnawave logs ingest
+    REMNAWAVE_LOG_INGEST_TOKEN: str = os.getenv("REMNAWAVE_LOG_INGEST_TOKEN", "")
     # GeoIP
     GEOIP_DB_PATH: str = "/app/data/GeoLite2-City.mmdb"
 
