@@ -6,11 +6,13 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import urljoin
 
 import httpx
+from sqlalchemy import inspect
 from sqlalchemy import and_, exists, select, update
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import async_session
+from app.core.database import Base, async_session, engine
 from app.models.remnawave_log import AdultDomainCatalog, AdultSyncState, RemnawaveDNSUnique
 
 logger = logging.getLogger(__name__)
@@ -53,7 +55,54 @@ KNOWN_E_TLD_SUFFIXES = {
 }
 
 _CATALOG_SYNC_LOCK = asyncio.Lock()
+_SCHEMA_READY_LOCK = asyncio.Lock()
 _CATALOG_STARTUP_CHECK_DAYS = 7
+_ADULT_TABLES = {
+    "adult_domain_catalog",
+    "remnawave_dns_unique",
+    "adult_sync_state",
+}
+_adult_schema_ready = False
+
+
+def _msg_has_undefined_table(err: Exception) -> bool:
+    msg = str(err).lower()
+    return "does not exist" in msg or "undefinedtable" in msg or "undefined table" in msg
+
+
+async def _required_adult_tables_exist() -> bool:
+    async with engine.connect() as conn:
+        return await conn.run_sync(
+            lambda c: _ADULT_TABLES.issubset(set(inspect(c).get_table_names()))
+        )
+
+
+async def _ensure_adult_schema() -> bool:
+    global _adult_schema_ready
+    if _adult_schema_ready and await _required_adult_tables_exist():
+        return True
+
+    async with _SCHEMA_READY_LOCK:
+        if _adult_schema_ready and await _required_adult_tables_exist():
+            return True
+
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            _adult_schema_ready = await _required_adult_tables_exist()
+            if not _adult_schema_ready:
+                logger.warning("adult schema ensure: tables still missing after create_all")
+                return False
+            return True
+        except Exception:
+            logger.exception("adult schema ensure failed")
+            return False
+
+
+async def ensure_adult_schema_ready() -> bool:
+    """Public helper for ensuring adult detection tables exist before write/reads."""
+    return await _ensure_adult_schema()
+
 
 
 def _is_ip_literal(value: str | None) -> bool:
@@ -312,6 +361,14 @@ async def _upsert_sync_state(*, status: str, stats: dict, version: str, last_wat
 
 
 async def sync_adult_catalog() -> dict:
+    if not await _ensure_adult_schema():
+        return {
+            "version": datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
+            "domains": 0,
+            "updated": 0,
+            "status": "schema_missing",
+        }
+
     async with _CATALOG_SYNC_LOCK:
         return await _sync_adult_catalog_internal()
 
@@ -404,6 +461,10 @@ async def _sync_adult_catalog_internal() -> dict:
 
 
 async def _adult_catalog_needs_bootstrap_sync() -> bool:
+    if not await _ensure_adult_schema():
+        # Try to bootstrap sync once at startup so schema can be created automatically.
+        return True
+
     async with async_session() as db:
         state = await db.get(AdultSyncState, ADULT_SYNC_JOB)
     if not state:
@@ -435,14 +496,27 @@ async def process_dns_unique_recheck_batch(limit: int = 5000, session: AsyncSess
 
 
 async def _process_dns_unique_recheck_batch(db: AsyncSession, limit: int) -> int:
-    rows = (
-        await db.execute(
-            select(RemnawaveDNSUnique)
-            .where(RemnawaveDNSUnique.need_recheck.is_(True))
-            .order_by(RemnawaveDNSUnique.last_seen)
-            .limit(limit)
-        )
-    ).scalars().all()
+    if not await _ensure_adult_schema():
+        return 0
+
+    try:
+        rows = (
+            await db.execute(
+                select(RemnawaveDNSUnique)
+                .where(RemnawaveDNSUnique.need_recheck.is_(True))
+                .order_by(RemnawaveDNSUnique.last_seen)
+                .limit(limit)
+            )
+        ).scalars().all()
+    except SQLAlchemyError as exc:
+        global _adult_schema_ready
+        if _msg_has_undefined_table(exc):
+            logger.warning("adult recheck skipped: remnawave_dns_unique table not ready yet")
+            _adult_schema_ready = False  # force refresh on next attempt
+            return 0
+        logger.exception("adult recheck query failed")
+        return 0
+
     if not rows:
         return 0
 

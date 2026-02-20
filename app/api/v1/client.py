@@ -1,10 +1,12 @@
 import json
+import logging
 import secrets
 import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Header, Request, status
 from sqlalchemy import func, select, delete
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -23,7 +25,7 @@ from app.models.device_permission import DevicePermission
 from app.models.device_log import DeviceLog
 from app.models.device_change_log import DeviceChangeLog
 from app.models.remnawave_log import RemnawaveAccount, RemnawaveDNSQuery, RemnawaveDNSUnique
-from app.services.remnawave_adult import normalize_remnawave_domain
+from app.services.remnawave_adult import ensure_adult_schema_ready, normalize_remnawave_domain
 from app.schemas.device import DeviceRegisterRequest, DeviceRegisterResponse
 from app.schemas.session import SessionStartRequest, SessionStartResponse, SessionEndRequest, ServerChangeRequest
 from app.schemas.telemetry import (
@@ -36,6 +38,8 @@ from app.services.geoip import lookup_ip
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 import bcrypt
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/client", tags=["client"])
 
@@ -804,22 +808,34 @@ async def ingest_remnawave_logs(
             )
         )
 
-        dns_unique_stmt = pg_insert(RemnawaveDNSUnique).values(
-            dns_root=dns_root,
-            is_adult=False,
-            first_seen=ts,
-            last_seen=ts,
-            need_recheck=True,
-        )
-        dns_unique_stmt = dns_unique_stmt.on_conflict_do_update(
-            index_elements=[RemnawaveDNSUnique.dns_root],
-            set_={
-                "first_seen": func.least(RemnawaveDNSUnique.first_seen, dns_unique_stmt.excluded.first_seen),
-                "last_seen": func.greatest(RemnawaveDNSUnique.last_seen, dns_unique_stmt.excluded.last_seen),
-                "need_recheck": RemnawaveDNSUnique.need_recheck,
-            },
-        )
-        await db.execute(dns_unique_stmt)
+        if await ensure_adult_schema_ready():
+            try:
+                dns_unique_stmt = pg_insert(RemnawaveDNSUnique).values(
+                    dns_root=dns_root,
+                    is_adult=False,
+                    first_seen=ts,
+                    last_seen=ts,
+                    need_recheck=True,
+                )
+                dns_unique_stmt = dns_unique_stmt.on_conflict_do_update(
+                    index_elements=[RemnawaveDNSUnique.dns_root],
+                    set_={
+                        "first_seen": func.least(RemnawaveDNSUnique.first_seen, dns_unique_stmt.excluded.first_seen),
+                        "last_seen": func.greatest(RemnawaveDNSUnique.last_seen, dns_unique_stmt.excluded.last_seen),
+                        "need_recheck": RemnawaveDNSUnique.need_recheck,
+                    },
+                )
+                await db.execute(dns_unique_stmt)
+            except SQLAlchemyError as exc:
+                msg = str(exc).lower()
+                if "does not exist" in msg or "undefinedtable" in msg:
+                    logger.warning(
+                        "Remnawave DNS unique table missing during ingest, skipping dns_unique upsert for %s",
+                        account_login,
+                    )
+                else:
+                    raise
+
         inserted += 1
 
     logging_buffer.add(
