@@ -65,11 +65,6 @@ class AdultDomainCatalog(Base):
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     source_text: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
 
-    __table_args__ = (
-        Index("ix_adult_domain_catalog_is_enabled", "is_enabled"),
-        Index("ix_adult_domain_catalog_source_mask", "source_mask"),
-    )
-
 
 class AdultSyncState(Base):
     __tablename__ = "adult_sync_state"
