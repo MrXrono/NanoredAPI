@@ -23,7 +23,7 @@ from app.models.account import Account
 from app.models.device_permission import DevicePermission
 from app.models.device_log import DeviceLog
 from app.models.device_change_log import DeviceChangeLog
-from app.models.remnawave_log import RemnawaveAccount, RemnawaveDNSQuery
+from app.models.remnawave_log import RemnawaveAccount, RemnawaveDNSQuery, RemnawaveDNSUnique
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(get_current_admin)])
 
@@ -1135,15 +1135,7 @@ async def remnawave_nodes_summary(
     per_page: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
 ):
-    node_name_trimmed = func.nullif(func.trim(RemnawaveDNSQuery.node_name), "")
-    node_from_raw = func.nullif(
-        func.substring(
-            RemnawaveDNSQuery.raw_line,
-            r'^[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+([^\s]+)',
-        ),
-        "",
-    )
-    node_col = func.coalesce(node_name_trimmed, node_from_raw).label("node")
+    node_col = func.nullif(func.trim(RemnawaveDNSQuery.node_name), "").label("node")
     last_message_col = func.max(RemnawaveDNSQuery.requested_at).label("last_message")
 
     grouped = (
@@ -1168,6 +1160,68 @@ async def remnawave_nodes_summary(
             {
                 'node': row[0],
                 'last_message': row[1].isoformat() if row[1] else None,
+            }
+            for row in rows
+        ],
+    }
+
+
+@router.get('/remnawave-audit')
+async def remnawave_audit(
+    account: str | None = None,
+    search: str | None = None,
+    from_ts: datetime | None = None,
+    to_ts: datetime | None = None,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+):
+    query = (
+        select(
+            RemnawaveDNSQuery.account_login.label('account_login'),
+            RemnawaveDNSQuery.dns.label('dns_root'),
+            RemnawaveDNSQuery.requested_at.label('requested_at'),
+        )
+        .join(
+            RemnawaveDNSUnique,
+            and_(
+                RemnawaveDNSQuery.dns == RemnawaveDNSUnique.dns_root,
+                RemnawaveDNSUnique.is_adult.is_(True),
+            ),
+        )
+    )
+
+    if account:
+        account_q = account.strip()
+        if account_q:
+            query = query.where(RemnawaveDNSQuery.account_login.ilike(f"%{account_q}%"))
+
+    if search:
+        search_q = search.strip()
+        if search_q:
+            query = query.where(RemnawaveDNSQuery.dns.ilike(f"%{search_q}%"))
+
+    if from_ts:
+        query = query.where(RemnawaveDNSQuery.requested_at >= from_ts)
+    if to_ts:
+        query = query.where(RemnawaveDNSQuery.requested_at <= to_ts)
+
+    total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
+    rows = (await db.execute(
+        query.order_by(desc(RemnawaveDNSQuery.requested_at))
+        .offset((page - 1) * per_page)
+        .limit(per_page)
+    )).all()
+
+    return {
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "items": [
+            {
+                "time": row.requested_at.isoformat() if row.requested_at else None,
+                "account_login": row.account_login,
+                "dns_root": row.dns_root,
             }
             for row in rows
         ],

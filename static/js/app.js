@@ -85,6 +85,9 @@ document.querySelectorAll('.nav-link').forEach(link => {
             loadRemnawaveNodes();
             loadRemnawaveAccounts();
         }
+        else if (section === 'remnawave-audit') {
+            loadRemnawaveAudit(1);
+        }
     });
 });
 
@@ -866,6 +869,27 @@ async function loadRemnawaveRecent(page = 1) {
     `).join('') || '<tr><td colspan="2">Нет данных</td></tr>';
 
     renderPagination(document.getElementById('rnw-recent-pagination'), d.total, d.page, d.per_page, 'loadRemnawaveRecent');
+}
+
+// ========== REMNAWAVE AUDIT ==========
+async function loadRemnawaveAudit(page = 1) {
+    const account = document.getElementById('rnw-audit-account')?.value || '';
+    const search = document.getElementById('rnw-audit-search')?.value || '';
+    let url = `/admin/remnawave-audit?page=${page}&per_page=50`;
+    if (account) url += `&account=${encodeURIComponent(account)}`;
+    if (search) url += `&search=${encodeURIComponent(search)}`;
+
+    const resp = await api(url);
+    const d = await resp.json();
+    const tbody = document.getElementById('rnw-audit-tbody');
+    tbody.innerHTML = d.items.map(i => `
+        <tr>
+            <td>${formatDate(i.time)}</td>
+            <td>${escapeHtml(i.account_login)}</td>
+            <td>${escapeHtml(i.dns_root || '')}</td>
+        </tr>
+    `).join('') || '<tr><td colspan="3">Нет данных</td></tr>';
+    renderPagination(document.getElementById('rnw-audit-pagination'), d.total, d.page, d.per_page, 'loadRemnawaveAudit');
 }
 
 // ========== EXPORT ==========

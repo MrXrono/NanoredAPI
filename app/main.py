@@ -3,6 +3,7 @@ import logging
 import os
 import time
 import traceback
+from contextlib import suppress
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
@@ -31,7 +32,14 @@ from app.models.device_log import DeviceLog
 from app.models.device_change_log import DeviceChangeLog
 from app.models.support_message import SupportMessage
 from app.models.support_ticket import SupportForumMeta, SupportTicket, SupportTicketMessage
-from app.models.remnawave_log import RemnawaveAccount, RemnawaveDNSQuery
+from app.models.remnawave_log import (
+    AdultDomainCatalog,
+    AdultSyncState,
+    RemnawaveAccount,
+    RemnawaveDNSQuery,
+    RemnawaveDNSUnique,
+)
+from app.services.remnawave_adult import background_remnawave_adult_tasks
 from app.services.telegram_support_forum import telegram_support_forum
 
 logger = logging.getLogger(__name__)
@@ -121,11 +129,19 @@ async def lifespan(app: FastAPI):
         logger.warning(f"Admin creation skipped: {e}")
 
     cleanup_task = asyncio.create_task(_cleanup_stale_sessions())
+    adult_stop_event = asyncio.Event()
+    adult_task = asyncio.create_task(background_remnawave_adult_tasks(adult_stop_event))
     await _ensure_telegram_webhook()
 
     yield
 
     cleanup_task.cancel()
+    adult_stop_event.set()
+    adult_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await adult_task
+    with suppress(asyncio.CancelledError):
+        await cleanup_task
     await telegram_support_forum.close()
     await close_redis()
     await engine.dispose()

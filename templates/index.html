@@ -36,6 +36,7 @@
         <a href="#" class="nav-link" data-section="device-logs">Логи устройств</a>
         <a href="#" class="nav-link" data-section="journal">Журнал</a>
         <a href="#" class="nav-link" data-section="remnawave-logs">Remnawave logs</a>
+        <a href="#" class="nav-link" data-section="remnawave-audit">Remnawave audit</a>
         <a href="#" class="logout" onclick="logout()">Выйти</a>
     </nav>
 
@@ -320,6 +321,32 @@
                     </table>
                     <div class="pagination" id="rnw-recent-pagination"></div>
                 </div>
+            </div>
+        </div>
+
+        <!-- REMNAWAVE AUDIT -->
+        <div id="section-remnawave-audit" class="section">
+            <h2>Remnawave audit</h2>
+            <div class="table-container">
+                <div class="table-header">
+                    <h3>18+ DNS-запросы</h3>
+                    <div class="table-filters">
+                        <input type="text" id="rnw-audit-account" placeholder="Поиск по аккаунту" onkeyup="loadRemnawaveAudit(1)">
+                        <input type="text" id="rnw-audit-search" placeholder="Поиск по DNS" onkeyup="loadRemnawaveAudit(1)">
+                        <button class="btn btn-primary btn-sm" onclick="loadRemnawaveAudit(1)">Фильтр</button>
+                    </div>
+                </div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Время</th>
+                            <th>Аккаунт</th>
+                            <th>DNS 18+</th>
+                        </tr>
+                    </thead>
+                    <tbody id="rnw-audit-tbody"></tbody>
+                </table>
+                <div class="pagination" id="rnw-audit-pagination"></div>
             </div>
         </div>
 

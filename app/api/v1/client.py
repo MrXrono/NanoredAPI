@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Header, Request, status
-from sqlalchemy import select, delete
+from sqlalchemy import func, select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -22,7 +22,8 @@ from app.models.error_log import ErrorLog
 from app.models.device_permission import DevicePermission
 from app.models.device_log import DeviceLog
 from app.models.device_change_log import DeviceChangeLog
-from app.models.remnawave_log import RemnawaveAccount, RemnawaveDNSQuery
+from app.models.remnawave_log import RemnawaveAccount, RemnawaveDNSQuery, RemnawaveDNSUnique
+from app.services.remnawave_adult import normalize_remnawave_domain
 from app.schemas.device import DeviceRegisterRequest, DeviceRegisterResponse
 from app.schemas.session import SessionStartRequest, SessionStartResponse, SessionEndRequest, ServerChangeRequest
 from app.schemas.telemetry import (
@@ -32,6 +33,7 @@ from app.schemas.telemetry import (
     RemnawaveDNSIngestRequest,
 )
 from app.services.geoip import lookup_ip
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 import bcrypt
 
@@ -774,8 +776,8 @@ async def ingest_remnawave_logs(
 
     for entry in req.entries:
         account_login = (entry.account or "").strip()
-        dns = (entry.dns or "").strip().lower().strip(".")
-        if not account_login or not dns:
+        dns_root = normalize_remnawave_domain(entry.dns)
+        if not account_login or not dns_root:
             continue
 
         ts = entry.timestamp or now
@@ -796,11 +798,28 @@ async def ingest_remnawave_logs(
         db.add(
             RemnawaveDNSQuery(
                 account_login=account_login,
-                dns=dns,
+                dns=dns_root,
                 node_name=(entry.node or "").strip() or None,
                 requested_at=ts,
             )
         )
+
+        dns_unique_stmt = pg_insert(RemnawaveDNSUnique).values(
+            dns_root=dns_root,
+            is_adult=False,
+            first_seen=ts,
+            last_seen=ts,
+            need_recheck=True,
+        )
+        dns_unique_stmt = dns_unique_stmt.on_conflict_do_update(
+            index_elements=[RemnawaveDNSUnique.dns_root],
+            set_={
+                "first_seen": func.least(RemnawaveDNSUnique.first_seen, dns_unique_stmt.excluded.first_seen),
+                "last_seen": func.greatest(RemnawaveDNSUnique.last_seen, dns_unique_stmt.excluded.last_seen),
+                "need_recheck": RemnawaveDNSUnique.need_recheck,
+            },
+        )
+        await db.execute(dns_unique_stmt)
         inserted += 1
 
     logging_buffer.add(
