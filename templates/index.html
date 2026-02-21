@@ -27,6 +27,7 @@
     <nav class="sidebar">
         <div class="logo">NanoredVPN <span style="font-size:11px;color:var(--text-secondary);">v{{ app_version }}</span></div>
         <a href="#" class="nav-link" data-section="database-status">Статус базы данных</a>
+        <a href="#" class="nav-link" data-section="sql-browser">Просмотр sql базы</a>
         <a href="#" class="nav-link active" data-section="dashboard">Панель</a>
         <a href="#" class="nav-link" data-section="devices">Устройства</a>
         <a href="#" class="nav-link" data-section="sessions">Сессии</a>
@@ -42,6 +43,35 @@
     </nav>
 
     <div class="main">
+
+        <!-- SQL BROWSER -->
+        <div id="section-sql-browser" class="section">
+            <h2>Просмотр sql базы</h2>
+            <div class="table-container" style="padding:16px;">
+                <div class="table-header">
+                    <h3>Таблицы и данные</h3>
+                    <div class="table-filters" style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+                        <select id="sql-browser-table-select" class="btn btn-sm" style="min-width:260px;"></select>
+                        <button class="btn btn-sm" id="sql-browser-load-btn" onclick="loadSqlBrowserRows('page', 0)">Открыть</button>
+                        <button class="btn btn-sm" id="sql-browser-prev-btn" onclick="loadSqlBrowserPrev()">◀ Предыдущие 25</button>
+                        <button class="btn btn-sm" id="sql-browser-next-btn" onclick="loadSqlBrowserNext()">Следующие 25 ▶</button>
+                        <button class="btn btn-sm" id="sql-browser-last-btn" onclick="loadSqlBrowserRows('last')">Последние 25</button>
+                    </div>
+                </div>
+                <div id="sql-browser-meta" style="color:var(--text-secondary); font-size:12px; margin-bottom:8px;">Выберите таблицу.</div>
+                <div style="overflow:auto;">
+                    <table>
+                        <thead id="sql-browser-thead">
+                            <tr><th>Данные</th></tr>
+                        </thead>
+                        <tbody id="sql-browser-tbody">
+                            <tr><td>Таблица не выбрана</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
 
         <!-- DASHBOARD -->
         <div id="section-dashboard" class="section active">

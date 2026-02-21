@@ -4,6 +4,7 @@ let accountsCache = [];
 let journalInterval = null;
 let remnawaveSelectedAccount = null;
 let dbStatusInterval = null;
+let sqlBrowserState = { tableName: '', offset: 0, limit: 25, atStart: true, atEnd: false };
 
 // ========== AUTH ==========
 async function api(path, opts = {}) {
@@ -79,6 +80,9 @@ document.querySelectorAll('.nav-link').forEach(link => {
                     loadDatabaseStatus();
                 }
             }, 10000);
+        }
+        else if (section === 'sql-browser') {
+            loadSqlBrowserTables();
         }
         else if (section === 'journal') refreshLogs();
         else if (section === 'remnawave-logs') {
@@ -199,6 +203,150 @@ function shouldOpenCellViewer(td, fullText) {
     if (td.scrollWidth > td.clientWidth) return true;
     const shortText = (td.textContent || '').trim();
     return shortText !== fullText;
+}
+
+// ========== SQL BROWSER ==========
+async function loadSqlBrowserTables() {
+    const select = document.getElementById('sql-browser-table-select');
+    const tbody = document.getElementById('sql-browser-tbody');
+    const meta = document.getElementById('sql-browser-meta');
+    if (!select || !tbody || !meta) return;
+
+    try {
+        const resp = await api('/admin/sql-browser/tables');
+        const data = await resp.json();
+        const items = Array.isArray(data?.items) ? data.items : [];
+        if (!items.length) {
+            select.innerHTML = '<option value="">Нет таблиц</option>';
+            tbody.innerHTML = '<tr><td>Таблицы не найдены</td></tr>';
+            meta.textContent = 'Таблицы не найдены';
+            return;
+        }
+
+        const previous = sqlBrowserState.tableName;
+        select.innerHTML = items.map(i => {
+            const name = escapeHtml(String(i.table_name || ''));
+            const approx = Number(i.approx_rows || 0).toLocaleString('ru-RU');
+            return `<option value="${name}">${name} (~${approx} rows)</option>`;
+        }).join('');
+
+        const availableValues = new Set(items.map(i => String(i.table_name || '')));
+        const selected = availableValues.has(previous) ? previous : String(items[0].table_name || '');
+        select.value = selected;
+        sqlBrowserState.tableName = selected;
+
+        if (!select.dataset.bound) {
+            select.addEventListener('change', () => {
+                sqlBrowserState.tableName = select.value || '';
+                sqlBrowserState.offset = 0;
+                loadSqlBrowserRows('page', 0);
+            });
+            select.dataset.bound = '1';
+        }
+
+        await loadSqlBrowserRows('page', 0);
+    } catch (err) {
+        console.error('sql browser tables load error:', err);
+        select.innerHTML = '<option value="">Ошибка загрузки</option>';
+        tbody.innerHTML = '<tr><td>Не удалось загрузить таблицы</td></tr>';
+        meta.textContent = 'Ошибка загрузки таблиц';
+    }
+}
+
+function updateSqlBrowserNavButtons() {
+    const prevBtn = document.getElementById('sql-browser-prev-btn');
+    const nextBtn = document.getElementById('sql-browser-next-btn');
+    if (prevBtn) prevBtn.disabled = !!sqlBrowserState.atStart;
+    if (nextBtn) nextBtn.disabled = !!sqlBrowserState.atEnd;
+}
+
+function renderSqlBrowserTable(columns, rows) {
+    const thead = document.getElementById('sql-browser-thead');
+    const tbody = document.getElementById('sql-browser-tbody');
+    if (!thead || !tbody) return;
+
+    const safeColumns = Array.isArray(columns) && columns.length ? columns : ['value'];
+    thead.innerHTML = `<tr>${safeColumns.map(c => `<th>${escapeHtml(String(c))}</th>`).join('')}</tr>`;
+
+    if (!Array.isArray(rows) || !rows.length) {
+        tbody.innerHTML = `<tr><td colspan="${safeColumns.length}">Нет данных</td></tr>`;
+        return;
+    }
+
+    tbody.innerHTML = rows.map(row => {
+        return `<tr>${safeColumns.map(col => {
+            const value = row?.[col];
+            let text = '';
+            if (value === null || value === undefined) text = '';
+            else if (typeof value === 'object') text = JSON.stringify(value);
+            else text = String(value);
+            const escaped = escapeHtml(text);
+            const fullAttr = escapeHtml(text).replace(/"/g, '&quot;');
+            return `<td class="sql-browser-cell" data-full-text="${fullAttr}" title="${fullAttr}">${escaped}</td>`;
+        }).join('')}</tr>`;
+    }).join('');
+}
+
+async function loadSqlBrowserRows(mode = 'page', forcedOffset = null) {
+    const select = document.getElementById('sql-browser-table-select');
+    const meta = document.getElementById('sql-browser-meta');
+    if (!select || !meta) return;
+
+    const tableName = select.value || sqlBrowserState.tableName;
+    if (!tableName) {
+        meta.textContent = 'Выберите таблицу.';
+        return;
+    }
+    sqlBrowserState.tableName = tableName;
+
+    let url = `/admin/sql-browser/table/${encodeURIComponent(tableName)}?limit=${sqlBrowserState.limit}`;
+    if (mode === 'last') {
+        url += '&mode=last';
+    } else {
+        const offset = forcedOffset !== null ? forcedOffset : sqlBrowserState.offset;
+        url += `&mode=page&offset=${Math.max(0, Number(offset) || 0)}`;
+    }
+
+    try {
+        const resp = await api(url);
+        const data = await resp.json();
+        const rows = Array.isArray(data?.rows) ? data.rows : [];
+        const columns = Array.isArray(data?.columns) ? data.columns : [];
+
+        renderSqlBrowserTable(columns, rows);
+
+        if (data?.mode === 'last') {
+            sqlBrowserState.offset = null;
+            sqlBrowserState.atStart = false;
+            sqlBrowserState.atEnd = true;
+            meta.textContent = `${tableName}: последние ${rows.length} строк`;
+        } else {
+            sqlBrowserState.offset = Number(data?.offset || 0);
+            sqlBrowserState.atStart = !!data?.at_start;
+            sqlBrowserState.atEnd = !!data?.at_end;
+            const from = rows.length ? sqlBrowserState.offset + 1 : sqlBrowserState.offset;
+            const to = sqlBrowserState.offset + rows.length;
+            meta.textContent = `${tableName}: строки ${from}–${to}`;
+        }
+
+        updateSqlBrowserNavButtons();
+    } catch (err) {
+        console.error('sql browser rows load error:', err);
+        document.getElementById('sql-browser-tbody').innerHTML = '<tr><td>Ошибка загрузки данных таблицы</td></tr>';
+        meta.textContent = `Ошибка чтения таблицы ${tableName}`;
+    }
+}
+
+function loadSqlBrowserNext() {
+    const baseOffset = typeof sqlBrowserState.offset === 'number' ? sqlBrowserState.offset : 0;
+    const nextOffset = baseOffset + sqlBrowserState.limit;
+    loadSqlBrowserRows('page', nextOffset);
+}
+
+function loadSqlBrowserPrev() {
+    const baseOffset = typeof sqlBrowserState.offset === 'number' ? sqlBrowserState.offset : 0;
+    const prevOffset = Math.max(0, baseOffset - sqlBrowserState.limit);
+    loadSqlBrowserRows('page', prevOffset);
 }
 
 // ========== DATABASE STATUS ==========

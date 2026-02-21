@@ -5,9 +5,11 @@ import socket
 import time
 import traceback
 import psutil
+import re
 from datetime import datetime, timezone, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Body
+from fastapi.encoders import jsonable_encoder
 from sqlalchemy import select, func, desc, and_, or_, delete, text, exists, update, case
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -85,6 +87,11 @@ _adult_task_state: dict[str, dict] = {
     "txt_sync": {"label": "txt_sync", "running": False, "status": "idle"},
     "cleanup": {"label": "cleanup", "running": False, "status": "idle"},
 }
+
+
+_SQL_TABLE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_SQL_BROWSER_DEFAULT_LIMIT = 25
+_SQL_BROWSER_MAX_LIMIT = 100
 
 
 def _invalidate_database_status_cache() -> None:
@@ -447,6 +454,46 @@ async def _build_ip_display_map(values: list[str], db: AsyncSession) -> dict[str
         unresolved.discard(ip)
 
     return display_map
+
+
+def _validate_sql_table_name(table_name: str) -> str:
+    name = (table_name or '').strip()
+    if not _SQL_TABLE_NAME_RE.match(name):
+        raise HTTPException(status_code=400, detail='Invalid table name')
+    return name
+
+
+def _quote_ident(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+async def _assert_public_table_exists(db: AsyncSession, table_name: str) -> None:
+    exists_row = await db.execute(
+        text(
+            """
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = :table_name
+            LIMIT 1
+            """
+        ),
+        {'table_name': table_name},
+    )
+    if exists_row.scalar() is None:
+        raise HTTPException(status_code=404, detail='Table not found')
+
+
+def _build_sql_browser_order_clause(primary_keys: list[str]) -> str:
+    if primary_keys:
+        return ', '.join(f'{_quote_ident(col)} ASC' for col in primary_keys)
+    return 'ctid ASC'
+
+
+def _build_sql_browser_reverse_order_clause(primary_keys: list[str]) -> str:
+    if primary_keys:
+        return ', '.join(f'{_quote_ident(col)} DESC' for col in primary_keys)
+    return 'ctid DESC'
+
 
 
 # ==================== DASHBOARD ====================
@@ -987,6 +1034,148 @@ async def check_repair_database():
         "message": "Database integrity check completed",
         "report": report,
     }
+
+
+@router.get('/sql-browser/tables')
+async def sql_browser_tables(db: AsyncSession = Depends(get_db)):
+    rows = await db.execute(
+        text(
+            """
+            SELECT
+                t.table_name,
+                COALESCE(c.reltuples::bigint, 0) AS approx_rows
+            FROM information_schema.tables t
+            LEFT JOIN pg_namespace n
+                ON n.nspname = t.table_schema
+            LEFT JOIN pg_class c
+                ON c.relnamespace = n.oid
+               AND c.relname = t.table_name
+            WHERE t.table_schema = 'public'
+              AND t.table_type = 'BASE TABLE'
+            ORDER BY t.table_name
+            """
+        )
+    )
+    items = [
+        {
+            'table_name': str(r.table_name),
+            'approx_rows': max(0, int(r.approx_rows or 0)),
+        }
+        for r in rows
+    ]
+    return {'items': items}
+
+
+@router.get('/sql-browser/table/{table_name}')
+async def sql_browser_table_rows(
+    table_name: str,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(_SQL_BROWSER_DEFAULT_LIMIT, ge=1, le=_SQL_BROWSER_MAX_LIMIT),
+    mode: str = Query('page'),
+    db: AsyncSession = Depends(get_db),
+):
+    table_name = _validate_sql_table_name(table_name)
+    await _assert_public_table_exists(db, table_name)
+
+    col_rows = await db.execute(
+        text(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = :table_name
+            ORDER BY ordinal_position
+            """
+        ),
+        {'table_name': table_name},
+    )
+    columns = [str(r.column_name) for r in col_rows]
+
+    pk_rows = await db.execute(
+        text(
+            """
+            SELECT a.attname AS column_name
+            FROM pg_index i
+            JOIN pg_class c ON c.oid = i.indrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = ANY(i.indkey)
+            WHERE i.indisprimary = TRUE
+              AND n.nspname = 'public'
+              AND c.relname = :table_name
+            ORDER BY array_position(i.indkey, a.attnum)
+            """
+        ),
+        {'table_name': table_name},
+    )
+    primary_keys = [str(r.column_name) for r in pk_rows]
+
+    quoted_table = _quote_ident(table_name)
+    forward_order = _build_sql_browser_order_clause(primary_keys)
+
+    query_offset = offset
+    at_start = query_offset <= 0
+    mode_normalized = (mode or 'page').strip().lower()
+
+    if mode_normalized == 'last':
+        reverse_order = _build_sql_browser_reverse_order_clause(primary_keys)
+        rows_result = await db.execute(
+            text(
+                f"""
+                SELECT *
+                FROM (
+                    SELECT *
+                    FROM {quoted_table}
+                    ORDER BY {reverse_order}
+                    LIMIT :limit
+                ) AS t
+                ORDER BY {forward_order}
+                """
+            ),
+            {'limit': limit},
+        )
+        row_mappings = rows_result.mappings().all()
+        result_rows = [jsonable_encoder(dict(r)) for r in row_mappings]
+        return {
+            'table_name': table_name,
+            'columns': columns,
+            'primary_keys': primary_keys,
+            'offset': None,
+            'limit': limit,
+            'mode': 'last',
+            'rows': result_rows,
+            'rows_count': len(result_rows),
+            'at_start': False,
+            'at_end': True,
+        }
+
+    rows_result = await db.execute(
+        text(
+            f"""
+            SELECT *
+            FROM {quoted_table}
+            ORDER BY {forward_order}
+            OFFSET :offset
+            LIMIT :limit
+            """
+        ),
+        {'offset': query_offset, 'limit': limit},
+    )
+    row_mappings = rows_result.mappings().all()
+    result_rows = [jsonable_encoder(dict(r)) for r in row_mappings]
+
+    at_end = len(result_rows) < limit
+    return {
+        'table_name': table_name,
+        'columns': columns,
+        'primary_keys': primary_keys,
+        'offset': query_offset,
+        'limit': limit,
+        'mode': 'page',
+        'rows': result_rows,
+        'rows_count': len(result_rows),
+        'at_start': at_start,
+        'at_end': at_end,
+    }
+
 
 
 @router.get("/dashboard")
