@@ -3,6 +3,7 @@ import ipaddress
 import asyncio
 import socket
 import time
+import traceback
 import psutil
 from datetime import datetime, timezone, timedelta
 
@@ -188,9 +189,11 @@ def _start_background_task(task_name: str, task_ref_name: str, runner, task_key:
             if task_key:
                 _task_set_done(task_key, status="ok", result=result if isinstance(result, dict) else {"result": str(result)})
         except Exception as exc:
-            logging_buffer.add("error", f"adult-sync {task_name} failed: {exc}")
+            tb = traceback.format_exc(limit=20)
+            err_text = f"{exc.__class__.__name__}: {exc}"
+            logging_buffer.add("error", f"adult-sync {task_name} failed: {err_text}\n{tb}")
             if task_key:
-                _task_set_done(task_key, status="failed", error=str(exc))
+                _task_set_done(task_key, status="failed", error=f"{err_text}\n{tb}")
         finally:
             _invalidate_database_status_cache()
 

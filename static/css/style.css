@@ -123,6 +123,7 @@ tbody td {
 }
 tbody tr:hover { background: rgba(233, 69, 96, 0.05); }
 tbody td[title] { cursor: zoom-in; }
+tbody td.cell-expandable { cursor: zoom-in; }
 
 .table-cell-viewer-overlay {
     position: fixed;

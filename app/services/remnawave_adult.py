@@ -248,6 +248,11 @@ async def _bulk_insert_staging_domains(
     if not domains:
         return
 
+    # Defensive filter for malformed rows that may trigger asyncpg ProgrammingError
+    domains = [d for d in domains if _is_domain_db_safe(d)]
+    if not domains:
+        return
+
     stmt = text(
         f"""
         INSERT INTO {_ADULT_STAGING_TABLE}
@@ -427,6 +432,20 @@ def normalize_remnawave_domain(value: str | None) -> str | None:
                     return f"{label}.{suffix}"
 
     return f"{parts[-2]}.{parts[-1]}"
+
+
+def _is_domain_db_safe(domain: str) -> bool:
+    if not domain:
+        return False
+    if len(domain) > 253:
+        return False
+    labels = domain.split(".")
+    if len(labels) < 2:
+        return False
+    for lbl in labels:
+        if not lbl or len(lbl) > 63:
+            return False
+    return True
 
 
 def _sources_from_mask(mask: int) -> list[str]:
@@ -896,6 +915,7 @@ async def sync_adult_catalog_from_txt(path: str | None = None, progress_cb: Prog
         chunk_seen: set[str] = set()
         rows_total = 0
         inserted_total = 0
+        skipped_invalid = 0
         bytes_read = 0
         checked_at = started_at
         txt_chunk_size = ADULT_SYNC_TXT_DB_CHUNK_SIZE
@@ -909,6 +929,9 @@ async def sync_adult_catalog_from_txt(path: str | None = None, progress_cb: Prog
                     bytes_read += len(line)
                     domain = normalize_remnawave_domain(line)
                     if not domain:
+                        continue
+                    if not _is_domain_db_safe(domain):
+                        skipped_invalid += 1
                         continue
                     if domain in chunk_seen:
                         continue
@@ -976,10 +999,14 @@ async def sync_adult_catalog_from_txt(path: str | None = None, progress_cb: Prog
             "path": str(txt_path),
             "processed": rows_total,
             "inserted": inserted_total,
+            "skipped_invalid": skipped_invalid,
             "version": version,
         }
         await _upsert_sync_state(status="ok", stats=stats, version=version, last_watermark=str(started_at))
-        await _emit_progress(progress_cb, phase="done", progress_current=rows_total, progress_total=rows_total, progress_percent=100.0, message=f"TXT sync finished ({rows_total} rows)", status="ok")
+        done_msg = f"TXT sync finished ({rows_total} rows)"
+        if skipped_invalid:
+            done_msg += f"; skipped invalid: {skipped_invalid}"
+        await _emit_progress(progress_cb, phase="done", progress_current=rows_total, progress_total=rows_total, progress_percent=100.0, message=done_msg, status="ok")
         return stats
 
 

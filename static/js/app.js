@@ -420,7 +420,11 @@ async function loadDatabaseStatus() {
             ['Coverage', `${Number(adult.adult_coverage_percent || 0)}%`],
         ];
         document.getElementById('db-adult-sync-tbody').innerHTML = adultSyncRows
-            .map(([k, v]) => `<tr><td>${escapeHtml(String(k))}</td><td>${escapeHtml(String(v))}</td></tr>`)
+            .map(([k, v]) => {
+                const key = String(k);
+                const val = String(v);
+                return `<tr><td>${escapeHtml(key)}</td><td class="cell-expandable" data-full-text="${escapeHtml(val)}">${escapeHtml(val)}</td></tr>`;
+            })
             .join('');
 
         document.getElementById('db-pg-states-tbody').innerHTML = `
@@ -1247,7 +1251,12 @@ document.addEventListener('click', (e) => {
     const td = e.target.closest('table tbody td');
     if (!td) return;
 
-    if (e.target.closest('button, a, input, select, textarea, label')) return;
+    const anchor = e.target.closest('a');
+    if (anchor && String(anchor.getAttribute('href') || '').startsWith('#')) {
+        e.preventDefault();
+    }
+
+    if (e.target.closest('button, input, select, textarea, label')) return;
 
     const fullText = getCellFullText(td);
     if (!shouldOpenCellViewer(td, fullText)) return;
