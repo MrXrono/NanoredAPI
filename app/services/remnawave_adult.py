@@ -11,7 +11,7 @@ from collections.abc import Awaitable, Callable
 
 import httpx
 from sqlalchemy import inspect
-from sqlalchemy import String, and_, bindparam, delete, exists, func, or_, select, text, update
+from sqlalchemy import String, and_, bindparam, delete, desc, exists, func, or_, select, text, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.dialects.postgresql import ARRAY, insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
