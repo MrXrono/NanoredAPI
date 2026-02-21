@@ -289,10 +289,13 @@ async function loadDatabaseStatus() {
         const rsLag = Number(rsyslogQueue.lag_estimate || 0);
         const rsPending = Number(rsyslogQueue.pending || 0);
         const rsDead = Number(rsyslogQueue.dead_len || 0);
-        const rsReasonTop = (ingestRsyslog.reject_reasons || []).slice(0, 2).map(x => `${x.reason}:${x.count}`).join(', ');
-        document.getElementById('db-rsyslog-ingest-ok').textContent = `${rsReceived} / ${rsProcessed} (valid ${rsValidated}, new ${rsInserted}, dedup ${rsDedup}, rej ${rsRejected}, fail ${rsFailed}, retry ${rsRetried}, lag ${rsLag}, pend ${rsPending}, dead ${rsDead})`;
+        const rsReasonTop = (ingestRsyslog.reject_reasons || []).slice(0, 3).map(x => `${x.reason}:${x.count}`).join(', ');
+        const rsBaseText = `${rsReceived} / ${rsProcessed} (valid ${rsValidated}, new ${rsInserted}, dedup ${rsDedup}, rej ${rsRejected}, fail ${rsFailed}, retry ${rsRetried}, lag ${rsLag}, pend ${rsPending}, dead ${rsDead})`;
+        document.getElementById('db-rsyslog-ingest-ok').textContent = rsReasonTop ? `${rsBaseText} [rej_top: ${rsReasonTop}]` : rsBaseText;
         if (rsReasonTop) {
             document.getElementById('db-rsyslog-ingest-ok').title = `Top reject reasons: ${rsReasonTop}`;
+        } else {
+            document.getElementById('db-rsyslog-ingest-ok').title = '';
         }
 
         const nvReceived = Number(ingestNanoredvpn.received || 0);
