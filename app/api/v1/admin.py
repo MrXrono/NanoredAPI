@@ -40,7 +40,7 @@ from app.models.remnawave_log import (
 from app.services.ingest_metrics import get_ingest_metrics_snapshot
 from app.services.remnawave_ingest_queue import get_remnawave_queue_stats
 from app.services.db_integrity import check_and_repair_database_integrity
-from app.services.runtime_control import get_services_state, set_services_enabled
+from app.services.runtime_control import get_services_state, set_services_enabled, set_services_killed, services_killed
 from app.services.remnawave_adult import (
     cleanup_adult_catalog_garbage,
     force_recheck_all_dns_unique,
@@ -92,6 +92,7 @@ _adult_task_state: dict[str, dict] = {
 _SQL_TABLE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SQL_BROWSER_DEFAULT_LIMIT = 25
 _SQL_BROWSER_MAX_LIMIT = 100
+_SQL_BROWSER_SEARCH_MAX_CHARS = 200
 
 
 def _invalidate_database_status_cache() -> None:
@@ -311,7 +312,10 @@ def _stop_all_manual_tasks(reason: str = "Stopped by user") -> dict[str, object]
 
 def _start_background_task(task_name: str, task_ref_name: str, runner, task_key: str | None = None):
     globals_ref = globals()
-    if not bool(get_services_state().get("services_enabled", True)):
+    services_state = get_services_state()
+    if bool(services_state.get("services_killed", False)):
+        return {"ok": False, "started": False, "message": "services were killed, restart application required"}
+    if not bool(services_state.get("services_enabled", True)):
         return {"ok": False, "started": False, "message": "services are paused"}
     task = globals_ref.get(task_ref_name)
     if isinstance(task, asyncio.Task) and not task.done():
@@ -495,6 +499,15 @@ def _build_sql_browser_reverse_order_clause(primary_keys: list[str]) -> str:
     return 'ctid DESC'
 
 
+def _normalize_sql_browser_search(search: str | None) -> str:
+    value = (search or "").strip()
+    if not value:
+        return ""
+    if len(value) > _SQL_BROWSER_SEARCH_MAX_CHARS:
+        value = value[:_SQL_BROWSER_SEARCH_MAX_CHARS]
+    return value
+
+
 
 # ==================== DASHBOARD ====================
 
@@ -659,9 +672,11 @@ async def database_status(db: AsyncSession = Depends(get_db)):
             "blocklistproject": 0,
             "oisd": 0,
             "v2fly": 0,
+            "txt_import": 0,
         },
         "unique_domains_total": 0,
         "unique_adult_total": 0,
+        "unique_matched_total": 0,
         "unique_need_recheck": 0,
         "adult_coverage_percent": 0.0,
         "manual_tasks": {
@@ -766,6 +781,12 @@ async def database_status(db: AsyncSession = Depends(get_db)):
                         AdultDomainCatalog.source_mask.op("&")(4) != 0,
                     )
                 ).label("src_v2fly"),
+                func.count(AdultDomainCatalog.domain).filter(
+                    and_(
+                        AdultDomainCatalog.is_enabled.is_(True),
+                        AdultDomainCatalog.source_mask.op("&")(8) != 0,
+                    )
+                ).label("src_txt"),
             )
         )
         data = row.mappings().first() or {}
@@ -775,6 +796,7 @@ async def database_status(db: AsyncSession = Depends(get_db)):
             "blocklistproject": int(data.get("src_blocklist", 0) or 0),
             "oisd": int(data.get("src_oisd", 0) or 0),
             "v2fly": int(data.get("src_v2fly", 0) or 0),
+            "txt_import": int(data.get("src_txt", 0) or 0),
         }
     except Exception:
         pass
@@ -785,6 +807,18 @@ async def database_status(db: AsyncSession = Depends(get_db)):
                 func.count(RemnawaveDNSUnique.dns_root).label("unique_total"),
                 func.count(RemnawaveDNSUnique.dns_root).filter(RemnawaveDNSUnique.is_adult.is_(True)).label("adult_total"),
                 func.count(RemnawaveDNSUnique.dns_root).filter(RemnawaveDNSUnique.need_recheck.is_(True)).label("need_recheck"),
+                func.count(RemnawaveDNSUnique.dns_root).filter(
+                    exists(
+                        select(1)
+                        .select_from(AdultDomainCatalog)
+                        .where(
+                            and_(
+                                AdultDomainCatalog.domain == RemnawaveDNSUnique.dns_root,
+                                AdultDomainCatalog.is_enabled.is_(True),
+                            )
+                        )
+                    )
+                ).label("matched_total"),
             )
         )
         data = row.mappings().first() or {}
@@ -793,6 +827,7 @@ async def database_status(db: AsyncSession = Depends(get_db)):
         adult_sync["unique_domains_total"] = unique_total
         adult_sync["unique_adult_total"] = unique_adult
         adult_sync["unique_need_recheck"] = int(data.get("need_recheck", 0) or 0)
+        adult_sync["unique_matched_total"] = int(data.get("matched_total", 0) or 0)
         adult_sync["adult_coverage_percent"] = round((unique_adult / unique_total) * 100, 2) if unique_total else 0.0
     except Exception:
         pass
@@ -1006,6 +1041,7 @@ async def get_latest_adult_task_run(task_key: str, db: AsyncSession = Depends(ge
 async def stop_background_services():
     state = await set_services_enabled(False, reason="manual_stop")
     stopped = _stop_all_manual_tasks(reason="Stopped by user from admin panel")
+    _invalidate_database_status_cache()
     return {
         "ok": True,
         "message": "Background services paused",
@@ -1014,8 +1050,28 @@ async def stop_background_services():
     }
 
 
+@router.post("/services/kill")
+async def kill_background_services():
+    state = await set_services_killed(True, reason="manual_kill")
+    stopped = _stop_all_manual_tasks(reason="Killed by user from admin panel")
+    _invalidate_database_status_cache()
+    return {
+        "ok": True,
+        "message": "Background services killed. Restart application to run workers again.",
+        "services": state,
+        "tasks": stopped,
+    }
+
+
 @router.post("/services/start")
 async def start_background_services():
+    if services_killed():
+        state = get_services_state()
+        return {
+            "ok": False,
+            "message": "Services were killed. Restart application to start workers again.",
+            "services": state,
+        }
     state = await set_services_enabled(True, reason="manual_start")
     _invalidate_database_status_cache()
     return {
@@ -1072,6 +1128,7 @@ async def sql_browser_table_rows(
     offset: int = Query(0, ge=0),
     limit: int = Query(_SQL_BROWSER_DEFAULT_LIMIT, ge=1, le=_SQL_BROWSER_MAX_LIMIT),
     mode: str = Query('page'),
+    search: str | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
 ):
     table_name = _validate_sql_table_name(table_name)
@@ -1114,6 +1171,16 @@ async def sql_browser_table_rows(
     query_offset = offset
     at_start = query_offset <= 0
     mode_normalized = (mode or 'page').strip().lower()
+    search_normalized = _normalize_sql_browser_search(search)
+    where_sql = ""
+    params: dict[str, object] = {"limit": limit}
+
+    if search_normalized:
+        searchable_cols = [col for col in columns if col.lower() != "id"] or columns
+        if searchable_cols:
+            terms = " OR ".join(f"CAST({_quote_ident(col)} AS text) ILIKE :search_pattern" for col in searchable_cols)
+            where_sql = f"WHERE ({terms})"
+            params["search_pattern"] = f"%{search_normalized}%"
 
     if mode_normalized == 'last':
         reverse_order = _build_sql_browser_reverse_order_clause(primary_keys)
@@ -1124,13 +1191,14 @@ async def sql_browser_table_rows(
                 FROM (
                     SELECT *
                     FROM {quoted_table}
+                    {where_sql}
                     ORDER BY {reverse_order}
                     LIMIT :limit
                 ) AS t
                 ORDER BY {forward_order}
                 """
             ),
-            {'limit': limit},
+            params,
         )
         row_mappings = rows_result.mappings().all()
         result_rows = [jsonable_encoder(dict(r)) for r in row_mappings]
@@ -1141,23 +1209,26 @@ async def sql_browser_table_rows(
             'offset': None,
             'limit': limit,
             'mode': 'last',
+            'search': search_normalized,
             'rows': result_rows,
             'rows_count': len(result_rows),
             'at_start': False,
             'at_end': True,
         }
 
+    params.update({'offset': query_offset})
     rows_result = await db.execute(
         text(
             f"""
             SELECT *
             FROM {quoted_table}
+            {where_sql}
             ORDER BY {forward_order}
             OFFSET :offset
             LIMIT :limit
             """
         ),
-        {'offset': query_offset, 'limit': limit},
+        params,
     )
     row_mappings = rows_result.mappings().all()
     result_rows = [jsonable_encoder(dict(r)) for r in row_mappings]
@@ -1170,6 +1241,7 @@ async def sql_browser_table_rows(
         'offset': query_offset,
         'limit': limit,
         'mode': 'page',
+        'search': search_normalized,
         'rows': result_rows,
         'rows_count': len(result_rows),
         'at_start': at_start,
@@ -2026,6 +2098,7 @@ async def remnawave_accounts_summary(
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=200),
     search: str | None = None,
+    days: int = Query(default=settings.REMNAWAVE_LOGS_SUMMARY_DAYS, ge=1, le=3650),
     db: AsyncSession = Depends(get_db),
 ):
     q = select(RemnawaveAccount)
@@ -2040,6 +2113,7 @@ async def remnawave_accounts_summary(
     )).scalars().all()
 
     now = datetime.now(timezone.utc)
+    since = now - timedelta(days=days)
     t24 = now - timedelta(hours=24)
     t7 = now - timedelta(days=7)
     t30 = now - timedelta(days=30)
@@ -2069,7 +2143,10 @@ async def remnawave_accounts_summary(
                         0,
                     ).label("c365"),
                 )
-                .where(RemnawaveDNSQuery.account_login.in_(logins))
+                .where(
+                    RemnawaveDNSQuery.account_login.in_(logins),
+                    RemnawaveDNSQuery.requested_at >= since,
+                )
                 .group_by(RemnawaveDNSQuery.account_login)
             )
         ).all()
@@ -2102,14 +2179,17 @@ async def remnawave_accounts_summary(
 async def remnawave_nodes_summary(
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=200),
+    days: int = Query(default=settings.REMNAWAVE_LOGS_SUMMARY_DAYS, ge=1, le=3650),
     db: AsyncSession = Depends(get_db),
 ):
     node_col = func.nullif(func.trim(RemnawaveDNSQuery.node_name), "").label("node")
     last_message_col = func.max(RemnawaveDNSQuery.requested_at).label("last_message")
 
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+
     grouped = (
         select(node_col, last_message_col)
-        .where(node_col.isnot(None))
+        .where(node_col.isnot(None), RemnawaveDNSQuery.requested_at >= since)
         .group_by(node_col)
     )
 

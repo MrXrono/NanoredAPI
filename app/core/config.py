@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "NanoredVPN API"
-    VERSION: str = "1.16.0.13"
+    VERSION: str = "1.16.0.14"
     API_V1_PREFIX: str = "/api/v1"
 
     # Database
@@ -77,6 +77,8 @@ class Settings(BaseSettings):
     REMNAWAVE_INGEST_MAX_RETRIES: int = int(os.getenv("REMNAWAVE_INGEST_MAX_RETRIES", "3"))
     REMNAWAVE_INGEST_DEAD_STREAM: str = os.getenv("REMNAWAVE_INGEST_DEAD_STREAM", "stream:remnawave:ingest:dead")
     REMNAWAVE_INGEST_DEAD_MAXLEN: int = int(os.getenv("REMNAWAVE_INGEST_DEAD_MAXLEN", "10000"))
+    REMNAWAVE_LOGS_SUMMARY_DAYS: int = max(1, int(os.getenv("REMNAWAVE_LOGS_SUMMARY_DAYS", "7")))
+
     # GeoIP
     GEOIP_DB_PATH: str = "/app/data/GeoLite2-City.mmdb"
 

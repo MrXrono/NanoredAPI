@@ -44,7 +44,7 @@ from app.services.schema_bootstrap import ensure_base_schema_ready
 from app.services.remnawave_adult import background_remnawave_adult_tasks
 from app.services.remnawave_ingest_queue import background_remnawave_ingest_worker
 from app.services.ingest_metrics import observe_api_timing
-from app.services.runtime_control import services_enabled
+from app.services.runtime_control import services_enabled, services_killed
 from app.services.telegram_support_forum import telegram_support_forum
 
 setup_logging()
@@ -93,7 +93,12 @@ async def _cleanup_stale_sessions():
     batch_size = settings.BG_SESSION_CLEANUP_BATCH_SIZE
     while True:
         try:
-            await asyncio.sleep(interval)
+            slept = 0
+            while slept < interval:
+                await asyncio.sleep(1)
+                slept += 1
+                if services_killed():
+                    return
             if not services_enabled():
                 continue
             redis = await get_redis()

@@ -12,6 +12,26 @@ from app.services.schema_bootstrap import ensure_base_schema_ready, reset_schema
 logger = logging.getLogger(__name__)
 
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_RECOMMENDED_INDEX_SQL: dict[str, str] = {
+    "ix_rnw_queries_account_requested_at": """
+        CREATE INDEX IF NOT EXISTS ix_rnw_queries_account_requested_at
+        ON remnawave_dns_queries (account_login, requested_at DESC)
+    """,
+    "ix_rnw_queries_node_requested_at": """
+        CREATE INDEX IF NOT EXISTS ix_rnw_queries_node_requested_at
+        ON remnawave_dns_queries (node_name, requested_at DESC)
+        WHERE node_name IS NOT NULL
+    """,
+    "ix_rnw_queries_account_dns_requested_at": """
+        CREATE INDEX IF NOT EXISTS ix_rnw_queries_account_dns_requested_at
+        ON remnawave_dns_queries (account_login, dns, requested_at DESC)
+    """,
+    "ix_adult_catalog_enabled_domain": """
+        CREATE INDEX IF NOT EXISTS ix_adult_catalog_enabled_domain
+        ON adult_domain_catalog (domain)
+        WHERE is_enabled IS TRUE
+    """,
+}
 
 
 def _safe_ident(name: str) -> str:
@@ -61,6 +81,43 @@ async def _invalid_indexes() -> list[dict[str, str]]:
     ]
 
 
+async def _existing_public_indexes() -> set[str]:
+    async with engine.connect() as conn:
+        rows = (
+            await conn.execute(
+                text(
+                    """
+                    SELECT c.relname AS index_name
+                    FROM pg_class c
+                    JOIN pg_namespace n ON n.oid = c.relnamespace
+                    WHERE c.relkind = 'i'
+                      AND n.nspname = 'public'
+                    """
+                )
+            )
+        ).mappings().all()
+    return {str(r.get("index_name")) for r in rows if r.get("index_name")}
+
+
+async def _ensure_recommended_indexes() -> dict[str, list[dict[str, str]]]:
+    existing = await _existing_public_indexes()
+    created: list[dict[str, str]] = []
+    failed: list[dict[str, str]] = []
+
+    for index_name, create_sql in _RECOMMENDED_INDEX_SQL.items():
+        if index_name in existing:
+            continue
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text(create_sql))
+            created.append({"index": index_name, "result": "created"})
+        except Exception as exc:
+            logger.warning("create index failed for %s: %s", index_name, exc)
+            failed.append({"index": index_name, "error": str(exc)})
+
+    return {"created": created, "failed": failed}
+
+
 async def check_and_repair_database_integrity() -> dict[str, Any]:
     report: dict[str, Any] = {
         "checked": True,
@@ -77,6 +134,10 @@ async def check_and_repair_database_integrity() -> dict[str, Any]:
 
     invalid_indexes = await _invalid_indexes()
     report["checks"]["invalid_indexes"] = [f"{r['schema']}.{r['index']}" for r in invalid_indexes]
+
+    existing_indexes = await _existing_public_indexes()
+    missing_recommended = sorted([idx for idx in _RECOMMENDED_INDEX_SQL.keys() if idx not in existing_indexes])
+    report["checks"]["missing_recommended_indexes"] = missing_recommended
 
     if missing:
         reset_schema_bootstrap_state()
@@ -126,5 +187,28 @@ async def check_and_repair_database_integrity() -> dict[str, Any]:
         invalid_after = await _invalid_indexes()
         report["checks"]["invalid_indexes_after"] = [f"{r['schema']}.{r['index']}" for r in invalid_after]
 
-    report["ok"] = not report["checks"].get("missing_tables_after", report["checks"].get("missing_tables")) and not report["checks"].get("invalid_indexes_after", report["checks"].get("invalid_indexes")) and not report["repairs_failed"]
+    if missing_recommended:
+        recommended_result = await _ensure_recommended_indexes()
+        if recommended_result["created"]:
+            report["repairs_attempted"].append({
+                "action": "create_recommended_indexes",
+                "result": "ok",
+                "created": [x["index"] for x in recommended_result["created"]],
+            })
+        if recommended_result["failed"]:
+            report["repairs_failed"].append({
+                "action": "create_recommended_indexes",
+                "error": "; ".join(f"{x['index']}: {x['error']}" for x in recommended_result["failed"]),
+            })
+        rec_after = await _existing_public_indexes()
+        report["checks"]["missing_recommended_indexes_after"] = sorted(
+            [idx for idx in _RECOMMENDED_INDEX_SQL.keys() if idx not in rec_after]
+        )
+
+    report["ok"] = (
+        not report["checks"].get("missing_tables_after", report["checks"].get("missing_tables"))
+        and not report["checks"].get("invalid_indexes_after", report["checks"].get("invalid_indexes"))
+        and not report["checks"].get("missing_recommended_indexes_after", report["checks"].get("missing_recommended_indexes"))
+        and not report["repairs_failed"]
+    )
     return report

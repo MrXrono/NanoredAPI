@@ -4,7 +4,7 @@ let accountsCache = [];
 let journalInterval = null;
 let remnawaveSelectedAccount = null;
 let dbStatusInterval = null;
-let sqlBrowserState = { tableName: '', offset: 0, limit: 25, atStart: true, atEnd: false };
+let sqlBrowserState = { tableName: '', offset: 0, limit: 25, atStart: true, atEnd: false, search: '' };
 
 // ========== AUTH ==========
 async function api(path, opts = {}) {
@@ -299,7 +299,12 @@ async function loadSqlBrowserRows(mode = 'page', forcedOffset = null) {
     }
     sqlBrowserState.tableName = tableName;
 
+    const searchInput = document.getElementById('sql-browser-search');
+    const search = (searchInput?.value || '').trim();
+    sqlBrowserState.search = search;
+
     let url = `/admin/sql-browser/table/${encodeURIComponent(tableName)}?limit=${sqlBrowserState.limit}`;
+    if (search) url += `&search=${encodeURIComponent(search)}`;
     if (mode === 'last') {
         url += '&mode=last';
     } else {
@@ -319,14 +324,14 @@ async function loadSqlBrowserRows(mode = 'page', forcedOffset = null) {
             sqlBrowserState.offset = null;
             sqlBrowserState.atStart = false;
             sqlBrowserState.atEnd = true;
-            meta.textContent = `${tableName}: последние ${rows.length} строк`;
+            meta.textContent = `${tableName}: последние ${rows.length} строк${sqlBrowserState.search ? ` (поиск: ${sqlBrowserState.search})` : ''}`;
         } else {
             sqlBrowserState.offset = Number(data?.offset || 0);
             sqlBrowserState.atStart = !!data?.at_start;
             sqlBrowserState.atEnd = !!data?.at_end;
             const from = rows.length ? sqlBrowserState.offset + 1 : sqlBrowserState.offset;
             const to = sqlBrowserState.offset + rows.length;
-            meta.textContent = `${tableName}: строки ${from}–${to}`;
+            meta.textContent = `${tableName}: строки ${from}–${to}${sqlBrowserState.search ? ` (поиск: ${sqlBrowserState.search})` : ''}`;
         }
 
         updateSqlBrowserNavButtons();
@@ -430,6 +435,24 @@ async function stopBackgroundServices() {
     }
 }
 
+async function killBackgroundServices() {
+    const btn = document.getElementById('services-kill-btn');
+    if (btn) btn.disabled = true;
+    try {
+        if (!confirm('Убить фоновые службы? После этого для запуска потребуется рестарт приложения.')) return;
+        const resp = await api('/admin/services/kill', { method: 'POST' });
+        const data = await resp.json();
+        alert(data?.message || 'Службы убиты');
+        await loadDatabaseStatus();
+    } catch (err) {
+        console.error('kill services error:', err);
+        alert('Не удалось убить службы');
+    } finally {
+        if (btn) btn.disabled = false;
+    }
+}
+
+
 async function startBackgroundServices() {
     const btn = document.getElementById('services-start-btn');
     if (btn) btn.disabled = true;
@@ -447,9 +470,13 @@ async function startBackgroundServices() {
 }
 
 async function runDbIntegrityCheckRepair() {
-    const btn = document.getElementById('db-integrity-check-btn');
-    if (btn) {
+    const buttons = [
+        document.getElementById('db-integrity-check-btn'),
+        document.getElementById('db-integrity-check-inline-btn'),
+    ].filter(Boolean);
+    for (const btn of buttons) {
         btn.disabled = true;
+        btn.dataset.oldText = btn.textContent;
         btn.textContent = 'Проверка...';
     }
     try {
@@ -458,29 +485,35 @@ async function runDbIntegrityCheckRepair() {
         const checks = data?.report?.checks || {};
         const miss = Array.isArray(checks.missing_tables_after) ? checks.missing_tables_after.length : (Array.isArray(checks.missing_tables) ? checks.missing_tables.length : 0);
         const badIdx = Array.isArray(checks.invalid_indexes_after) ? checks.invalid_indexes_after.length : (Array.isArray(checks.invalid_indexes) ? checks.invalid_indexes.length : 0);
+        const missRecIdx = Array.isArray(checks.missing_recommended_indexes_after) ? checks.missing_recommended_indexes_after.length : (Array.isArray(checks.missing_recommended_indexes) ? checks.missing_recommended_indexes.length : 0);
         const failedRepairs = Array.isArray(data?.report?.repairs_failed) ? data.report.repairs_failed.length : 0;
-        alert(`Проверка завершена. missing_tables=${miss}, invalid_indexes=${badIdx}, repair_errors=${failedRepairs}`);
+        alert(`Проверка завершена. missing_tables=${miss}, invalid_indexes=${badIdx}, missing_recommended_indexes=${missRecIdx}, repair_errors=${failedRepairs}`);
         await loadDatabaseStatus();
     } catch (err) {
         console.error('db integrity check error:', err);
         alert('Не удалось выполнить проверку целостности БД');
     } finally {
-        if (btn) {
+        for (const btn of buttons) {
             btn.disabled = false;
-            btn.textContent = 'Проверить целостность БД и восстановить';
+            btn.textContent = btn.dataset.oldText || 'Проверить целостность БД и восстановить';
         }
     }
 }
 
 function updateServicesControlButtons(servicesControl, taskDetails) {
     const enabled = Boolean(servicesControl?.services_enabled ?? true);
+    const killed = Boolean(servicesControl?.services_killed ?? false);
     const stopBtn = document.getElementById('services-stop-btn');
+    const killBtn = document.getElementById('services-kill-btn');
     const startBtn = document.getElementById('services-start-btn');
-    if (stopBtn) stopBtn.disabled = !enabled;
-    if (startBtn) startBtn.disabled = enabled;
+    if (stopBtn) stopBtn.disabled = !enabled || killed;
+    if (killBtn) killBtn.disabled = killed;
+    if (startBtn) startBtn.disabled = enabled || killed;
 
     const hasRunningTasks = ['sync', 'recheck', 'txt_sync', 'cleanup'].some((k) => Boolean(taskDetails?.[k]?.running));
-    if (!enabled && hasRunningTasks && startBtn) {
+    if (killed && startBtn) {
+        startBtn.textContent = 'Нужен рестарт (службы убиты)';
+    } else if (!enabled && hasRunningTasks && startBtn) {
         startBtn.textContent = 'Запустить службы (задачи остановлены)';
     } else if (startBtn) {
         startBtn.textContent = 'Запустить службы';
@@ -639,8 +672,8 @@ async function loadDatabaseStatus() {
             ['Task cleanup', `${String(cleanupTask.status || '-')}; ${formatTaskProgress(cleanupTask)}; ${String(cleanupTask.message || '-')}`],
             ['API rsyslog: получено / успешно', rsText],
             ['Catalog (enabled / total)', `${adultCatalogEnabled} / ${adultCatalogTotal}`],
-            ['Catalog by source', `BLP: ${Number((adult.catalog_sources || {}).blocklistproject || 0)}, OISD: ${Number((adult.catalog_sources || {}).oisd || 0)}, V2Fly: ${Number((adult.catalog_sources || {}).v2fly || 0)}`],
-            ['Unique 18+ / total', `${Number(adult.unique_adult_total || 0)} / ${Number(adult.unique_domains_total || 0)}`],
+            ['Catalog by source', `BLP: ${Number((adult.catalog_sources || {}).blocklistproject || 0)}, OISD: ${Number((adult.catalog_sources || {}).oisd || 0)}, V2Fly: ${Number((adult.catalog_sources || {}).v2fly || 0)}, TXT: ${Number((adult.catalog_sources || {}).txt_import || 0)}`],
+            ['Unique 18+ / matched / total', `${Number(adult.unique_adult_total || 0)} / ${Number(adult.unique_matched_total || 0)} / ${Number(adult.unique_domains_total || 0)}`],
             ['Need recheck', Number(adult.unique_need_recheck || 0)],
             ['Coverage', `${Number(adult.adult_coverage_percent || 0)}%`],
         ];
@@ -1316,7 +1349,8 @@ async function refreshLogs() {
 
 // ========== REMNAWAVE LOGS ==========
 async function loadRemnawaveNodes(page = 1) {
-    const resp = await api(`/admin/remnawave-logs/nodes?page=${page}&per_page=50`);
+    const days = Number(document.getElementById('rnw-summary-days')?.value || 7);
+    const resp = await api(`/admin/remnawave-logs/nodes?page=${page}&per_page=50&days=${days}`);
     const d = await resp.json();
     const tbody = document.getElementById('rnw-nodes-tbody');
     tbody.innerHTML = d.items.map(i => `
@@ -1330,7 +1364,8 @@ async function loadRemnawaveNodes(page = 1) {
 
 async function loadRemnawaveAccounts(page = 1) {
     const search = document.getElementById('rnw-account-search')?.value || '';
-    const resp = await api(`/admin/remnawave-logs/accounts?page=${page}&per_page=50&search=${encodeURIComponent(search)}`);
+    const days = Number(document.getElementById('rnw-summary-days')?.value || 7);
+    const resp = await api(`/admin/remnawave-logs/accounts?page=${page}&per_page=50&days=${days}&search=${encodeURIComponent(search)}`);
     const d = await resp.json();
     const tbody = document.getElementById('rnw-accounts-tbody');
     tbody.innerHTML = d.items.map(i => `
