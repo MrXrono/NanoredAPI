@@ -13,6 +13,7 @@ from fastapi.encoders import jsonable_encoder
 from sqlalchemy import select, func, desc, and_, or_, delete, text, exists, update, case
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db, async_session
 from app.core.redis import get_redis
 from app.core.security import get_current_admin
