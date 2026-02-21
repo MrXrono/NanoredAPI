@@ -367,7 +367,7 @@
                 <div class="table-header">
                     <h3>Nodes (rsyslog)</h3>
                     <div class="table-filters">
-                        <input type="text" id="rnw-node-search" placeholder="Поиск node..." onkeyup="loadRemnawaveNodes(1)">
+                        <input type="text" id="rnw-node-search" placeholder="Поиск node..." onkeyup="loadRemnawaveNodesDebounced(1)">
                     </div>
                 </div>
                 <table>
@@ -386,7 +386,7 @@
                 <div class="table-header">
                     <h3>Аккаунты</h3>
                     <div class="table-filters">
-                        <input type="text" id="rnw-account-search" placeholder="Поиск логина..." onkeyup="loadRemnawaveAccounts(1)">
+                        <input type="text" id="rnw-account-search" placeholder="Поиск логина..." onkeyup="loadRemnawaveAccountsDebounced(1)">
                         <button class="btn btn-sm" onclick="loadRemnawaveAccounts(1)">Обновить</button>
                     </div>
                 </div>

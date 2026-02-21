@@ -2199,6 +2199,28 @@ async def export_sni_csv(
 
 # ==================== REMNAWAVE LOGS ====================
 
+async def _estimate_pg_table_rows(db: AsyncSession, table_regclass: str) -> int | None:
+    """Fast approximate row count for PostgreSQL tables."""
+    try:
+        row = (
+            await db.execute(
+                text(
+                    """
+                    SELECT COALESCE(c.reltuples, 0)::BIGINT AS estimated_rows
+                    FROM pg_class c
+                    WHERE c.oid = to_regclass(:table_name)
+                    """
+                ),
+                {"table_name": table_regclass},
+            )
+        ).first()
+        if row is None:
+            return None
+        estimated = int(row[0] or 0)
+        return max(0, estimated)
+    except Exception:
+        return None
+
 @router.get('/remnawave-logs/accounts')
 async def remnawave_accounts_summary(
     page: int = Query(1, ge=1),
@@ -2206,16 +2228,36 @@ async def remnawave_accounts_summary(
     search: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
+    search_q = (search or "").strip()
     q = select(RemnawaveAccount)
-    if search:
-        q = q.where(RemnawaveAccount.account_login.ilike(f"%{search}%"))
+    if search_q:
+        q = q.where(RemnawaveAccount.account_login.ilike(f"%{search_q}%"))
 
-    total = (await db.execute(select(func.count()).select_from(q.subquery()))).scalar() or 0
+    if search_q:
+        total_stmt = select(func.count()).select_from(RemnawaveAccount).where(
+            RemnawaveAccount.account_login.ilike(f"%{search_q}%")
+        )
+        total = (await db.execute(total_stmt)).scalar() or 0
+    else:
+        total = await _estimate_pg_table_rows(db, "public.remnawave_accounts")
+        if total is None:
+            total = (await db.execute(select(func.count()).select_from(RemnawaveAccount))).scalar() or 0
+
     rows = (await db.execute(
-        q.order_by(desc(RemnawaveAccount.last_activity_at), desc(RemnawaveAccount.total_requests), RemnawaveAccount.account_login)
+        q.order_by(
+            RemnawaveAccount.last_activity_at.desc().nullslast(),
+            RemnawaveAccount.total_requests.desc(),
+            RemnawaveAccount.account_login,
+        )
         .offset((page - 1) * per_page)
         .limit(per_page)
     )).scalars().all()
+
+    if not search_q:
+        min_total = ((page - 1) * per_page) + len(rows)
+        if len(rows) == per_page:
+            min_total += 1
+        total = max(int(total), min_total)
 
     items = []
     for acc in rows:
@@ -2225,7 +2267,13 @@ async def remnawave_accounts_summary(
             'total_requests': int(acc.total_requests or 0),
         })
 
-    return {'total': total, 'page': page, 'per_page': per_page, 'items': items}
+    return {
+        'total': int(total),
+        'total_is_estimate': not bool(search_q),
+        'page': page,
+        'per_page': per_page,
+        'items': items,
+    }
 
 
 @router.get('/remnawave-logs/nodes')

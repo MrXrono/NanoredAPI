@@ -4,6 +4,8 @@ let accountsCache = [];
 let journalInterval = null;
 let remnawaveSelectedAccount = null;
 let dbStatusInterval = null;
+let remnawaveNodesSearchTimer = null;
+let remnawaveAccountsSearchTimer = null;
 let sqlBrowserState = { tableName: '', offset: 0, limit: 25, atStart: true, atEnd: false, search: '', mode: 'page', primaryKeys: [], rows: [] };
 
 // ========== AUTH ==========
@@ -1430,6 +1432,11 @@ async function loadRemnawaveNodes(page = 1) {
     renderPagination(document.getElementById('rnw-nodes-pagination'), d.total, d.page, d.per_page, 'loadRemnawaveNodes');
 }
 
+function loadRemnawaveNodesDebounced(page = 1) {
+    if (remnawaveNodesSearchTimer) clearTimeout(remnawaveNodesSearchTimer);
+    remnawaveNodesSearchTimer = setTimeout(() => loadRemnawaveNodes(page), 350);
+}
+
 function resetRemnawaveSelection() {
     remnawaveSelectedAccount = null;
     const topTitle = document.getElementById('rnw-top-title');
@@ -1463,6 +1470,11 @@ async function loadRemnawaveAccounts(page = 1) {
     `;
     }).join('') || '<tr><td colspan="4">Нет данных</td></tr>';
     renderPagination(document.getElementById('rnw-accounts-pagination'), d.total, d.page, d.per_page, 'loadRemnawaveAccounts');
+}
+
+function loadRemnawaveAccountsDebounced(page = 1) {
+    if (remnawaveAccountsSearchTimer) clearTimeout(remnawaveAccountsSearchTimer);
+    remnawaveAccountsSearchTimer = setTimeout(() => loadRemnawaveAccounts(page), 350);
 }
 
 async function selectRemnawaveAccount(account) {

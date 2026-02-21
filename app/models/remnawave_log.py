@@ -12,6 +12,14 @@ from app.core.database import Base
 
 class RemnawaveAccount(Base):
     __tablename__ = "remnawave_accounts"
+    __table_args__ = (
+        Index(
+            "ix_remnawave_accounts_last_activity_total_login",
+            "last_activity_at",
+            "total_requests",
+            "account_login",
+        ),
+    )
 
     account_login: Mapped[str] = mapped_column(String(128), primary_key=True)
     last_activity_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
