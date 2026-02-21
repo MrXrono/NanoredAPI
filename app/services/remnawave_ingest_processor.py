@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -18,22 +18,29 @@ from app.services.schema_bootstrap import ensure_base_schema_ready
 @dataclass(slots=True)
 class RemnawaveIngestResult:
     received: int = 0
+    validated_ok: int = 0
+    rejected: int = 0
     processed: int = 0
     inserted_queries: int = 0
     accounts_upserted: int = 0
+    unique_candidates: int = 0
+    unique_inserted: int = 0
+    unique_updated: int = 0
+    rejected_reasons: dict[str, int] = field(default_factory=dict)
+
 
 
 def _parse_timestamp(value: Any, fallback: datetime) -> datetime:
     if isinstance(value, datetime):
         return value
     if isinstance(value, str):
-        text = value.strip()
-        if not text:
+        text_value = value.strip()
+        if not text_value:
             return fallback
         try:
-            if text.endswith("Z"):
-                text = text[:-1] + "+00:00"
-            parsed = datetime.fromisoformat(text)
+            if text_value.endswith("Z"):
+                text_value = text_value[:-1] + "+00:00"
+            parsed = datetime.fromisoformat(text_value)
             if parsed.tzinfo is None:
                 parsed = parsed.replace(tzinfo=timezone.utc)
             return parsed
@@ -44,7 +51,7 @@ def _parse_timestamp(value: Any, fallback: datetime) -> datetime:
 
 async def process_remnawave_ingest_entries(db: AsyncSession, entries: list[dict[str, Any]]) -> RemnawaveIngestResult:
     now = datetime.now(timezone.utc)
-    result = RemnawaveIngestResult(received=len(entries), processed=0, inserted_queries=0, accounts_upserted=0)
+    result = RemnawaveIngestResult(received=len(entries), processed=0)
 
     if not entries:
         return result
@@ -53,10 +60,24 @@ async def process_remnawave_ingest_entries(db: AsyncSession, entries: list[dict[
     dns_unique_points: dict[str, tuple[datetime, datetime]] = {}
     query_rows: list[dict[str, Any]] = []
 
+    reject_reasons: dict[str, int] = {}
+
+    def reject(reason: str) -> None:
+        reject_reasons[reason] = int(reject_reasons.get(reason, 0)) + 1
+
     for entry in entries:
         account_login = str(entry.get("account") or "").strip()
-        dns_root = normalize_remnawave_domain(entry.get("dns"))
-        if not account_login or not dns_root:
+        raw_dns = entry.get("dns")
+        dns_root = normalize_remnawave_domain(raw_dns)
+
+        if not account_login:
+            reject("empty_account")
+            continue
+        if not raw_dns:
+            reject("empty_dns")
+            continue
+        if not dns_root:
+            reject("invalid_dns")
             continue
 
         ts = _parse_timestamp(entry.get("timestamp"), now)
@@ -80,6 +101,10 @@ async def process_remnawave_ingest_entries(db: AsyncSession, entries: list[dict[
                 "requested_at": ts,
             }
         )
+
+    result.validated_ok = len(query_rows)
+    result.rejected = max(0, result.received - result.validated_ok)
+    result.rejected_reasons = reject_reasons
 
     result.processed = len(query_rows)
     if not query_rows:
@@ -131,6 +156,10 @@ async def process_remnawave_ingest_entries(db: AsyncSession, entries: list[dict[
             }
             for dns_root, (first_seen, last_seen) in sorted(dns_unique_points.items())
         ]
+        result.unique_candidates = len(dns_rows)
+        inserted_new = 0
+        updated_existing = 0
+
         for i in range(0, len(dns_rows), 1000):
             chunk = dns_rows[i : i + 1000]
             try:
@@ -142,12 +171,20 @@ async def process_remnawave_ingest_entries(db: AsyncSession, entries: list[dict[
                         "last_seen": func.greatest(RemnawaveDNSUnique.last_seen, dns_unique_stmt.excluded.last_seen),
                         "need_recheck": True,
                     },
-                )
-                await db.execute(dns_unique_stmt)
+                ).returning(text("xmax = 0 AS inserted"))
+
+                ret = await db.execute(dns_unique_stmt)
+                rows = ret.fetchall()
+                inserted_chunk = sum(1 for row in rows if bool(row[0]))
+                inserted_new += inserted_chunk
+                updated_existing += max(0, len(rows) - inserted_chunk)
             except SQLAlchemyError as exc:
                 msg = str(exc).lower()
                 if "does not exist" in msg or "undefinedtable" in msg:
                     break
                 raise
+
+        result.unique_inserted = inserted_new
+        result.unique_updated = updated_existing
 
     return result

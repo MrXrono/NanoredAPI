@@ -24,7 +24,7 @@ from app.models.error_log import ErrorLog
 from app.models.device_permission import DevicePermission
 from app.models.device_log import DeviceLog
 from app.models.device_change_log import DeviceChangeLog
-from app.services.ingest_metrics import record_nanoredvpn_ingest, record_rsyslog_enqueue, record_rsyslog_processed
+from app.services.ingest_metrics import record_nanoredvpn_ingest, record_rsyslog_enqueue, record_rsyslog_result
 from app.schemas.device import DeviceRegisterRequest, DeviceRegisterResponse
 from app.schemas.session import SessionStartRequest, SessionStartResponse, SessionEndRequest, ServerChangeRequest
 from app.schemas.telemetry import (
@@ -820,15 +820,33 @@ async def ingest_remnawave_logs(
 
     result = await process_remnawave_ingest_entries(db, entries_payload)
     record_rsyslog_enqueue(result.received)
-    record_rsyslog_processed(result.processed)
+    deduplicated = max(0, int(result.validated_ok) - int(result.unique_inserted))
+    record_rsyslog_result(
+        validated_ok=result.validated_ok,
+        processed_ok=result.processed,
+        inserted_new=result.unique_inserted,
+        deduplicated=deduplicated,
+        rejected=result.rejected,
+        reject_reasons=result.rejected_reasons,
+    )
     logging_buffer.add(
         "processing",
-        f"Remnawave ingest: entries={result.received}, processed={result.processed}, accounts={result.accounts_upserted}",
+        (
+            f"Remnawave ingest: entries={result.received}, valid={result.validated_ok}, "
+            f"processed={result.processed}, inserted_new={result.unique_inserted}, "
+            f"dedup={deduplicated}, rejected={result.rejected}, accounts={result.accounts_upserted}, "
+            f"reject_reasons={result.rejected_reasons}"
+        ),
     )
     return {
         "status": "ok",
         "inserted": result.inserted_queries,
         "processed": result.processed,
+        "validated_ok": result.validated_ok,
+        "inserted_new": result.unique_inserted,
+        "deduplicated": deduplicated,
+        "rejected": result.rejected,
+        "reject_reasons": result.rejected_reasons,
         "accounts_upserted": result.accounts_upserted,
         "mode": "direct",
     }

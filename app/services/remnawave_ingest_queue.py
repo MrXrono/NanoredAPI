@@ -13,7 +13,8 @@ from app.core.logging_buffer import logging_buffer
 from app.services.ingest_metrics import (
     record_rsyslog_enqueue,
     record_rsyslog_failed,
-    record_rsyslog_processed,
+    record_rsyslog_result,
+    record_rsyslog_retried,
 )
 from app.services.remnawave_ingest_processor import process_remnawave_ingest_entries
 
@@ -61,11 +62,24 @@ async def _ensure_group() -> None:
 async def get_remnawave_queue_stats() -> dict[str, int]:
     redis = await get_redis()
     pending = 0
+    group_lag = 0
+    retry_pending = 0
     try:
         pend = await redis.xpending(_stream(), _group())
         pending = int((pend or {}).get("pending", 0) or 0)
     except Exception:
         pending = 0
+    try:
+        groups = await redis.xinfo_groups(_stream())
+        for g in groups or []:
+            name = g.get("name")
+            if isinstance(name, bytes):
+                name = name.decode("utf-8", "ignore")
+            if str(name) == _group():
+                group_lag = int(g.get("lag", 0) or 0)
+                break
+    except Exception:
+        group_lag = 0
     try:
         stream_len = int(await redis.xlen(_stream()) or 0)
     except Exception:
@@ -74,10 +88,25 @@ async def get_remnawave_queue_stats() -> dict[str, int]:
         dead_len = int(await redis.xlen(_dead_stream()) or 0)
     except Exception:
         dead_len = 0
+    try:
+        sample = await redis.xrange(_stream(), min="-", max="+", count=200)
+        for _, fields in sample or []:
+            attempts_raw = fields.get("attempts") if isinstance(fields, dict) else None
+            if isinstance(attempts_raw, bytes):
+                attempts_raw = attempts_raw.decode("utf-8", "ignore")
+            attempts = int(attempts_raw or 0)
+            if attempts > 0:
+                retry_pending += 1
+    except Exception:
+        retry_pending = 0
+    lag_estimate = max(stream_len, group_lag) + pending
     return {
         "stream_len": stream_len,
         "pending": pending,
         "dead_len": dead_len,
+        "group_lag": group_lag,
+        "lag_estimate": lag_estimate,
+        "retry_pending_sample": retry_pending,
     }
 
 
@@ -103,12 +132,22 @@ async def _handle_message(msg_id: str, fields: dict[str, Any]) -> None:
             result = await process_remnawave_ingest_entries(db, entries)
             await db.commit()
 
-        record_rsyslog_processed(result.processed)
+        deduplicated = max(0, int(result.validated_ok) - int(result.unique_inserted))
+        record_rsyslog_result(
+            validated_ok=result.validated_ok,
+            processed_ok=result.processed,
+            inserted_new=result.unique_inserted,
+            deduplicated=deduplicated,
+            rejected=result.rejected,
+            reject_reasons=result.rejected_reasons,
+        )
         logging_buffer.add(
             "processing",
             (
                 "Remnawave queued ingest processed: "
-                f"entries={result.received}, processed={result.processed}, accounts={result.accounts_upserted}"
+                f"entries={result.received}, valid={result.validated_ok}, processed={result.processed}, "
+                f"inserted_new={result.unique_inserted}, dedup={deduplicated}, rejected={result.rejected}, "
+                f"accounts={result.accounts_upserted}, reject_reasons={result.rejected_reasons}"
             ),
         )
         await redis.xack(_stream(), _group(), msg_id)
@@ -127,6 +166,7 @@ async def _handle_message(msg_id: str, fields: dict[str, Any]) -> None:
                 maxlen=settings.REMNAWAVE_INGEST_STREAM_MAXLEN,
                 approximate=True,
             )
+            record_rsyslog_retried(len(entries))
         else:
             await redis.xadd(
                 _dead_stream(),

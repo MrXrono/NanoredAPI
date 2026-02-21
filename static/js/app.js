@@ -279,11 +279,26 @@ async function loadDatabaseStatus() {
         document.getElementById('db-rsyslog-avg-1m').textContent = formatBytes(Number(rsyslog.bytes_per_entry_1m || 0));
         const rsyslogQueue = ingest.rsyslog_queue || {};
         const rsReceived = Number(ingestRsyslog.received || 0);
-        const rsProcessed = Number(ingestRsyslog.processed || 0);
+        const rsValidated = Number(ingestRsyslog.validated_ok || 0);
+        const rsProcessed = Number(ingestRsyslog.processed_ok || ingestRsyslog.processed || 0);
+        const rsInserted = Number(ingestRsyslog.inserted_new || 0);
+        const rsDedup = Number(ingestRsyslog.deduplicated || 0);
+        const rsRejected = Number(ingestRsyslog.rejected || 0);
         const rsFailed = Number(ingestRsyslog.failed || 0);
-        const rsPending = Number(rsyslogQueue.stream_len || 0);
-        document.getElementById('db-rsyslog-ingest-ok').textContent = `${rsReceived} / ${rsProcessed} (fail ${rsFailed}, q ${rsPending})`;
-        document.getElementById('db-nanoredvpn-ingest-ok').textContent = `${Number(ingestNanoredvpn.received || 0)} / ${Number(ingestNanoredvpn.processed || 0)}`;
+        const rsRetried = Number(ingestRsyslog.retried || 0);
+        const rsLag = Number(rsyslogQueue.lag_estimate || 0);
+        const rsPending = Number(rsyslogQueue.pending || 0);
+        const rsDead = Number(rsyslogQueue.dead_len || 0);
+        const rsReasonTop = (ingestRsyslog.reject_reasons || []).slice(0, 2).map(x => `${x.reason}:${x.count}`).join(', ');
+        document.getElementById('db-rsyslog-ingest-ok').textContent = `${rsReceived} / ${rsProcessed} (valid ${rsValidated}, new ${rsInserted}, dedup ${rsDedup}, rej ${rsRejected}, fail ${rsFailed}, retry ${rsRetried}, lag ${rsLag}, pend ${rsPending}, dead ${rsDead})`;
+        if (rsReasonTop) {
+            document.getElementById('db-rsyslog-ingest-ok').title = `Top reject reasons: ${rsReasonTop}`;
+        }
+
+        const nvReceived = Number(ingestNanoredvpn.received || 0);
+        const nvProcessed = Number(ingestNanoredvpn.processed || 0);
+        const nvFailed = Number(ingestNanoredvpn.failed || 0);
+        document.getElementById('db-nanoredvpn-ingest-ok').textContent = `${nvReceived} / ${nvProcessed} (fail ${nvFailed})`;
         document.getElementById('db-api-avg-ms').textContent = `${Number(ingestRsyslog.avg_latency_ms || 0).toFixed(1)}ms / ${Number(ingestNanoredvpn.avg_latency_ms || 0).toFixed(1)}ms`;
         document.getElementById('db-redis-memory').textContent = `Redis memory: ${redis.memory_used_human || '-'}, clients: ${redis.connected_clients || 0}`;
 
