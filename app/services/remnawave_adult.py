@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import ipaddress
 import json
 import logging
@@ -6,7 +7,7 @@ import os
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from collections.abc import Awaitable, Callable
 
 import httpx
@@ -55,6 +56,12 @@ ADULT_SYNC_TXT_MERGE_CHUNK_SIZE = max(1000, int(os.getenv("ADULT_SYNC_TXT_MERGE_
 ADULT_SYNC_DB_RETRY_MAX_ATTEMPTS = max(1, int(os.getenv("ADULT_SYNC_DB_RETRY_MAX_ATTEMPTS", "4")))
 ADULT_SYNC_DB_RETRY_BASE_SLEEP_MS = max(10, int(os.getenv("ADULT_SYNC_DB_RETRY_BASE_SLEEP_MS", "100")))
 ADULT_SYNC_TXT_PATH = os.getenv("ADULT_SYNC_TXT_PATH", "/app/data/artifacts/adult_domains_merged.txt").strip()
+ADULT_SYNC_SOURCES_DIR = Path(os.getenv("ADULT_SYNC_SOURCES_DIR", "/app/data/artifacts/adult_sources").strip() or "/app/data/artifacts/adult_sources")
+ADULT_SYNC_BUCKETS_DIR = Path(os.getenv("ADULT_SYNC_BUCKETS_DIR", "/app/data/artifacts/adult_buckets").strip() or "/app/data/artifacts/adult_buckets")
+ADULT_SYNC_SOURCE_MANIFEST_PATH = Path(
+    os.getenv("ADULT_SYNC_SOURCE_MANIFEST_PATH", str(ADULT_SYNC_SOURCES_DIR / "manifest.json")).strip()
+    or str(ADULT_SYNC_SOURCES_DIR / "manifest.json")
+)
 ADULT_SYNC_GARBAGE_RETENTION_DAYS = max(1, int(os.getenv("ADULT_SYNC_GARBAGE_RETENTION_DAYS", "30")))
 ADULT_SYNC_WEEKDAY_DEFAULT = max(0, min(6, int(os.getenv("ADULT_SYNC_WEEKDAY", "6"))))
 ADULT_SYNC_HOUR_DEFAULT = max(0, min(23, int(os.getenv("ADULT_SYNC_HOUR_UTC", "3"))))
@@ -96,11 +103,23 @@ _ADULT_TABLES = {
     "remnawave_dns_unique",
     "adult_sync_state",
     "adult_domain_exclusions",
+    *set(ADULT_BUCKET_FILE_TO_TABLE.values()),
 }
 _adult_schema_ready = False
 _adult_table_tuned = False
 _ADULT_STAGING_TABLE = "adult_domain_catalog_staging"
 _ADULT_TXT_STAGING_TABLE = "adult_domain_catalog_txt_staging"
+ADULT_BUCKET_FILE_TO_TABLE = {
+    "0-9.txt": "adult_domain_bucket_0_9",
+    "a-d.txt": "adult_domain_bucket_a_d",
+    "e-h.txt": "adult_domain_bucket_e_h",
+    "i-l.txt": "adult_domain_bucket_i_l",
+    "m-p.txt": "adult_domain_bucket_m_p",
+    "q-t.txt": "adult_domain_bucket_q_t",
+    "u-x.txt": "adult_domain_bucket_u_x",
+    "y-z.txt": "adult_domain_bucket_y_z",
+    "old.txt": "adult_domain_bucket_old",
+}
 ProgressCallback = Callable[[dict], None | Awaitable[None]]
 _SCHEDULE_LOCK = asyncio.Lock()
 _schedule_cache: dict | None = None
@@ -486,6 +505,73 @@ async def _merge_staging_into_catalog(db: AsyncSession, version: str) -> int:
     return int(res.rowcount or 0)
 
 
+async def _replace_bucket_table_domains(
+    db: AsyncSession,
+    *,
+    table_name: str,
+    domains: list[str],
+    version: str,
+    checked_at: datetime,
+) -> int:
+    await db.execute(text(f"TRUNCATE TABLE {table_name}"))
+    if not domains:
+        return 0
+
+    inserted = 0
+    stmt = text(
+        f"""
+        INSERT INTO {table_name} (domain, list_version, checked_at)
+        SELECT d.domain, :list_version, :checked_at
+        FROM unnest(:domains) AS d(domain)
+        """
+    ).bindparams(bindparam("domains", type_=ARRAY(String())))
+
+    for i in range(0, len(domains), ADULT_SYNC_TXT_DB_CHUNK_SIZE):
+        chunk = domains[i : i + ADULT_SYNC_TXT_DB_CHUNK_SIZE]
+        await db.execute(
+            stmt,
+            {
+                "domains": chunk,
+                "list_version": version,
+                "checked_at": checked_at,
+            },
+        )
+        inserted += len(chunk)
+    return inserted
+
+
+async def _sync_bucket_tables(
+    db: AsyncSession,
+    *,
+    version: str,
+    checked_at: datetime,
+    bucket_files: dict[str, str],
+) -> dict[str, int]:
+    results: dict[str, int] = {}
+    for file_name, table_name in ADULT_BUCKET_FILE_TO_TABLE.items():
+        path_raw = bucket_files.get(file_name)
+        path_obj = Path(path_raw) if path_raw else (ADULT_SYNC_BUCKETS_DIR / file_name)
+        domains: list[str] = []
+        if path_obj.exists():
+            with path_obj.open("r", encoding="utf-8", errors="replace") as fp:
+                for line in fp:
+                    value = line.strip().lower()
+                    if not value:
+                        continue
+                    if len(value) > 253:
+                        continue
+                    domains.append(value)
+        deduped = sorted(set(domains))
+        results[file_name] = await _replace_bucket_table_domains(
+            db,
+            table_name=table_name,
+            domains=deduped,
+            version=version,
+            checked_at=checked_at,
+        )
+    return results
+
+
 
 def _is_ip_literal(value: str | None) -> bool:
     if not value:
@@ -810,27 +896,36 @@ def get_adult_sync_runtime_state() -> dict:
     return state
 
 
-def _extract_domains_from_text(text_value: str) -> set[str]:
-    domains: set[str] = set()
-    for raw_line in text_value.splitlines():
-        raw = raw_line.strip()
-        if not raw or raw[0] in {"#", "!", ";"}:
-            continue
+def _iter_line_tokens(raw_line: str) -> list[str]:
+    raw = raw_line.strip()
+    if not raw or raw[0] in {"#", "!", ";"}:
+        return []
+    if re.match(r"^(?:0\.0\.0\.0|127\.0\.0\.1|::1)\s+", raw):
+        return raw.split()[1:]
+    return [token for token in re.split(r"[\s,]+", raw) if token]
 
-        if re.match(r"^(?:0\.0\.0\.0|127\.0\.0\.1|::1)\s+", raw):
-            tokens = raw.split()
-            for token in tokens[1:]:
-                root = normalize_remnawave_domain(token)
-                if root:
-                    domains.add(root)
-            continue
 
-        for token in re.split(r"[\s,]+", raw):
-            root = normalize_remnawave_domain(token)
-            if root:
-                domains.add(root)
-
-    return domains
+def _bucket_file_for_domain(domain: str) -> str:
+    ch = (domain.strip().lower()[:1] if domain else "")
+    if not ch:
+        return "old.txt"
+    if ch.isdigit():
+        return "0-9.txt"
+    if "a" <= ch <= "d":
+        return "a-d.txt"
+    if "e" <= ch <= "h":
+        return "e-h.txt"
+    if "i" <= ch <= "l":
+        return "i-l.txt"
+    if "m" <= ch <= "p":
+        return "m-p.txt"
+    if "q" <= ch <= "t":
+        return "q-t.txt"
+    if "u" <= ch <= "x":
+        return "u-x.txt"
+    if "y" <= ch <= "z":
+        return "y-z.txt"
+    return "old.txt"
 
 
 def _extract_oisd_txt_links(html: str, base_url: str) -> list[str]:
@@ -869,66 +964,261 @@ def _extract_v2fly_includes(text_value: str) -> list[str]:
     return include_urls
 
 
-async def collect_adult_domain_map(timeout: int = 25, max_retries: int = 4) -> dict[str, int]:
+def _extract_domains_and_invalid_tokens(text_value: str) -> tuple[set[str], set[str]]:
+    domains: set[str] = set()
+    invalid: set[str] = set()
+
+    for raw_line in text_value.splitlines():
+        for token in _iter_line_tokens(raw_line):
+            root = normalize_remnawave_domain(token)
+            if root and _is_domain_db_safe(root):
+                domains.add(root)
+                continue
+
+            cleaned = _sanitize_token(token).strip().lower().strip(".")
+            if cleaned and any(ch.isalnum() for ch in cleaned) and len(cleaned) <= 253:
+                invalid.add(cleaned)
+
+    return domains, invalid
+
+
+def _safe_source_filename(url: str) -> str:
+    parsed = urlparse(url)
+    base = f"{parsed.netloc}{parsed.path}".strip() or "source"
+    base = re.sub(r"[^a-zA-Z0-9._-]+", "_", base).strip("_")
+    if not base:
+        base = "source"
+    digest = hashlib.sha1(url.encode("utf-8")).hexdigest()[:12]
+    return f"{base[:120]}_{digest}.txt"
+
+
+def _load_source_manifest(path: Path) -> dict:
+    if not path.exists():
+        return {"sources": {}}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(payload, dict) and isinstance(payload.get("sources"), dict):
+            return payload
+    except Exception:
+        logger.warning("adult sync: failed to parse source manifest %s", path, exc_info=True)
+    return {"sources": {}}
+
+
+def _save_source_manifest(path: Path, manifest: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _remote_meta_matches_local(local_path: Path, entry: dict, remote_meta: dict) -> bool:
+    if not local_path.exists():
+        return False
+    try:
+        local_size = int(local_path.stat().st_size or 0)
+    except Exception:
+        return False
+
+    remote_size = remote_meta.get("content_length")
+    if isinstance(remote_size, int) and remote_size >= 0 and remote_size != local_size:
+        return False
+    remote_etag = (remote_meta.get("etag") or "").strip()
+    if remote_etag and remote_etag != str(entry.get("etag") or "").strip():
+        return False
+    remote_last_modified = (remote_meta.get("last_modified") or "").strip()
+    if remote_last_modified and remote_last_modified != str(entry.get("last_modified") or "").strip():
+        return False
+    return bool(remote_size is not None or remote_etag or remote_last_modified)
+
+
+async def _request_with_retry(
+    *,
+    client: "httpx.AsyncClient",
+    semaphore: asyncio.Semaphore,
+    method: str,
+    url: str,
+    max_retries: int,
+) -> "httpx.Response":
+    last_error: Exception | None = None
+    for _ in range(max(1, max_retries)):
+        try:
+            async with semaphore:
+                resp = await client.request(method, url, follow_redirects=True)
+            if resp.status_code >= 400:
+                raise RuntimeError(f"{url} -> HTTP {resp.status_code}")
+            return resp
+        except Exception as exc:  # pragma: no cover
+            last_error = exc
+            await asyncio.sleep(0.7)
+    raise RuntimeError(f"failed to fetch {url}: {last_error}")
+
+
+async def _fetch_cached_source_file(
+    *,
+    client: "httpx.AsyncClient",
+    semaphore: asyncio.Semaphore,
+    manifest: dict,
+    url: str,
+    source_mask: int,
+    parse_domains: bool,
+    max_retries: int,
+) -> dict:
+    sources_manifest = manifest.setdefault("sources", {})
+    entry = sources_manifest.get(url) if isinstance(sources_manifest.get(url), dict) else {}
+    file_name = str(entry.get("file_name") or _safe_source_filename(url))
+    file_path = ADULT_SYNC_SOURCES_DIR / file_name
+
+    remote_meta = {}
+    try:
+        head_resp = await _request_with_retry(
+            client=client,
+            semaphore=semaphore,
+            method="HEAD",
+            url=url,
+            max_retries=max_retries,
+        )
+        content_length = head_resp.headers.get("content-length")
+        remote_meta = {
+            "content_length": int(content_length) if content_length and content_length.isdigit() else None,
+            "etag": head_resp.headers.get("etag"),
+            "last_modified": head_resp.headers.get("last-modified"),
+        }
+    except Exception:
+        remote_meta = {}
+
+    changed = True
+    if _remote_meta_matches_local(file_path, entry, remote_meta):
+        payload = file_path.read_bytes()
+        changed = False
+    else:
+        get_resp = await _request_with_retry(
+            client=client,
+            semaphore=semaphore,
+            method="GET",
+            url=url,
+            max_retries=max_retries,
+        )
+        payload = get_resp.content
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_bytes(payload)
+
+    sha256 = hashlib.sha256(payload).hexdigest()
+    local_size = len(payload)
+    text_value = payload.decode("utf-8", errors="replace")
+
+    sources_manifest[url] = {
+        "url": url,
+        "file_name": file_name,
+        "path": str(file_path),
+        "size": local_size,
+        "sha256": sha256,
+        "etag": remote_meta.get("etag") or entry.get("etag"),
+        "last_modified": remote_meta.get("last_modified") or entry.get("last_modified"),
+        "source_mask": int(source_mask),
+        "parse_domains": bool(parse_domains),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    return {
+        "url": url,
+        "path": str(file_path),
+        "source_mask": int(source_mask),
+        "parse_domains": bool(parse_domains),
+        "changed": bool(changed),
+        "text": text_value,
+        "size": local_size,
+    }
+
+
+def _write_bucket_files(bucket_map: dict[str, set[str]]) -> dict[str, str]:
+    ADULT_SYNC_BUCKETS_DIR.mkdir(parents=True, exist_ok=True)
+    written: dict[str, str] = {}
+    for file_name in ADULT_BUCKET_FILE_TO_TABLE:
+        rows = sorted(bucket_map.get(file_name, set()))
+        out_path = ADULT_SYNC_BUCKETS_DIR / file_name
+        if rows:
+            out_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+        else:
+            out_path.write_text("", encoding="utf-8")
+        written[file_name] = str(out_path)
+    return written
+
+
+async def collect_adult_domain_map(timeout: int = 25, max_retries: int = 4) -> dict:
     domain_map: dict[str, int] = {}
+    bucket_map: dict[str, set[str]] = {name: set() for name in ADULT_BUCKET_FILE_TO_TABLE}
+    manifest = _load_source_manifest(ADULT_SYNC_SOURCE_MANIFEST_PATH)
+    sources: list[dict] = []
+    failed: list[str] = []
+    changed_count = 0
 
     async with httpx.AsyncClient(timeout=timeout, headers={"User-Agent": "NanoRed/RemnawaveAuditor"}) as client:
         logger.info("adult sync: http concurrency limit=%s", ADULT_SYNC_HTTP_MAX_CONCURRENCY)
         fetch_semaphore = asyncio.Semaphore(ADULT_SYNC_HTTP_MAX_CONCURRENCY)
+        async def _fetch(url: str, source_mask: int, parse_domains: bool) -> dict | None:
+            nonlocal changed_count
+            try:
+                item = await _fetch_cached_source_file(
+                    client=client,
+                    semaphore=fetch_semaphore,
+                    manifest=manifest,
+                    url=url,
+                    source_mask=source_mask,
+                    parse_domains=parse_domains,
+                    max_retries=max_retries,
+                )
+                if item.get("changed"):
+                    changed_count += 1
+                sources.append(item)
+                return item
+            except Exception as exc:
+                failed.append(url)
+                logger.warning("adult sync: source failed %s: %s", url, exc)
+                return None
 
-        async def _fetch_text(url: str) -> str:
-            last_error: Exception | None = None
-            for _ in range(max_retries):
-                try:
-                    async with fetch_semaphore:
-                        resp = await client.get(url)
-                    if resp.status_code >= 400:
-                        raise RuntimeError(f"{url} -> HTTP {resp.status_code}")
-                    return resp.text
-                except Exception as exc:  # pragma: no cover
-                    last_error = exc
-                    await asyncio.sleep(0.7)
-            raise RuntimeError(f"failed to fetch {url}: {last_error}")
+        await _fetch(BLOCKLIST_URL, SOURCE_BLOCKLIST, True)
 
-        def _add_domains(raw: str, source_mask: int) -> None:
-            for domain in _extract_domains_from_text(raw):
-                domain_map[domain] = domain_map.get(domain, 0) | source_mask
+        queue = [V2FLY_ROOT_URL]
+        seen = set(queue)
+        while queue:
+            url = queue.pop(0)
+            item = await _fetch(url, SOURCE_V2FLY, True)
+            if not item:
+                continue
+            for inc in _extract_v2fly_includes(item.get("text") or ""):
+                if inc not in seen:
+                    seen.add(inc)
+                    queue.append(inc)
 
-        try:
-            _add_domains(await _fetch_text(BLOCKLIST_URL), SOURCE_BLOCKLIST)
-            logger.info("adult sync: blocklistproject collected")
-        except Exception as exc:
-            logger.warning("adult sync: blocklistproject failed: %s", exc)
+        oisd_root = await _fetch(OISD_ROOT_URL, SOURCE_OISD, False)
+        if oisd_root:
+            for u in _extract_oisd_txt_links(oisd_root.get("text") or "", OISD_ROOT_URL):
+                await _fetch(u, SOURCE_OISD, True)
 
-        try:
-            queue = [V2FLY_ROOT_URL]
-            seen = set(queue)
-            while queue:
-                url = queue.pop(0)
-                txt = await _fetch_text(url)
-                _add_domains(txt, SOURCE_V2FLY)
-                for inc in _extract_v2fly_includes(txt):
-                    if inc not in seen:
-                        seen.add(inc)
-                        queue.append(inc)
-            logger.info("adult sync: v2fly collected")
-        except Exception as exc:
-            logger.warning("adult sync: v2fly failed: %s", exc)
+    _save_source_manifest(ADULT_SYNC_SOURCE_MANIFEST_PATH, manifest)
 
-        try:
-            html = await _fetch_text(OISD_ROOT_URL)
-            urls = _extract_oisd_txt_links(html, OISD_ROOT_URL)
-            for u in urls:
-                try:
-                    txt = await _fetch_text(u)
-                    _add_domains(txt, SOURCE_OISD)
-                except Exception as exc:
-                    logger.warning("adult sync: oisd source failed %s: %s", u, exc)
-            logger.info("adult sync: oisd collected (%s txt links)", len(urls))
-        except Exception as exc:
-            logger.warning("adult sync: oisd failed: %s", exc)
+    for item in sources:
+        if not item.get("parse_domains"):
+            continue
+        raw_text = item.get("text") or ""
+        valid_domains, invalid_tokens = _extract_domains_and_invalid_tokens(raw_text)
+        source_mask = int(item.get("source_mask") or 0)
+        for domain in valid_domains:
+            domain_map[domain] = domain_map.get(domain, 0) | source_mask
+            bucket_map[_bucket_file_for_domain(domain)].add(domain)
+        for token in invalid_tokens:
+            bucket_map["old.txt"].add(token)
 
-    return domain_map
+    bucket_files = _write_bucket_files(bucket_map)
+    bucket_counts = {name: len(values) for name, values in bucket_map.items()}
+
+    return {
+        "domain_map": domain_map,
+        "bucket_files": bucket_files,
+        "bucket_counts": bucket_counts,
+        "source_files_total": len(sources),
+        "source_files_changed": changed_count,
+        "source_files_unchanged": max(0, len(sources) - changed_count),
+        "source_files_failed": failed,
+        "manifest_path": str(ADULT_SYNC_SOURCE_MANIFEST_PATH),
+    }
 
 
 async def _upsert_sync_state(*, status: str, stats: dict, version: str, last_watermark: str | None = None) -> None:
@@ -970,7 +1260,8 @@ async def _sync_adult_catalog_internal(progress_cb: ProgressCallback | None = No
     start = datetime.now(timezone.utc)
     version = start.strftime("%Y%m%dT%H%M%SZ")
     await _emit_progress(progress_cb, phase="collect", progress_current=0, progress_total=100, progress_percent=1.0, message="Collecting lists")
-    domain_map = await collect_adult_domain_map()
+    collect_stats = await collect_adult_domain_map()
+    domain_map: dict[str, int] = collect_stats.get("domain_map") or {}
     await _emit_progress(
         progress_cb,
         phase="collect",
@@ -981,7 +1272,18 @@ async def _sync_adult_catalog_internal(progress_cb: ProgressCallback | None = No
     )
 
     if not domain_map:
-        stats = {"version": version, "domains": 0, "updated": 0, "status": "empty"}
+        stats = {
+            "version": version,
+            "domains": 0,
+            "updated": 0,
+            "status": "empty",
+            "bucket_counts": collect_stats.get("bucket_counts") or {},
+            "source_files_total": int(collect_stats.get("source_files_total") or 0),
+            "source_files_changed": int(collect_stats.get("source_files_changed") or 0),
+            "source_files_unchanged": int(collect_stats.get("source_files_unchanged") or 0),
+            "source_files_failed": collect_stats.get("source_files_failed") or [],
+            "manifest_path": collect_stats.get("manifest_path"),
+        }
         await _upsert_sync_state(status="warn", stats=stats, version=version)
         await _emit_progress(progress_cb, phase="done", progress_current=0, progress_total=0, progress_percent=100.0, message="No domains collected", status="warn")
         return stats
@@ -1018,6 +1320,13 @@ async def _sync_adult_catalog_internal(progress_cb: ProgressCallback | None = No
                 progress_percent=40.0 + (processed_items / max(total_items, 1)) * 45.0,
                 message=f"Prepared {processed_items}/{total_items}",
             )
+
+        bucket_table_rows = await _sync_bucket_tables(
+            db,
+            version=version,
+            checked_at=start,
+            bucket_files=collect_stats.get("bucket_files") or {},
+        )
 
         await _merge_staging_into_catalog(db, version=version)
         await _emit_progress(progress_cb, phase="merge", progress_current=1, progress_total=1, progress_percent=90.0, message="Merged into catalog")
@@ -1059,6 +1368,14 @@ async def _sync_adult_catalog_internal(progress_cb: ProgressCallback | None = No
             "domains": len(domain_map),
             "updated": res.rowcount or 0,
             "status": "ok",
+            "bucket_counts": collect_stats.get("bucket_counts") or {},
+            "bucket_table_rows": bucket_table_rows,
+            "source_files_total": int(collect_stats.get("source_files_total") or 0),
+            "source_files_changed": int(collect_stats.get("source_files_changed") or 0),
+            "source_files_unchanged": int(collect_stats.get("source_files_unchanged") or 0),
+            "source_files_failed": collect_stats.get("source_files_failed") or [],
+            "manifest_path": collect_stats.get("manifest_path"),
+            "bucket_files": collect_stats.get("bucket_files") or {},
         }
         await _upsert_sync_state(status="ok", stats=stats, version=version, last_watermark=str(start))
         await _emit_progress(progress_cb, phase="done", progress_current=1, progress_total=1, progress_percent=100.0, message="Catalog sync finished", status="ok")

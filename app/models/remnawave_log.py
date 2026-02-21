@@ -100,6 +100,48 @@ class AdultDomainExclusion(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
+class _AdultDomainBucketBase:
+    domain: Mapped[str] = mapped_column(String(255), primary_key=True)
+    list_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AdultDomainBucket09(_AdultDomainBucketBase, Base):
+    __tablename__ = "adult_domain_bucket_0_9"
+
+
+class AdultDomainBucketAD(_AdultDomainBucketBase, Base):
+    __tablename__ = "adult_domain_bucket_a_d"
+
+
+class AdultDomainBucketEH(_AdultDomainBucketBase, Base):
+    __tablename__ = "adult_domain_bucket_e_h"
+
+
+class AdultDomainBucketIL(_AdultDomainBucketBase, Base):
+    __tablename__ = "adult_domain_bucket_i_l"
+
+
+class AdultDomainBucketMP(_AdultDomainBucketBase, Base):
+    __tablename__ = "adult_domain_bucket_m_p"
+
+
+class AdultDomainBucketQT(_AdultDomainBucketBase, Base):
+    __tablename__ = "adult_domain_bucket_q_t"
+
+
+class AdultDomainBucketUX(_AdultDomainBucketBase, Base):
+    __tablename__ = "adult_domain_bucket_u_x"
+
+
+class AdultDomainBucketYZ(_AdultDomainBucketBase, Base):
+    __tablename__ = "adult_domain_bucket_y_z"
+
+
+class AdultDomainBucketOld(_AdultDomainBucketBase, Base):
+    __tablename__ = "adult_domain_bucket_old"
+
+
 class AdultTaskRun(Base):
     __tablename__ = "adult_task_runs"
 

@@ -36,6 +36,28 @@ class RemnawaveTxtPipelineTests(unittest.TestCase):
         self.assertEqual(chunks, [['one.test', 'two.test'], ['three.test']])
         self.assertEqual(skipped, 1)
 
+    def test_bucket_routing(self):
+        self.assertEqual(svc._bucket_file_for_domain('9example.com'), '0-9.txt')
+        self.assertEqual(svc._bucket_file_for_domain('alpha.com'), 'a-d.txt')
+        self.assertEqual(svc._bucket_file_for_domain('fox.com'), 'e-h.txt')
+        self.assertEqual(svc._bucket_file_for_domain('jazz.com'), 'i-l.txt')
+        self.assertEqual(svc._bucket_file_for_domain('moon.com'), 'm-p.txt')
+        self.assertEqual(svc._bucket_file_for_domain('qqq.com'), 'q-t.txt')
+        self.assertEqual(svc._bucket_file_for_domain('vimeo.com'), 'u-x.txt')
+        self.assertEqual(svc._bucket_file_for_domain('zeta.com'), 'y-z.txt')
+
+    def test_extract_domains_and_invalid_tokens(self):
+        sample = '''
+        example.com
+        127.0.0.1 test.net
+        include:bad_token
+        !!!wrong
+        '''
+        domains, invalid = svc._extract_domains_and_invalid_tokens(sample)
+        self.assertIn('example.com', domains)
+        self.assertIn('test.net', domains)
+        self.assertIn('include:bad_token', invalid)
+
     def test_retryable_db_error_detection(self):
         self.assertTrue(svc._msg_has_retryable_db_error(Exception('deadlock detected')))
         self.assertTrue(svc._msg_has_retryable_db_error(Exception('canceling statement due to statement timeout')))
