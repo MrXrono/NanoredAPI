@@ -51,6 +51,11 @@ class RemnawaveDNSUnique(Base):
             "need_recheck",
             postgresql_where=text("need_recheck IS TRUE"),
         ),
+        Index(
+            "ix_remnawave_dns_unique_recheck_last_seen",
+            "last_seen",
+            postgresql_where=text("need_recheck IS TRUE"),
+        ),
     )
 
 

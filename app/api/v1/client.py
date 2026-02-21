@@ -2,6 +2,7 @@ import json
 import logging
 import secrets
 import uuid
+import asyncio
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Header, Request, status
@@ -43,6 +44,13 @@ import bcrypt
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/client", tags=["client"])
+
+
+def _parse_uuid(value: str, field_name: str) -> uuid.UUID:
+    try:
+        return uuid.UUID(value)
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=400, detail=f"Invalid {field_name}")
 
 
 
@@ -162,7 +170,7 @@ import socket
 import ipaddress
 
 
-def resolve_server_ip(address: str | None) -> str | None:
+async def resolve_server_ip(address: str | None) -> str | None:
     if not address:
         return None
     try:
@@ -171,7 +179,13 @@ def resolve_server_ip(address: str | None) -> str | None:
     except ValueError:
         pass
     try:
-        result = socket.getaddrinfo(address, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        result = await asyncio.to_thread(
+            socket.getaddrinfo,
+            address,
+            None,
+            socket.AF_UNSPEC,
+            socket.SOCK_STREAM,
+        )
         if result:
             return result[0][4][0]
     except (socket.gaierror, OSError):
@@ -242,7 +256,7 @@ async def session_start(
     session = Session(
         device_id=device.id,
         server_address=req.server_address,
-        server_ip=server_exit_ip or resolve_server_ip(req.server_address),
+        server_ip=server_exit_ip or await resolve_server_ip(req.server_address),
         protocol=req.protocol,
         client_ip=client_ip,
         client_country=geo["country"],
@@ -275,8 +289,9 @@ async def session_end(
     x_api_key: str = Header(..., alias="X-API-Key"),
 ):
     device = await _get_device(x_api_key, db)
+    session_uuid = _parse_uuid(req.session_id, "session_id")
     result = await db.execute(
-        select(Session).where(Session.id == uuid.UUID(req.session_id), Session.device_id == device.id)
+        select(Session).where(Session.id == session_uuid, Session.device_id == device.id)
     )
     session = result.scalar_one_or_none()
     if not session:
@@ -304,14 +319,15 @@ async def session_server_change(
     x_api_key: str = Header(..., alias="X-API-Key"),
 ):
     device = await _get_device(x_api_key, db)
+    session_uuid = _parse_uuid(req.session_id, "session_id")
     result = await db.execute(
-        select(Session).where(Session.id == uuid.UUID(req.session_id), Session.device_id == device.id)
+        select(Session).where(Session.id == session_uuid, Session.device_id == device.id)
     )
     session = result.scalar_one_or_none()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    new_ip = resolve_server_ip(req.new_server_address)
+    new_ip = await resolve_server_ip(req.new_server_address)
     old_ip = session.server_ip
 
     if new_ip and new_ip != old_ip:
@@ -339,9 +355,8 @@ async def session_heartbeat(
     device = await _get_device(x_api_key, db)
     device.last_seen_at = datetime.now(timezone.utc)
     redis = await get_redis()
-    keys = await redis.keys(f"online:{device.id}")
-    if keys:
-        await redis.expire(keys[0], 300)
+    if await redis.exists(f"online:{device.id}"):
+        await redis.expire(f"online:{device.id}", 300)
 
     # Check for pending commands
     cmd_key = f"commands:{device.id}"
@@ -367,7 +382,7 @@ async def sni_batch(
     x_api_key: str = Header(..., alias="X-API-Key"),
 ):
     device = await _get_device(x_api_key, db)
-    session_id = uuid.UUID(req.session_id)
+    session_id = _parse_uuid(req.session_id, "session_id")
     now = datetime.now(timezone.utc)
     for entry in req.entries:
         log = SNILog(
@@ -517,7 +532,7 @@ async def sni_raw(
     Fallback: IP->domain mapping from DNS resolutions applied to access log IPs.
     """
     device = await _get_device(x_api_key, db)
-    session_id = uuid.UUID(req.session_id)
+    session_id = _parse_uuid(req.session_id, "session_id")
     now = datetime.now(timezone.utc)
     redis = await get_redis()
     dns_map_key = f"dns_map:{session_id}"
@@ -632,7 +647,7 @@ async def dns_batch(
     x_api_key: str = Header(..., alias="X-API-Key"),
 ):
     device = await _get_device(x_api_key, db)
-    session_id = uuid.UUID(req.session_id)
+    session_id = _parse_uuid(req.session_id, "session_id")
     for entry in req.entries:
         log = DNSLog(
             session_id=session_id,
@@ -654,7 +669,7 @@ async def connections_batch(
     x_api_key: str = Header(..., alias="X-API-Key"),
 ):
     device = await _get_device(x_api_key, db)
-    session_id = uuid.UUID(req.session_id)
+    session_id = _parse_uuid(req.session_id, "session_id")
     for entry in req.entries:
         log = ConnectionLog(
             session_id=session_id,
@@ -677,7 +692,7 @@ async def report_error(
 ):
     device = await _get_device(x_api_key, db)
     log = ErrorLog(
-        session_id=uuid.UUID(req.session_id) if req.session_id else None,
+        session_id=_parse_uuid(req.session_id, "session_id") if req.session_id else None,
         device_id=device.id,
         error_type=req.error_type,
         message=req.message,
@@ -846,34 +861,35 @@ async def ingest_remnawave_logs(
         await db.execute(pg_insert(RemnawaveDNSQuery).values(query_rows[i : i + 1000]))
 
     if await ensure_adult_schema_ready():
-        for dns_root in sorted(dns_unique_points):
-            first_seen, last_seen = dns_unique_points[dns_root]
+        dns_rows = [
+            {
+                "dns_root": dns_root,
+                "is_adult": False,
+                "first_seen": first_seen,
+                "last_seen": last_seen,
+                "need_recheck": True,
+            }
+            for dns_root, (first_seen, last_seen) in sorted(dns_unique_points.items())
+        ]
+        for i in range(0, len(dns_rows), 1000):
+            chunk = dns_rows[i : i + 1000]
             try:
-                dns_unique_stmt = pg_insert(RemnawaveDNSUnique).values(
-                    dns_root=dns_root,
-                    is_adult=False,
-                    first_seen=first_seen,
-                    last_seen=last_seen,
-                    need_recheck=True,
-                )
+                dns_unique_stmt = pg_insert(RemnawaveDNSUnique).values(chunk)
                 dns_unique_stmt = dns_unique_stmt.on_conflict_do_update(
                     index_elements=[RemnawaveDNSUnique.dns_root],
                     set_={
                         "first_seen": func.least(RemnawaveDNSUnique.first_seen, dns_unique_stmt.excluded.first_seen),
                         "last_seen": func.greatest(RemnawaveDNSUnique.last_seen, dns_unique_stmt.excluded.last_seen),
-                        "need_recheck": RemnawaveDNSUnique.need_recheck,
+                        "need_recheck": True,
                     },
                 )
                 await db.execute(dns_unique_stmt)
             except SQLAlchemyError as exc:
                 msg = str(exc).lower()
                 if "does not exist" in msg or "undefinedtable" in msg:
-                    logger.warning(
-                        "Remnawave DNS unique table missing during ingest, skipping dns_unique upsert for %s",
-                        dns_root,
-                    )
-                else:
-                    raise
+                    logger.warning("Remnawave DNS unique table missing during ingest, skipping dns_unique upsert batch")
+                    break
+                raise
 
     logging_buffer.add(
         "processing",

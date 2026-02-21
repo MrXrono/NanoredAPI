@@ -122,7 +122,7 @@ def parse_domains(text: str) -> Set[str]:
 
         # split host-file rows: ip domain domain
         if re.match(r"^(?:0\.0\.0\.0|127\.0\.0\.1|::1)\s+", raw):
-            for token in re.split(r"\s+", raw, maxsplit=2)[1:]:
+            for token in re.split(r"\s+", raw)[1:]:
                 token = normalize_domain(token)
                 if token:
                     domains.add(token)

@@ -194,8 +194,33 @@ async def logging_middleware(request: Request, call_next):
         api_key = request.headers.get("X-API-Key", "")
         masked_key = f"{api_key[:8]}...{api_key[-4:]}" if len(api_key) > 12 else "***"
 
-        body_bytes = await request.body()
-        body_preview = body_bytes[:2000].decode("utf-8", errors="replace") if body_bytes else ""
+        body_preview = ""
+        content_type = (request.headers.get("content-type") or "").lower()
+        content_len_raw = request.headers.get("content-length")
+        try:
+            content_len = int(content_len_raw) if content_len_raw else 0
+        except ValueError:
+            content_len = 0
+        should_capture_body = (
+            request.method in {"POST", "PUT", "PATCH"}
+            and "multipart/form-data" not in content_type
+            and (
+                content_type.startswith("application/json")
+                or content_type.startswith("application/x-www-form-urlencoded")
+                or content_type.startswith("text/")
+                or content_type == ""
+            )
+            and content_len <= settings.REQUEST_LOG_MAX_BODY_BYTES
+        )
+        if should_capture_body:
+            body_bytes = await request.body()
+            body_preview = body_bytes[:2000].decode("utf-8", errors="replace") if body_bytes else ""
+        elif content_len > settings.REQUEST_LOG_MAX_BODY_BYTES:
+            body_preview = f"<skipped: payload too large ({content_len} bytes)>"
+        elif "multipart/form-data" in content_type:
+            body_preview = "<skipped: multipart body>"
+        elif request.method in {"POST", "PUT", "PATCH"}:
+            body_preview = f"<skipped: unsupported content-type {content_type or 'unknown'}>"
 
         logging_buffer.add("request", f"{method} {path}", {
             "ip": client_ip,

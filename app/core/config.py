@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "NanoredVPN API"
-    VERSION: str = "1.11.0.0"
+    VERSION: str = "1.12.0.0"
     API_V1_PREFIX: str = "/api/v1"
 
     # Database
@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     # External base URL used to derive webhook URL if TELEGRAM_WEBHOOK_URL is not set.
     # Example: https://api.nanored.top
     PUBLIC_BASE_URL: str = os.getenv("PUBLIC_BASE_URL", "")
+    REQUEST_LOG_MAX_BODY_BYTES: int = int(os.getenv("REQUEST_LOG_MAX_BODY_BYTES", "32768"))
 
 
     # Remnawave logs ingest

@@ -1,5 +1,6 @@
 import asyncio
 import ipaddress
+import json
 import logging
 import os
 import re
@@ -84,6 +85,7 @@ _ADULT_TABLES = {
 }
 _adult_schema_ready = False
 _adult_table_tuned = False
+_ADULT_STAGING_TABLE = "adult_domain_catalog_staging"
 
 
 def _msg_has_undefined_table(err: Exception) -> bool:
@@ -145,9 +147,94 @@ async def _ensure_adult_catalog_table_tuning() -> None:
                     """
                 )
             )
+            await conn.execute(
+                text(
+                    """
+                    CREATE INDEX IF NOT EXISTS ix_remnawave_dns_unique_recheck_last_seen
+                    ON remnawave_dns_unique (last_seen)
+                    WHERE need_recheck IS TRUE
+                    """
+                )
+            )
         _adult_table_tuned = True
     except Exception:
         logger.warning("adult catalog tuning skipped", exc_info=True)
+
+
+async def _prepare_adult_staging_table(db: AsyncSession) -> None:
+    await db.execute(
+        text(
+            f"""
+            CREATE UNLOGGED TABLE IF NOT EXISTS {_ADULT_STAGING_TABLE} (
+                domain varchar(255) PRIMARY KEY,
+                category varchar(64) NOT NULL,
+                source_mask integer NOT NULL,
+                source_text jsonb,
+                list_version varchar(64),
+                checked_at timestamptz,
+                is_enabled boolean NOT NULL DEFAULT TRUE
+            )
+            """
+        )
+    )
+    await db.execute(text(f"TRUNCATE TABLE {_ADULT_STAGING_TABLE}"))
+
+
+async def _bulk_insert_staging_rows(db: AsyncSession, rows: list[dict]) -> None:
+    if not rows:
+        return
+    prepared_rows = []
+    for row in rows:
+        mapped = dict(row)
+        mapped["source_text"] = json.dumps(mapped.get("source_text") or [])
+        prepared_rows.append(mapped)
+    await db.execute(
+        text(
+            f"""
+            INSERT INTO {_ADULT_STAGING_TABLE}
+                (domain, category, source_mask, source_text, list_version, checked_at, is_enabled)
+            VALUES
+                (:domain, :category, :source_mask, CAST(:source_text AS jsonb), :list_version, :checked_at, :is_enabled)
+            ON CONFLICT (domain) DO UPDATE
+            SET
+                source_mask = {_ADULT_STAGING_TABLE}.source_mask | EXCLUDED.source_mask,
+                source_text = EXCLUDED.source_text,
+                list_version = EXCLUDED.list_version,
+                checked_at = EXCLUDED.checked_at,
+                is_enabled = EXCLUDED.is_enabled,
+                category = EXCLUDED.category
+            """
+        ),
+        prepared_rows,
+    )
+
+
+async def _merge_staging_into_catalog(db: AsyncSession, version: str) -> int:
+    res = await db.execute(
+        text(
+            f"""
+            INSERT INTO adult_domain_catalog (domain, category, source_mask, source_text, list_version, checked_at, is_enabled)
+            SELECT s.domain, s.category, s.source_mask, s.source_text, :version, s.checked_at, TRUE
+            FROM {_ADULT_STAGING_TABLE} s
+            ON CONFLICT (domain) DO UPDATE
+            SET
+                source_mask = adult_domain_catalog.source_mask | EXCLUDED.source_mask,
+                source_text = EXCLUDED.source_text,
+                list_version = EXCLUDED.list_version,
+                checked_at = EXCLUDED.checked_at,
+                is_enabled = EXCLUDED.is_enabled,
+                category = EXCLUDED.category
+            WHERE
+                adult_domain_catalog.is_enabled IS DISTINCT FROM TRUE
+                OR adult_domain_catalog.list_version IS DISTINCT FROM EXCLUDED.list_version
+                OR adult_domain_catalog.source_mask IS DISTINCT FROM (adult_domain_catalog.source_mask | EXCLUDED.source_mask)
+                OR adult_domain_catalog.source_text IS DISTINCT FROM EXCLUDED.source_text
+                OR adult_domain_catalog.category IS DISTINCT FROM EXCLUDED.category
+            """
+        ),
+        {"version": version},
+    )
+    return int(res.rowcount or 0)
 
 
 
@@ -437,6 +524,7 @@ async def _sync_adult_catalog_internal() -> dict:
     chunk_size = ADULT_SYNC_DB_CHUNK_SIZE
 
     async with async_session() as db:
+        await _prepare_adult_staging_table(db)
         for i in range(0, len(items), chunk_size):
             chunk = items[i : i + chunk_size]
             rows = []
@@ -452,29 +540,9 @@ async def _sync_adult_catalog_internal() -> dict:
                         "is_enabled": True,
                     }
                 )
+            await _bulk_insert_staging_rows(db, rows)
 
-            stmt = pg_insert(AdultDomainCatalog).values(rows)
-            stmt = stmt.on_conflict_do_update(
-                index_elements=[AdultDomainCatalog.domain],
-                set_={
-                    "source_mask": AdultDomainCatalog.source_mask.op("|")(stmt.excluded.source_mask),
-                    "source_text": stmt.excluded.source_text,
-                    "list_version": stmt.excluded.list_version,
-                    "checked_at": stmt.excluded.checked_at,
-                    "is_enabled": stmt.excluded.is_enabled,
-                    "category": stmt.excluded.category,
-                },
-                where=or_(
-                    AdultDomainCatalog.is_enabled.is_(False),
-                    AdultDomainCatalog.list_version.is_distinct_from(stmt.excluded.list_version),
-                    AdultDomainCatalog.source_mask.is_distinct_from(
-                        AdultDomainCatalog.source_mask.op("|")(stmt.excluded.source_mask)
-                    ),
-                    AdultDomainCatalog.source_text.is_distinct_from(stmt.excluded.source_text),
-                    AdultDomainCatalog.category.is_distinct_from(stmt.excluded.category),
-                ),
-            )
-            await db.execute(stmt)
+        await _merge_staging_into_catalog(db, version=version)
 
         stale_stmt = (
             update(AdultDomainCatalog)
@@ -614,6 +682,7 @@ async def sync_adult_catalog_from_txt(path: str | None = None) -> dict:
         checked_at = started_at
 
         async with async_session() as db:
+            await _prepare_adult_staging_table(db)
             with txt_path.open("r", encoding="utf-8", errors="replace") as fp:
                 for line in fp:
                     domain = normalize_remnawave_domain(line)
@@ -631,16 +700,16 @@ async def sync_adult_catalog_from_txt(path: str | None = None) -> dict:
                         }
                     )
                     if len(rows_buffer) >= ADULT_SYNC_DB_CHUNK_SIZE:
-                        inserted = await _upsert_adult_catalog_rows(db, rows_buffer)
-                        inserted_total += inserted
+                        await _bulk_insert_staging_rows(db, rows_buffer)
                         rows_total += len(rows_buffer)
                         rows_buffer.clear()
 
                 if rows_buffer:
-                    inserted = await _upsert_adult_catalog_rows(db, rows_buffer)
-                    inserted_total += inserted
+                    await _bulk_insert_staging_rows(db, rows_buffer)
                     rows_total += len(rows_buffer)
                     rows_buffer.clear()
+
+            inserted_total = await _merge_staging_into_catalog(db, version=version)
 
             stale_stmt = (
                 update(AdultDomainCatalog)

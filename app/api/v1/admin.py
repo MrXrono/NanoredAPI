@@ -7,7 +7,7 @@ import psutil
 from datetime import datetime, timezone, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Body
-from sqlalchemy import select, func, desc, and_, or_, delete, text, exists, update
+from sqlalchemy import select, func, desc, and_, or_, delete, text, exists, update, case
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -65,6 +65,8 @@ _adult_manual_sync_task: asyncio.Task | None = None
 _adult_manual_recheck_task: asyncio.Task | None = None
 _adult_manual_txt_sync_task: asyncio.Task | None = None
 _adult_manual_cleanup_task: asyncio.Task | None = None
+_DATABASE_STATUS_CACHE_TTL_SEC = 20
+_database_status_cache: dict[str, object] = {"ts": 0.0, "data": None}
 
 
 # ==================== HELPER ====================
@@ -73,6 +75,46 @@ async def _device_ids_for_account(account_id: str, db: AsyncSession) -> list[uui
     """Return device IDs belonging to an account."""
     result = await db.execute(select(Device.id).where(Device.account_id == account_id))
     return [r[0] for r in result.all()]
+
+
+def _parse_uuid(value: str, field_name: str) -> uuid.UUID:
+    try:
+        return uuid.UUID(value)
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=400, detail=f"Invalid {field_name}")
+
+
+def _parse_iso_datetime(value: str, field_name: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail=f"Invalid {field_name}")
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+async def _count_redis_keys(redis, pattern: str) -> int:
+    total = 0
+    async for _ in redis.scan_iter(pattern):
+        total += 1
+    return total
+
+
+def _start_background_task(task_name: str, task_ref_name: str, runner):
+    globals_ref = globals()
+    task = globals_ref.get(task_ref_name)
+    if isinstance(task, asyncio.Task) and not task.done():
+        return {"ok": True, "started": False, "message": f"{task_name} is already running"}
+
+    async def _guarded_runner():
+        try:
+            await runner()
+        except Exception:
+            logging_buffer.add("error", f"adult-sync {task_name} failed")
+
+    globals_ref[task_ref_name] = asyncio.create_task(_guarded_runner())
+    return {"ok": True, "started": True, "message": f"{task_name} started"}
 
 
 def _is_ip_literal(value: str | None) -> bool:
@@ -151,6 +193,12 @@ async def _build_ip_display_map(values: list[str], db: AsyncSession) -> dict[str
 
 @router.get("/database-status")
 async def database_status(db: AsyncSession = Depends(get_db)):
+    now_ts = time.time()
+    cached_data = _database_status_cache.get("data")
+    cached_ts = float(_database_status_cache.get("ts", 0.0) or 0.0)
+    if cached_data is not None and (now_ts - cached_ts) <= _DATABASE_STATUS_CACHE_TTL_SEC:
+        return cached_data
+
     redis = await get_redis()
 
     command_total = 0
@@ -420,11 +468,11 @@ async def database_status(db: AsyncSession = Depends(get_db)):
 
     online_devices = 0
     try:
-        online_devices = len(await redis.keys("online:*"))
+        online_devices = await _count_redis_keys(redis, "online:*")
     except Exception:
         online_devices = 0
 
-    return {
+    response_data = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "postgres": {
             "max_connections": max_connections,
@@ -465,82 +513,42 @@ async def database_status(db: AsyncSession = Depends(get_db)):
         "rsyslog": rsyslog_stats,
         "adult_sync": adult_sync,
     }
+    _database_status_cache["ts"] = time.time()
+    _database_status_cache["data"] = response_data
+    return response_data
 
 
 @router.post("/adult-sync/run")
 async def run_adult_sync_now():
-    global _adult_manual_sync_task
-
-    if _adult_manual_sync_task and not _adult_manual_sync_task.done():
-        return {"ok": True, "started": False, "message": "sync is already running"}
-
-    async def _runner():
-        try:
-            await sync_adult_catalog()
-        except Exception:
-            pass
-
-    _adult_manual_sync_task = asyncio.create_task(_runner())
-    return {"ok": True, "started": True, "message": "sync started"}
+    return _start_background_task("sync", "_adult_manual_sync_task", sync_adult_catalog)
 
 
 @router.post("/adult-sync/recheck-all")
 async def run_adult_recheck_all_now():
-    global _adult_manual_recheck_task
-
-    if _adult_manual_recheck_task and not _adult_manual_recheck_task.done():
-        return {"ok": True, "started": False, "message": "full recheck is already running"}
-
     async def _runner():
-        try:
-            await force_recheck_all_dns_unique(limit=5000)
-        except Exception:
-            pass
+        await force_recheck_all_dns_unique(limit=5000)
 
-    _adult_manual_recheck_task = asyncio.create_task(_runner())
-    return {"ok": True, "started": True, "message": "full recheck started"}
+    return _start_background_task("full recheck", "_adult_manual_recheck_task", _runner)
 
 
 @router.post("/adult-sync/sync-from-txt")
 async def run_adult_sync_from_txt_now(path: str | None = Body(default=None, embed=True)):
-    global _adult_manual_txt_sync_task
-
-    if _adult_manual_txt_sync_task and not _adult_manual_txt_sync_task.done():
-        return {"ok": True, "started": False, "message": "txt sync is already running"}
-
     async def _runner():
-        try:
-            await sync_adult_catalog_from_txt(path=path)
-        except Exception:
-            pass
+        await sync_adult_catalog_from_txt(path=path)
 
-    _adult_manual_txt_sync_task = asyncio.create_task(_runner())
-    return {"ok": True, "started": True, "message": "txt sync started"}
+    return _start_background_task("txt sync", "_adult_manual_txt_sync_task", _runner)
 
 
 @router.post("/adult-sync/cleanup-garbage")
 async def run_adult_cleanup_now():
-    global _adult_manual_cleanup_task
-
-    if _adult_manual_cleanup_task and not _adult_manual_cleanup_task.done():
-        return {"ok": True, "started": False, "message": "cleanup is already running"}
-
-    async def _runner():
-        try:
-            await cleanup_adult_catalog_garbage()
-        except Exception:
-            pass
-
-    _adult_manual_cleanup_task = asyncio.create_task(_runner())
-    return {"ok": True, "started": True, "message": "cleanup started"}
+    return _start_background_task("cleanup", "_adult_manual_cleanup_task", cleanup_adult_catalog_garbage)
 
 
 @router.get("/dashboard")
 async def dashboard(db: AsyncSession = Depends(get_db)):
     redis = await get_redis()
 
-    online_keys = await redis.keys("online:*")
-    online_count = len(online_keys)
+    online_count = await _count_redis_keys(redis, "online:*")
 
     total_devices = (await db.execute(select(func.count(Device.id)))).scalar() or 0
 
@@ -563,16 +571,28 @@ async def dashboard(db: AsyncSession = Depends(get_db)):
         )
     )).one()
 
+    week_start = today_start - timedelta(days=6)
+    sessions_daily_rows = (
+        await db.execute(
+            select(
+                func.date_trunc("day", Session.connected_at).label("day"),
+                func.count(Session.id).label("count"),
+            )
+            .where(Session.connected_at >= week_start)
+            .group_by(func.date_trunc("day", Session.connected_at))
+            .order_by(func.date_trunc("day", Session.connected_at))
+        )
+    ).all()
+    sessions_daily_map = {
+        row.day.date().isoformat(): int(row.count or 0)
+        for row in sessions_daily_rows
+        if row.day is not None
+    }
     sessions_per_day = []
     for i in range(6, -1, -1):
         day_start = (datetime.now(timezone.utc) - timedelta(days=i)).replace(hour=0, minute=0, second=0, microsecond=0)
-        day_end = day_start + timedelta(days=1)
-        count = (await db.execute(
-            select(func.count(Session.id)).where(
-                and_(Session.connected_at >= day_start, Session.connected_at < day_end)
-            )
-        )).scalar() or 0
-        sessions_per_day.append({"date": day_start.strftime("%Y-%m-%d"), "count": count})
+        key = day_start.date().isoformat()
+        sessions_per_day.append({"date": key, "count": sessions_daily_map.get(key, 0)})
 
     return {
         "online_count": online_count,
@@ -626,44 +646,71 @@ async def dashboard_account_stats(
     db: AsyncSession = Depends(get_db),
 ):
     today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-
-    # Get all accounts
-    total_q = await db.execute(select(func.count(Account.account_id)))
-    total = total_q.scalar() or 0
-    acc_result = await db.execute(
-        select(Account).order_by(Account.created_at)
-        .offset((page - 1) * per_page).limit(per_page)
-    )
-    accounts = acc_result.scalars().all()
+    total = (await db.execute(select(func.count(Account.account_id)))).scalar() or 0
+    page_accounts = (
+        await db.execute(
+            select(Account.account_id, Account.description)
+            .order_by(Account.created_at)
+            .offset((page - 1) * per_page)
+            .limit(per_page)
+        )
+    ).all()
+    account_ids = [row.account_id for row in page_accounts]
 
     items = []
-    for a in accounts:
-        dev_ids = await _device_ids_for_account(a.account_id, db)
-        if dev_ids:
-            today_traffic = (await db.execute(
+    traffic_map: dict[str, dict[str, int]] = {}
+    if account_ids:
+        stats_rows = (
+            await db.execute(
                 select(
-                    func.coalesce(func.sum(Session.bytes_downloaded), 0),
-                    func.coalesce(func.sum(Session.bytes_uploaded), 0),
-                ).where(Session.device_id.in_(dev_ids), Session.connected_at >= today_start)
-            )).one()
-            total_traffic = (await db.execute(
-                select(
-                    func.coalesce(func.sum(Session.bytes_downloaded), 0),
-                    func.coalesce(func.sum(Session.bytes_uploaded), 0),
-                ).where(Session.device_id.in_(dev_ids))
-            )).one()
-        else:
-            today_traffic = (0, 0)
-            total_traffic = (0, 0)
+                    Account.account_id.label("account_id"),
+                    func.coalesce(
+                        func.sum(
+                            case((Session.connected_at >= today_start, Session.bytes_downloaded), else_=0)
+                        ),
+                        0,
+                    ).label("today_downloaded"),
+                    func.coalesce(
+                        func.sum(
+                            case((Session.connected_at >= today_start, Session.bytes_uploaded), else_=0)
+                        ),
+                        0,
+                    ).label("today_uploaded"),
+                    func.coalesce(func.sum(Session.bytes_downloaded), 0).label("total_downloaded"),
+                    func.coalesce(func.sum(Session.bytes_uploaded), 0).label("total_uploaded"),
+                )
+                .select_from(Account)
+                .outerjoin(Device, Device.account_id == Account.account_id)
+                .outerjoin(Session, Session.device_id == Device.id)
+                .where(Account.account_id.in_(account_ids))
+                .group_by(Account.account_id)
+            )
+        ).all()
+        traffic_map = {
+            row.account_id: {
+                "today_downloaded": int(row.today_downloaded or 0),
+                "today_uploaded": int(row.today_uploaded or 0),
+                "total_downloaded": int(row.total_downloaded or 0),
+                "total_uploaded": int(row.total_uploaded or 0),
+            }
+            for row in stats_rows
+        }
 
-        items.append({
-            "account_id": a.account_id,
-            "description": a.description,
-            "today_downloaded": today_traffic[0],
-            "today_uploaded": today_traffic[1],
-            "total_downloaded": total_traffic[0],
-            "total_uploaded": total_traffic[1],
-        })
+    for row in page_accounts:
+        data = traffic_map.get(
+            row.account_id,
+            {"today_downloaded": 0, "today_uploaded": 0, "total_downloaded": 0, "total_uploaded": 0},
+        )
+        items.append(
+            {
+                "account_id": row.account_id,
+                "description": row.description,
+                "today_downloaded": data["today_downloaded"],
+                "today_uploaded": data["today_uploaded"],
+                "total_downloaded": data["total_downloaded"],
+                "total_uploaded": data["total_uploaded"],
+            }
+        )
 
     return {"total": total, "page": page, "per_page": per_page, "items": items}
 
@@ -672,19 +719,29 @@ async def dashboard_account_stats(
 
 @router.get("/accounts")
 async def list_accounts(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Account).order_by(Account.created_at))
-    accounts = result.scalars().all()
-    items = []
-    for a in accounts:
-        device_count = (await db.execute(
-            select(func.count(Device.id)).where(Device.account_id == a.account_id)
-        )).scalar() or 0
-        items.append({
-            "account_id": a.account_id,
-            "description": a.description,
-            "device_count": device_count,
-            "created_at": a.created_at.isoformat() if a.created_at else None,
-        })
+    rows = (
+        await db.execute(
+            select(
+                Account.account_id,
+                Account.description,
+                Account.created_at,
+                func.count(Device.id).label("device_count"),
+            )
+            .select_from(Account)
+            .outerjoin(Device, Device.account_id == Account.account_id)
+            .group_by(Account.account_id, Account.description, Account.created_at)
+            .order_by(Account.created_at)
+        )
+    ).all()
+    items = [
+        {
+            "account_id": row.account_id,
+            "description": row.description,
+            "device_count": int(row.device_count or 0),
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+        for row in rows
+    ]
     return {"items": items}
 
 
@@ -759,7 +816,7 @@ async def list_devices(
 
 @router.get("/devices/{device_id}")
 async def get_device(device_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Device).where(Device.id == uuid.UUID(device_id)))
+    result = await db.execute(select(Device).where(Device.id == _parse_uuid(device_id, "device_id")))
     device = result.scalar_one_or_none()
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
@@ -820,7 +877,7 @@ async def get_device(device_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.post("/devices/{device_id}/note")
 async def set_device_note(device_id: str, note: str = "", db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Device).where(Device.id == uuid.UUID(device_id)))
+    result = await db.execute(select(Device).where(Device.id == _parse_uuid(device_id, "device_id")))
     device = result.scalar_one_or_none()
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
@@ -834,7 +891,7 @@ async def set_device_account(
     account_id: str = Body("", embed=True),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(Device).where(Device.id == uuid.UUID(device_id)))
+    result = await db.execute(select(Device).where(Device.id == _parse_uuid(device_id, "device_id")))
     device = result.scalar_one_or_none()
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
@@ -856,9 +913,10 @@ async def get_device_changes(
     per_page: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
 ):
+    device_uuid = _parse_uuid(device_id, "device_id")
     query = (
         select(DeviceChangeLog)
-        .where(DeviceChangeLog.device_id == uuid.UUID(device_id))
+        .where(DeviceChangeLog.device_id == device_uuid)
         .order_by(desc(DeviceChangeLog.changed_at))
     )
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
@@ -890,14 +948,14 @@ async def list_sessions(
 ):
     query = select(Session).order_by(desc(Session.connected_at))
     if device_id:
-        query = query.where(Session.device_id == uuid.UUID(device_id))
+        query = query.where(Session.device_id == _parse_uuid(device_id, "device_id"))
     if account_id:
         dev_ids = await _device_ids_for_account(account_id, db)
         query = query.where(Session.device_id.in_(dev_ids))
     if date_from:
-        query = query.where(Session.connected_at >= datetime.fromisoformat(date_from))
+        query = query.where(Session.connected_at >= _parse_iso_datetime(date_from, "date_from"))
     if date_to:
-        query = query.where(Session.connected_at <= datetime.fromisoformat(date_to))
+        query = query.where(Session.connected_at <= _parse_iso_datetime(date_to, "date_to"))
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar()
     result = await db.execute(query.offset((page - 1) * per_page).limit(per_page))
@@ -944,9 +1002,9 @@ async def list_sni(
 ):
     query = select(SNILog).order_by(desc(SNILog.last_seen))
     if device_id:
-        query = query.where(SNILog.device_id == uuid.UUID(device_id))
+        query = query.where(SNILog.device_id == _parse_uuid(device_id, "device_id"))
     if session_id:
-        query = query.where(SNILog.session_id == uuid.UUID(session_id))
+        query = query.where(SNILog.session_id == _parse_uuid(session_id, "session_id"))
     if domain:
         query = query.where(SNILog.domain.ilike(f"%{domain}%"))
     if account_id:
@@ -1007,9 +1065,9 @@ async def list_dns(
 ):
     query = select(DNSLog).order_by(desc(DNSLog.timestamp))
     if device_id:
-        query = query.where(DNSLog.device_id == uuid.UUID(device_id))
+        query = query.where(DNSLog.device_id == _parse_uuid(device_id, "device_id"))
     if session_id:
-        query = query.where(DNSLog.session_id == uuid.UUID(session_id))
+        query = query.where(DNSLog.session_id == _parse_uuid(session_id, "session_id"))
     if domain:
         query = query.where(DNSLog.domain.ilike(f"%{domain}%"))
     if account_id:
@@ -1050,9 +1108,9 @@ async def list_connections(
 ):
     query = select(ConnectionLog).order_by(desc(ConnectionLog.timestamp))
     if device_id:
-        query = query.where(ConnectionLog.device_id == uuid.UUID(device_id))
+        query = query.where(ConnectionLog.device_id == _parse_uuid(device_id, "device_id"))
     if session_id:
-        query = query.where(ConnectionLog.session_id == uuid.UUID(session_id))
+        query = query.where(ConnectionLog.session_id == _parse_uuid(session_id, "session_id"))
     if dest_ip:
         query = query.where(ConnectionLog.dest_ip.ilike(f"%{dest_ip}%"))
     if account_id:
@@ -1093,7 +1151,7 @@ async def list_errors(
 ):
     query = select(ErrorLog).order_by(desc(ErrorLog.timestamp))
     if device_id:
-        query = query.where(ErrorLog.device_id == uuid.UUID(device_id))
+        query = query.where(ErrorLog.device_id == _parse_uuid(device_id, "device_id"))
     if error_type:
         query = query.where(ErrorLog.error_type == error_type)
     if account_id:
@@ -1162,7 +1220,7 @@ async def list_device_logs(
 ):
     query = select(DeviceLog).order_by(desc(DeviceLog.uploaded_at))
     if device_id:
-        query = query.where(DeviceLog.device_id == uuid.UUID(device_id))
+        query = query.where(DeviceLog.device_id == _parse_uuid(device_id, "device_id"))
     if log_type:
         query = query.where(DeviceLog.log_type == log_type)
     if account_id:
@@ -1187,7 +1245,7 @@ async def list_device_logs(
 
 @router.get("/device-logs/{log_id}")
 async def get_device_log(log_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(DeviceLog).where(DeviceLog.id == uuid.UUID(log_id)))
+    result = await db.execute(select(DeviceLog).where(DeviceLog.id == _parse_uuid(log_id, "log_id")))
     log = result.scalar_one_or_none()
     if not log:
         raise HTTPException(status_code=404, detail="Log not found")
@@ -1202,7 +1260,7 @@ async def get_device_log(log_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.delete("/device-logs/{log_id}")
 async def delete_device_log(log_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(DeviceLog).where(DeviceLog.id == uuid.UUID(log_id)))
+    result = await db.execute(select(DeviceLog).where(DeviceLog.id == _parse_uuid(log_id, "log_id")))
     log = result.scalar_one_or_none()
     if not log:
         raise HTTPException(status_code=404, detail="Log not found")
@@ -1221,7 +1279,7 @@ async def download_device_log(log_id: str, db: AsyncSession = Depends(get_db)):
     from fastapi.responses import StreamingResponse
     import io
 
-    result = await db.execute(select(DeviceLog).where(DeviceLog.id == uuid.UUID(log_id)))
+    result = await db.execute(select(DeviceLog).where(DeviceLog.id == _parse_uuid(log_id, "log_id")))
     log = result.scalar_one_or_none()
     if not log:
         raise HTTPException(status_code=404, detail="Log not found")
@@ -1242,7 +1300,7 @@ async def upload_device_log_to_server(log_id: str, db: AsyncSession = Depends(ge
     import tempfile
     import os
 
-    result = await db.execute(select(DeviceLog).where(DeviceLog.id == uuid.UUID(log_id)))
+    result = await db.execute(select(DeviceLog).where(DeviceLog.id == _parse_uuid(log_id, "log_id")))
     log = result.scalar_one_or_none()
     if not log:
         raise HTTPException(status_code=404, detail="Log not found")
@@ -1274,7 +1332,7 @@ async def upload_device_log_to_server(log_id: str, db: AsyncSession = Depends(ge
 @router.post("/devices/{device_id}/request-logs")
 async def request_device_logs(device_id: str, db: AsyncSession = Depends(get_db)):
     """Queue a command for the device to upload its logs."""
-    result = await db.execute(select(Device).where(Device.id == uuid.UUID(device_id)))
+    result = await db.execute(select(Device).where(Device.id == _parse_uuid(device_id, "device_id")))
     device = result.scalar_one_or_none()
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
@@ -1352,33 +1410,54 @@ async def remnawave_accounts_summary(
     t30 = now - timedelta(days=30)
     t365 = now - timedelta(days=365)
 
+    logins = [acc.account_login for acc in rows]
+    counters_map: dict[str, dict[str, int]] = {}
+    if logins:
+        counters_rows = (
+            await db.execute(
+                select(
+                    RemnawaveDNSQuery.account_login.label("account_login"),
+                    func.coalesce(
+                        func.sum(case((RemnawaveDNSQuery.requested_at >= t24, 1), else_=0)),
+                        0,
+                    ).label("c24"),
+                    func.coalesce(
+                        func.sum(case((RemnawaveDNSQuery.requested_at >= t7, 1), else_=0)),
+                        0,
+                    ).label("c7"),
+                    func.coalesce(
+                        func.sum(case((RemnawaveDNSQuery.requested_at >= t30, 1), else_=0)),
+                        0,
+                    ).label("c30"),
+                    func.coalesce(
+                        func.sum(case((RemnawaveDNSQuery.requested_at >= t365, 1), else_=0)),
+                        0,
+                    ).label("c365"),
+                )
+                .where(RemnawaveDNSQuery.account_login.in_(logins))
+                .group_by(RemnawaveDNSQuery.account_login)
+            )
+        ).all()
+        counters_map = {
+            row.account_login: {
+                "c24": int(row.c24 or 0),
+                "c7": int(row.c7 or 0),
+                "c30": int(row.c30 or 0),
+                "c365": int(row.c365 or 0),
+            }
+            for row in counters_rows
+        }
+
     items = []
     for acc in rows:
-        login = acc.account_login
-        c24 = (await db.execute(select(func.count(RemnawaveDNSQuery.id)).where(
-            RemnawaveDNSQuery.account_login == login,
-            RemnawaveDNSQuery.requested_at >= t24,
-        ))).scalar() or 0
-        c7 = (await db.execute(select(func.count(RemnawaveDNSQuery.id)).where(
-            RemnawaveDNSQuery.account_login == login,
-            RemnawaveDNSQuery.requested_at >= t7,
-        ))).scalar() or 0
-        c30 = (await db.execute(select(func.count(RemnawaveDNSQuery.id)).where(
-            RemnawaveDNSQuery.account_login == login,
-            RemnawaveDNSQuery.requested_at >= t30,
-        ))).scalar() or 0
-        c365 = (await db.execute(select(func.count(RemnawaveDNSQuery.id)).where(
-            RemnawaveDNSQuery.account_login == login,
-            RemnawaveDNSQuery.requested_at >= t365,
-        ))).scalar() or 0
-
+        counts = counters_map.get(acc.account_login, {"c24": 0, "c7": 0, "c30": 0, "c365": 0})
         items.append({
-            'account': login,
+            'account': acc.account_login,
             'last_activity': acc.last_activity_at.isoformat() if acc.last_activity_at else None,
-            'requests_24h': c24,
-            'requests_7d': c7,
-            'requests_30d': c30,
-            'requests_365d': c365,
+            'requests_24h': counts["c24"],
+            'requests_7d': counts["c7"],
+            'requests_30d': counts["c30"],
+            'requests_365d': counts["c365"],
         })
 
     return {'total': total, 'page': page, 'per_page': per_page, 'items': items}

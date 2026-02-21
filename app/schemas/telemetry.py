@@ -11,7 +11,7 @@ class SNIEntry(BaseModel):
 
 class SNIBatchRequest(BaseModel):
     session_id: str
-    entries: list[SNIEntry]
+    entries: list[SNIEntry] = Field(..., min_length=1, max_length=5000)
 
 
 class SNIRawRequest(BaseModel):
@@ -29,7 +29,7 @@ class DNSEntry(BaseModel):
 
 class DNSBatchRequest(BaseModel):
     session_id: str
-    entries: list[DNSEntry]
+    entries: list[DNSEntry] = Field(..., min_length=1, max_length=5000)
 
 
 class ConnectionEntry(BaseModel):
@@ -41,7 +41,7 @@ class ConnectionEntry(BaseModel):
 
 class ConnectionBatchRequest(BaseModel):
     session_id: str
-    entries: list[ConnectionEntry]
+    entries: list[ConnectionEntry] = Field(..., min_length=1, max_length=5000)
 
 
 class ErrorReportRequest(BaseModel):
@@ -59,7 +59,7 @@ class PermissionEntry(BaseModel):
 
 
 class PermissionsBatchRequest(BaseModel):
-    permissions: list[PermissionEntry]
+    permissions: list[PermissionEntry] = Field(..., min_length=1, max_length=300)
 
 
 class DeviceLogRequest(BaseModel):
@@ -76,4 +76,4 @@ class RemnawaveDNSIngestEntry(BaseModel):
 
 
 class RemnawaveDNSIngestRequest(BaseModel):
-    entries: list[RemnawaveDNSIngestEntry]
+    entries: list[RemnawaveDNSIngestEntry] = Field(..., min_length=1, max_length=20000)
