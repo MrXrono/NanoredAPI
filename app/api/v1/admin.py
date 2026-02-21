@@ -33,6 +33,7 @@ from app.models.remnawave_log import (
     AdultSyncState,
 )
 
+from app.services.ingest_metrics import get_ingest_metrics_snapshot
 from app.services.remnawave_adult import (
     cleanup_adult_catalog_garbage,
     force_recheck_all_dns_unique,
@@ -614,6 +615,8 @@ async def database_status(db: AsyncSession = Depends(get_db)):
     except Exception:
         online_devices = 0
 
+    ingest_metrics = get_ingest_metrics_snapshot()
+
     response_data = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "postgres": {
@@ -665,6 +668,7 @@ async def database_status(db: AsyncSession = Depends(get_db)):
         ],
         "rsyslog": rsyslog_stats,
         "adult_sync": adult_sync,
+        "api_ingest": ingest_metrics,
     }
     _database_status_cache["ts"] = time.time()
     _database_status_cache["data"] = response_data

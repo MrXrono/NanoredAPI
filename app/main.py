@@ -41,6 +41,7 @@ from app.models.remnawave_log import (
 )
 from app.services.schema_bootstrap import ensure_base_schema_ready
 from app.services.remnawave_adult import background_remnawave_adult_tasks
+from app.services.ingest_metrics import observe_api_timing
 from app.services.telegram_support_forum import telegram_support_forum
 
 logger = logging.getLogger(__name__)
@@ -233,11 +234,14 @@ async def logging_middleware(request: Request, call_next):
         duration = round((time.time() - start_time) * 1000, 1)
 
         if path.startswith("/api/"):
+            observe_api_timing(path, response.status_code, duration)
             logging_buffer.add("processing", f"Ответ {response.status_code} за {duration}ms: {method} {path}")
 
         return response
     except Exception as e:
         duration = round((time.time() - start_time) * 1000, 1)
+        if path.startswith("/api/"):
+            observe_api_timing(path, 500, duration)
         logging_buffer.add("error", f"Исключение в {method} {path} ({duration}ms): {str(e)}", {
             "traceback": traceback.format_exc(),
         })

@@ -253,6 +253,9 @@ async function loadDatabaseStatus() {
         const queue = redis.command_queue || {};
         const rsyslog = d.rsyslog || {};
         const adult = d.adult_sync || {};
+        const ingest = d.api_ingest || {};
+        const ingestRsyslog = ingest.rsyslog || {};
+        const ingestNanoredvpn = ingest.nanoredvpn || {};
         const system = d.system || {};
 
         const maxConn = Number(pg.max_connections || 0);
@@ -274,6 +277,9 @@ async function loadDatabaseStatus() {
         document.getElementById('db-rsyslog-requests-1m').textContent = Number(rsyslog.count_1m || 0);
         document.getElementById('db-rsyslog-bytes-1m').textContent = formatBytes(Number(rsyslog.bytes_1m || 0));
         document.getElementById('db-rsyslog-avg-1m').textContent = formatBytes(Number(rsyslog.bytes_per_entry_1m || 0));
+        document.getElementById('db-rsyslog-ingest-ok').textContent = `${Number(ingestRsyslog.received || 0)} / ${Number(ingestRsyslog.processed || 0)}`;
+        document.getElementById('db-nanoredvpn-ingest-ok').textContent = `${Number(ingestNanoredvpn.received || 0)} / ${Number(ingestNanoredvpn.processed || 0)}`;
+        document.getElementById('db-api-avg-ms').textContent = `${Number(ingestRsyslog.avg_latency_ms || 0).toFixed(1)}ms / ${Number(ingestNanoredvpn.avg_latency_ms || 0).toFixed(1)}ms`;
         document.getElementById('db-redis-memory').textContent = `Redis memory: ${redis.memory_used_human || '-'}, clients: ${redis.connected_clients || 0}`;
 
         const adultCatalogEnabled = Number(adult.catalog_domains_enabled || 0);

@@ -112,6 +112,18 @@
             <h2>Статус базы данных</h2>
             <div class="stats-grid">
                 <div class="stat-card">
+                    <div class="label">API rsyslog: получено / успешно</div>
+                    <div class="value blue" id="db-rsyslog-ingest-ok">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">API nanoredvpn: получено / успешно</div>
+                    <div class="value green" id="db-nanoredvpn-ingest-ok">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">API: среднее время (rsyslog / nanoredvpn)</div>
+                    <div class="value yellow" id="db-api-avg-ms">-</div>
+                </div>
+                <div class="stat-card">
                     <div class="label">PostgreSQL: активные / max</div>
                     <div class="value blue" id="db-pg-active-ratio">-</div>
                 </div>

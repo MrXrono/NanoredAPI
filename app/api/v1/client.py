@@ -28,6 +28,7 @@ from app.models.device_change_log import DeviceChangeLog
 from app.models.remnawave_log import RemnawaveAccount, RemnawaveDNSQuery, RemnawaveDNSUnique
 from app.services.remnawave_adult import ensure_adult_schema_ready, normalize_remnawave_domain
 from app.services.schema_bootstrap import ensure_base_schema_ready
+from app.services.ingest_metrics import record_nanoredvpn_ingest, record_rsyslog_ingest
 from app.schemas.device import DeviceRegisterRequest, DeviceRegisterResponse
 from app.schemas.session import SessionStartRequest, SessionStartResponse, SessionEndRequest, ServerChangeRequest
 from app.schemas.telemetry import (
@@ -396,6 +397,7 @@ async def sni_batch(
         )
         db.add(log)
     logging_buffer.add("processing", f"SNI batch: {len(req.entries)} записей от устройства {device.id}")
+    record_nanoredvpn_ingest(len(req.entries), len(req.entries))
     return {"status": "ok", "count": len(req.entries)}
 
 
@@ -630,6 +632,7 @@ async def sni_raw(
         ))
 
     total = len(domain_data) + len(unresolved_ip_data)
+    record_nanoredvpn_ingest(total, total)
     logging_buffer.add("processing",
         f"SNI raw: {len(domain_data)} доменов + {len(unresolved_ip_data)} IP (sniffed={len(sniffed_domains)}, "
         f"dns_map={len(full_ip_to_domain)}) от устройства {device.id}")
@@ -659,6 +662,7 @@ async def dns_batch(
         )
         db.add(log)
     logging_buffer.add("processing", f"DNS batch: {len(req.entries)} записей от устройства {device.id}")
+    record_nanoredvpn_ingest(len(req.entries), len(req.entries))
     return {"status": "ok", "count": len(req.entries)}
 
 
@@ -681,6 +685,7 @@ async def connections_batch(
         )
         db.add(log)
     logging_buffer.add("processing", f"Connections batch: {len(req.entries)} записей от устройства {device.id}")
+    record_nanoredvpn_ingest(len(req.entries), len(req.entries))
     return {"status": "ok", "count": len(req.entries)}
 
 
@@ -787,6 +792,7 @@ async def ingest_remnawave_logs(
         raise HTTPException(status_code=401, detail="Invalid ingest token")
 
     if not req.entries:
+        record_rsyslog_ingest(0, 0)
         return {"status": "ok", "inserted": 0, "accounts_upserted": 0}
 
     now = datetime.now(timezone.utc)
@@ -825,6 +831,7 @@ async def ingest_remnawave_logs(
         inserted += 1
 
     if not inserted:
+        record_rsyslog_ingest(len(req.entries), 0)
         return {"status": "ok", "inserted": 0, "accounts_upserted": 0}
 
     async def _upsert_accounts_once() -> None:
@@ -895,4 +902,5 @@ async def ingest_remnawave_logs(
         "processing",
         f"Remnawave ingest: entries={len(req.entries)}, inserted={inserted}, accounts={accounts_upserted}",
     )
+    record_rsyslog_ingest(len(req.entries), inserted)
     return {"status": "ok", "inserted": inserted, "accounts_upserted": accounts_upserted}
