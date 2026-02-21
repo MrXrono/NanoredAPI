@@ -615,10 +615,12 @@ async function setAdultWeeklySchedule() {
 
 function formatTaskProgress(task) {
     if (!task) return '-';
-    const percent = Number(task.progress_percent || 0);
+    const percentRaw = Number(task.progress_percent || 0);
     const cur = Number(task.progress_current || 0);
     const total = Number(task.progress_total || 0);
-    if (total > 0) return `${cur}/${total} (${percent.toFixed(1)}%)`;
+    const shownTotal = Math.max(total, cur, 0);
+    const percent = Math.min(100, Math.max(0, percentRaw));
+    if (shownTotal > 0) return `${cur}/${shownTotal} (${percent.toFixed(1)}%)`;
     return `${percent.toFixed(1)}%`;
 }
 

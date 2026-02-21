@@ -1018,6 +1018,16 @@ async def force_recheck_all_dns_unique(limit: int = ADULT_RECHECK_BATCH_LIMIT, p
     async with _FULL_RECHECK_LOCK:
         async with async_session() as db:
             await _emit_progress(progress_cb, phase="mark", progress_current=0, progress_total=1, progress_percent=2.0, message="Marking rows for recheck")
+
+            already_marked = int(
+                (
+                    await db.execute(
+                        select(func.count(RemnawaveDNSUnique.dns_root)).where(RemnawaveDNSUnique.need_recheck.is_(True))
+                    )
+                ).scalar()
+                or 0
+            )
+
             mark_stmt = (
                 update(RemnawaveDNSUnique)
                 .where(RemnawaveDNSUnique.need_recheck.is_(False))
@@ -1026,15 +1036,17 @@ async def force_recheck_all_dns_unique(limit: int = ADULT_RECHECK_BATCH_LIMIT, p
             mark_res = await db.execute(mark_stmt)
             await db.commit()
 
-            marked = int(mark_res.rowcount or 0)
+            marked_new = int(mark_res.rowcount or 0)
+            target_total = max(0, already_marked + marked_new)
             processed = 0
+
             await _emit_progress(
                 progress_cb,
                 phase="recheck",
                 progress_current=processed,
-                progress_total=marked,
-                progress_percent=5.0 if marked else 100.0,
-                message=f"Marked {marked} rows",
+                progress_total=target_total,
+                progress_percent=5.0 if target_total else 100.0,
+                message=f"Marked new: {marked_new}, already pending: {already_marked}",
             )
 
             while True:
@@ -1042,19 +1054,23 @@ async def force_recheck_all_dns_unique(limit: int = ADULT_RECHECK_BATCH_LIMIT, p
                 if changed <= 0:
                     break
                 processed += changed
+                progress_total = max(target_total, processed)
                 await _emit_progress(
                     progress_cb,
                     phase="recheck",
                     progress_current=processed,
-                    progress_total=marked,
-                    progress_percent=5.0 + (processed / max(marked, 1)) * 95.0,
-                    message=f"Processed {processed}/{marked}",
+                    progress_total=progress_total,
+                    progress_percent=5.0 + (processed / max(progress_total, 1)) * 95.0,
+                    message=f"Processed {processed}/{progress_total}",
                 )
 
             remaining = int((await db.execute(select(func.count(RemnawaveDNSUnique.dns_root)).where(RemnawaveDNSUnique.need_recheck.is_(True)))).scalar() or 0)
+            progress_total = max(target_total, processed)
             status = "ok" if remaining == 0 else "partial"
             result = {
-                "marked": marked,
+                "marked_new": marked_new,
+                "already_marked": already_marked,
+                "target_total": target_total,
                 "processed": processed,
                 "remaining": remaining,
                 "status": status,
@@ -1063,7 +1079,7 @@ async def force_recheck_all_dns_unique(limit: int = ADULT_RECHECK_BATCH_LIMIT, p
                 progress_cb,
                 phase="done",
                 progress_current=processed,
-                progress_total=marked,
+                progress_total=progress_total,
                 progress_percent=100.0,
                 message="Full recheck finished" if remaining == 0 else f"Full recheck finished with {remaining} remaining rows",
                 status=status,
