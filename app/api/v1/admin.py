@@ -32,6 +32,7 @@ from app.models.remnawave_log import (
     RemnawaveAccount,
     RemnawaveDNSQuery,
     RemnawaveDNSUnique,
+    RemnawaveNode,
     AdultDomainCatalog,
     AdultDomainExclusion,
     AdultSyncState,
@@ -2099,7 +2100,6 @@ async def remnawave_accounts_summary(
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=200),
     search: str | None = None,
-    days: int = Query(default=settings.REMNAWAVE_LOGS_SUMMARY_DAYS, ge=1, le=3650),
     db: AsyncSession = Depends(get_db),
 ):
     q = select(RemnawaveAccount)
@@ -2108,69 +2108,17 @@ async def remnawave_accounts_summary(
 
     total = (await db.execute(select(func.count()).select_from(q.subquery()))).scalar() or 0
     rows = (await db.execute(
-        q.order_by(desc(RemnawaveAccount.last_activity_at), RemnawaveAccount.account_login)
+        q.order_by(desc(RemnawaveAccount.last_activity_at), desc(RemnawaveAccount.total_requests), RemnawaveAccount.account_login)
         .offset((page - 1) * per_page)
         .limit(per_page)
     )).scalars().all()
 
-    now = datetime.now(timezone.utc)
-    since = now - timedelta(days=days)
-    t24 = now - timedelta(hours=24)
-    t7 = now - timedelta(days=7)
-    t30 = now - timedelta(days=30)
-    t365 = now - timedelta(days=365)
-
-    logins = [acc.account_login for acc in rows]
-    counters_map: dict[str, dict[str, int]] = {}
-    if logins:
-        counters_rows = (
-            await db.execute(
-                select(
-                    RemnawaveDNSQuery.account_login.label("account_login"),
-                    func.coalesce(
-                        func.sum(case((RemnawaveDNSQuery.requested_at >= t24, 1), else_=0)),
-                        0,
-                    ).label("c24"),
-                    func.coalesce(
-                        func.sum(case((RemnawaveDNSQuery.requested_at >= t7, 1), else_=0)),
-                        0,
-                    ).label("c7"),
-                    func.coalesce(
-                        func.sum(case((RemnawaveDNSQuery.requested_at >= t30, 1), else_=0)),
-                        0,
-                    ).label("c30"),
-                    func.coalesce(
-                        func.sum(case((RemnawaveDNSQuery.requested_at >= t365, 1), else_=0)),
-                        0,
-                    ).label("c365"),
-                )
-                .where(
-                    RemnawaveDNSQuery.account_login.in_(logins),
-                    RemnawaveDNSQuery.requested_at >= since,
-                )
-                .group_by(RemnawaveDNSQuery.account_login)
-            )
-        ).all()
-        counters_map = {
-            row.account_login: {
-                "c24": int(row.c24 or 0),
-                "c7": int(row.c7 or 0),
-                "c30": int(row.c30 or 0),
-                "c365": int(row.c365 or 0),
-            }
-            for row in counters_rows
-        }
-
     items = []
     for acc in rows:
-        counts = counters_map.get(acc.account_login, {"c24": 0, "c7": 0, "c30": 0, "c365": 0})
         items.append({
             'account': acc.account_login,
             'last_activity': acc.last_activity_at.isoformat() if acc.last_activity_at else None,
-            'requests_24h': counts["c24"],
-            'requests_7d': counts["c7"],
-            'requests_30d': counts["c30"],
-            'requests_365d': counts["c365"],
+            'total_requests': int(acc.total_requests or 0),
         })
 
     return {'total': total, 'page': page, 'per_page': per_page, 'items': items}
@@ -2180,27 +2128,19 @@ async def remnawave_accounts_summary(
 async def remnawave_nodes_summary(
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=200),
-    days: int = Query(default=settings.REMNAWAVE_LOGS_SUMMARY_DAYS, ge=1, le=3650),
+    search: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
-    node_col = func.nullif(func.trim(RemnawaveDNSQuery.node_name), "").label("node")
-    last_message_col = func.max(RemnawaveDNSQuery.requested_at).label("last_message")
+    q = select(RemnawaveNode)
+    if search:
+        q = q.where(RemnawaveNode.node_name.ilike(f"%{search}%"))
 
-    since = datetime.now(timezone.utc) - timedelta(days=days)
-
-    grouped = (
-        select(node_col, last_message_col)
-        .where(node_col.isnot(None), RemnawaveDNSQuery.requested_at >= since)
-        .group_by(node_col)
-    )
-
-    total = (await db.execute(select(func.count()).select_from(grouped.subquery()))).scalar() or 0
+    total = (await db.execute(select(func.count()).select_from(q.subquery()))).scalar() or 0
     rows = (await db.execute(
-        grouped
-        .order_by(desc(last_message_col), node_col)
+        q.order_by(desc(RemnawaveNode.last_seen_at), RemnawaveNode.node_name)
         .offset((page - 1) * per_page)
         .limit(per_page)
-    )).all()
+    )).scalars().all()
 
     return {
         'total': total,
@@ -2208,8 +2148,8 @@ async def remnawave_nodes_summary(
         'per_page': per_page,
         'items': [
             {
-                'node': row[0],
-                'last_message': row[1].isoformat() if row[1] else None,
+                'node': row.node_name,
+                'last_message': row.last_seen_at.isoformat() if row.last_seen_at else None,
             }
             for row in rows
         ],

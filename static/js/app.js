@@ -1349,8 +1349,8 @@ async function refreshLogs() {
 
 // ========== REMNAWAVE LOGS ==========
 async function loadRemnawaveNodes(page = 1) {
-    const days = Number(document.getElementById('rnw-summary-days')?.value || 7);
-    const resp = await api(`/admin/remnawave-logs/nodes?page=${page}&per_page=50&days=${days}`);
+    const search = document.getElementById('rnw-node-search')?.value || '';
+    const resp = await api(`/admin/remnawave-logs/nodes?page=${page}&per_page=50&search=${encodeURIComponent(search)}`);
     const d = await resp.json();
     const tbody = document.getElementById('rnw-nodes-tbody');
     tbody.innerHTML = d.items.map(i => `
@@ -1364,20 +1364,16 @@ async function loadRemnawaveNodes(page = 1) {
 
 async function loadRemnawaveAccounts(page = 1) {
     const search = document.getElementById('rnw-account-search')?.value || '';
-    const days = Number(document.getElementById('rnw-summary-days')?.value || 7);
-    const resp = await api(`/admin/remnawave-logs/accounts?page=${page}&per_page=50&days=${days}&search=${encodeURIComponent(search)}`);
+    const resp = await api(`/admin/remnawave-logs/accounts?page=${page}&per_page=50&search=${encodeURIComponent(search)}`);
     const d = await resp.json();
     const tbody = document.getElementById('rnw-accounts-tbody');
     tbody.innerHTML = d.items.map(i => `
         <tr onclick="selectRemnawaveAccount('${escapeHtml(i.account)}')" style="cursor:pointer;">
             <td>${escapeHtml(i.account)}</td>
             <td>${formatDate(i.last_activity)}</td>
-            <td>${i.requests_24h}</td>
-            <td>${i.requests_7d}</td>
-            <td>${i.requests_30d}</td>
-            <td>${i.requests_365d}</td>
+            <td>${Number(i.total_requests || 0).toLocaleString('ru-RU')}</td>
         </tr>
-    `).join('') || '<tr><td colspan="6">Нет данных</td></tr>';
+    `).join('') || '<tr><td colspan="3">Нет данных</td></tr>';
     renderPagination(document.getElementById('rnw-accounts-pagination'), d.total, d.page, d.per_page, 'loadRemnawaveAccounts');
 }
 

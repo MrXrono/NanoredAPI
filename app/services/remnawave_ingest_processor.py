@@ -1,19 +1,51 @@
 from __future__ import annotations
 
-import uuid
+import asyncio
 import ipaddress
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import func, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from app.models.remnawave_log import RemnawaveAccount, RemnawaveDNSQuery, RemnawaveDNSUnique
+from app.models.remnawave_log import RemnawaveAccount, RemnawaveDNSQuery, RemnawaveDNSUnique, RemnawaveNode
 from app.services.remnawave_adult import ensure_adult_schema_ready, normalize_remnawave_domain
 from app.services.schema_bootstrap import ensure_base_schema_ready
+
+_RNW_SCHEMA_LOCK = asyncio.Lock()
+_RNW_SCHEMA_READY = False
+
+
+async def _ensure_remnawave_schema_ready(db: AsyncSession) -> None:
+    global _RNW_SCHEMA_READY
+    if _RNW_SCHEMA_READY:
+        return
+    async with _RNW_SCHEMA_LOCK:
+        if _RNW_SCHEMA_READY:
+            return
+        await db.execute(text("ALTER TABLE remnawave_accounts ADD COLUMN IF NOT EXISTS total_requests BIGINT NOT NULL DEFAULT 0"))
+        await db.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS remnawave_nodes (
+                    node_name VARCHAR(128) PRIMARY KEY,
+                    last_seen_at TIMESTAMPTZ NULL,
+                    first_seen_at TIMESTAMPTZ NULL,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+        )
+        await db.execute(text("CREATE INDEX IF NOT EXISTS ix_remnawave_nodes_last_seen_at ON remnawave_nodes (last_seen_at DESC)"))
+        await db.execute(text("CREATE INDEX IF NOT EXISTS ix_remnawave_accounts_total_requests ON remnawave_accounts (total_requests DESC)"))
+        await db.execute(text("CREATE INDEX IF NOT EXISTS ix_rnw_queries_account_requested_at ON remnawave_dns_queries (account_login, requested_at DESC)"))
+        await db.execute(text("CREATE INDEX IF NOT EXISTS ix_rnw_queries_account_dns_requested_at ON remnawave_dns_queries (account_login, dns, requested_at DESC)"))
+        await db.commit()
+        _RNW_SCHEMA_READY = True
 
 
 def _normalize_dns_or_ip(value: Any) -> str | None:
@@ -89,6 +121,9 @@ async def process_remnawave_ingest_entries(db: AsyncSession, entries: list[dict[
         return result
 
     account_last_activity: dict[str, datetime] = {}
+    account_request_counts: dict[str, int] = {}
+    node_last_seen: dict[str, datetime] = {}
+    node_first_seen: dict[str, datetime] = {}
     dns_unique_points: dict[str, tuple[datetime, datetime]] = {}
     query_rows: list[dict[str, Any]] = []
 
@@ -116,6 +151,16 @@ async def process_remnawave_ingest_entries(db: AsyncSession, entries: list[dict[
         prev_ts = account_last_activity.get(account_login)
         if prev_ts is None or ts > prev_ts:
             account_last_activity[account_login] = ts
+        account_request_counts[account_login] = int(account_request_counts.get(account_login, 0)) + 1
+
+        node_name = str(entry.get("node") or "").strip()
+        if node_name:
+            last_seen = node_last_seen.get(node_name)
+            if last_seen is None or ts > last_seen:
+                node_last_seen[node_name] = ts
+            first_seen = node_first_seen.get(node_name)
+            if first_seen is None or ts < first_seen:
+                node_first_seen[node_name] = ts
 
         prev_dns = dns_unique_points.get(dns_root)
         if prev_dns is None:
@@ -129,7 +174,7 @@ async def process_remnawave_ingest_entries(db: AsyncSession, entries: list[dict[
                 "id": uuid.uuid4(),
                 "account_login": account_login,
                 "dns": dns_root,
-                "node_name": str(entry.get("node") or "").strip() or None,
+                "node_name": None,
                 "requested_at": ts,
             }
         )
@@ -145,9 +190,11 @@ async def process_remnawave_ingest_entries(db: AsyncSession, entries: list[dict[
     async def _upsert_accounts_once() -> None:
         for account_login in sorted(account_last_activity):
             ts = account_last_activity[account_login]
+            req_count = int(account_request_counts.get(account_login, 0))
             account_stmt = pg_insert(RemnawaveAccount).values(
                 account_login=account_login,
                 last_activity_at=ts,
+                total_requests=req_count,
                 created_at=now,
                 updated_at=now,
             )
@@ -155,18 +202,45 @@ async def process_remnawave_ingest_entries(db: AsyncSession, entries: list[dict[
                 index_elements=[RemnawaveAccount.account_login],
                 set_={
                     "last_activity_at": func.greatest(RemnawaveAccount.last_activity_at, account_stmt.excluded.last_activity_at),
+                    "total_requests": RemnawaveAccount.total_requests + account_stmt.excluded.total_requests,
                     "updated_at": now,
                 },
             )
             await db.execute(account_stmt)
 
+    async def _upsert_nodes_once() -> None:
+        for node_name in sorted(node_last_seen):
+            last_seen = node_last_seen[node_name]
+            first_seen = node_first_seen.get(node_name, last_seen)
+            node_stmt = pg_insert(RemnawaveNode).values(
+                node_name=node_name,
+                first_seen_at=first_seen,
+                last_seen_at=last_seen,
+                updated_at=now,
+            )
+            node_stmt = node_stmt.on_conflict_do_update(
+                index_elements=[RemnawaveNode.node_name],
+                set_={
+                    "first_seen_at": func.least(RemnawaveNode.first_seen_at, node_stmt.excluded.first_seen_at),
+                    "last_seen_at": func.greatest(RemnawaveNode.last_seen_at, node_stmt.excluded.last_seen_at),
+                    "updated_at": now,
+                },
+            )
+            await db.execute(node_stmt)
+
     try:
+        await _ensure_remnawave_schema_ready(db)
         await _upsert_accounts_once()
+        if node_last_seen:
+            await _upsert_nodes_once()
     except Exception as exc:
-        if any(tag in str(exc).lower() for tag in ("does not exist", "undefinedtable", "undefined table")):
+        if any(tag in str(exc).lower() for tag in ("does not exist", "undefinedtable", "undefined table", "undefinedcolumn", "undefined column")):
             if not await ensure_base_schema_ready(force=True):
                 raise
+            await _ensure_remnawave_schema_ready(db)
             await _upsert_accounts_once()
+            if node_last_seen:
+                await _upsert_nodes_once()
         else:
             raise
 

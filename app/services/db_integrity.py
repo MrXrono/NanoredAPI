@@ -17,14 +17,17 @@ _RECOMMENDED_INDEX_SQL: dict[str, str] = {
         CREATE INDEX IF NOT EXISTS ix_rnw_queries_account_requested_at
         ON remnawave_dns_queries (account_login, requested_at DESC)
     """,
-    "ix_rnw_queries_node_requested_at": """
-        CREATE INDEX IF NOT EXISTS ix_rnw_queries_node_requested_at
-        ON remnawave_dns_queries (node_name, requested_at DESC)
-        WHERE node_name IS NOT NULL
-    """,
     "ix_rnw_queries_account_dns_requested_at": """
         CREATE INDEX IF NOT EXISTS ix_rnw_queries_account_dns_requested_at
         ON remnawave_dns_queries (account_login, dns, requested_at DESC)
+    """,
+    "ix_rnw_accounts_total_requests": """
+        CREATE INDEX IF NOT EXISTS ix_rnw_accounts_total_requests
+        ON remnawave_accounts (total_requests DESC)
+    """,
+    "ix_rnw_nodes_last_seen_at": """
+        CREATE INDEX IF NOT EXISTS ix_rnw_nodes_last_seen_at
+        ON remnawave_nodes (last_seen_at DESC)
     """,
     "ix_adult_catalog_enabled_domain": """
         CREATE INDEX IF NOT EXISTS ix_adult_catalog_enabled_domain
@@ -138,6 +141,26 @@ async def check_and_repair_database_integrity() -> dict[str, Any]:
     existing_indexes = await _existing_public_indexes()
     missing_recommended = sorted([idx for idx in _RECOMMENDED_INDEX_SQL.keys() if idx not in existing_indexes])
     report["checks"]["missing_recommended_indexes"] = missing_recommended
+
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE remnawave_accounts ADD COLUMN IF NOT EXISTS total_requests BIGINT NOT NULL DEFAULT 0"))
+            await conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS remnawave_nodes (
+                        node_name VARCHAR(128) PRIMARY KEY,
+                        last_seen_at TIMESTAMPTZ NULL,
+                        first_seen_at TIMESTAMPTZ NULL,
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+            )
+        report["repairs_attempted"].append({"action": "ensure_remnawave_summary_schema", "result": "ok"})
+    except Exception as exc:
+        report["repairs_failed"].append({"action": "ensure_remnawave_summary_schema", "error": str(exc)})
+
 
     if missing:
         reset_schema_bootstrap_state()

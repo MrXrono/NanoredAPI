@@ -15,10 +15,20 @@ class RemnawaveAccount(Base):
 
     account_login: Mapped[str] = mapped_column(String(128), primary_key=True)
     last_activity_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    total_requests: Mapped[int] = mapped_column(BigInteger, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     queries = relationship("RemnawaveDNSQuery", back_populates="account", lazy="selectin")
+
+
+class RemnawaveNode(Base):
+    __tablename__ = "remnawave_nodes"
+
+    node_name: Mapped[str] = mapped_column(String(128), primary_key=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    first_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 class RemnawaveDNSQuery(Base):
