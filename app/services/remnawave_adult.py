@@ -1330,7 +1330,10 @@ async def _mark_matching_domains_for_recheck(db: AsyncSession, version: str) -> 
                     )
                 )
             ),
-            RemnawaveDNSUnique.mark_version != version,
+            or_(
+                RemnawaveDNSUnique.mark_version.is_(None),
+                RemnawaveDNSUnique.mark_version != version,
+            ),
         )
         .values(need_recheck=True)
     )
@@ -1433,33 +1436,40 @@ async def _process_dns_unique_recheck_batch(db: AsyncSession, limit: int) -> int
         excluded_set: set[str] = set()
 
         if all_candidates:
-            prefixed_candidates = []
-            for candidate in all_candidates:
-                if not candidate:
-                    continue
-                prefixed_candidates.extend((
-                    f"0-{candidate}",
-                    f"0-0-{candidate}",
-                    f"0-0-0-{candidate}",
-                    f"127-0-0-1-{candidate}",
-                ))
-            lookup_candidates = list(all_candidates) + prefixed_candidates
+            candidates_list = sorted(c for c in all_candidates if c)
+            canonical_catalog_domain = func.regexp_replace(AdultDomainCatalog.domain, r'^(?:[0-9]+-)+', '')
             catalog_rows = (
                 await db.execute(
                     select(AdultDomainCatalog.domain, AdultDomainCatalog.source_mask, AdultDomainCatalog.list_version)
-                    .where(and_(AdultDomainCatalog.domain.in_(lookup_candidates), AdultDomainCatalog.is_enabled.is_(True)))
+                    .where(
+                        and_(
+                            AdultDomainCatalog.is_enabled.is_(True),
+                            or_(
+                                AdultDomainCatalog.domain.in_(candidates_list),
+                                canonical_catalog_domain.in_(candidates_list),
+                            ),
+                        )
+                    )
                 )
             ).all()
             for domain, mask, list_version in catalog_rows:
                 canonical_domain = _canonical_domain_for_match(domain)
                 if not canonical_domain:
                     continue
+                if canonical_domain not in all_candidates:
+                    continue
                 catalog_map.setdefault(canonical_domain, (int(mask), list_version))
 
+            canonical_exclusion_domain = func.regexp_replace(AdultDomainExclusion.domain, r'^(?:[0-9]+-)+', '')
             excluded_rows = (
                 await db.execute(
                     select(AdultDomainExclusion.domain)
-                    .where(AdultDomainExclusion.domain.in_(lookup_candidates))
+                    .where(
+                        or_(
+                            AdultDomainExclusion.domain.in_(candidates_list),
+                            canonical_exclusion_domain.in_(candidates_list),
+                        )
+                    )
                 )
             ).scalars().all()
             excluded_set = {

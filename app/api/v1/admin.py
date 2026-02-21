@@ -810,20 +810,9 @@ async def database_status(db: AsyncSession = Depends(get_db)):
                 func.count(RemnawaveDNSUnique.dns_root).filter(RemnawaveDNSUnique.is_adult.is_(True)).label("adult_total"),
                 func.count(RemnawaveDNSUnique.dns_root).filter(RemnawaveDNSUnique.need_recheck.is_(True)).label("need_recheck"),
                 func.count(RemnawaveDNSUnique.dns_root).filter(
-                    exists(
-                        select(1)
-                        .select_from(AdultDomainCatalog)
-                        .where(
-                            and_(
-                                AdultDomainCatalog.is_enabled.is_(True),
-                                or_(
-                                    AdultDomainCatalog.domain == RemnawaveDNSUnique.dns_root,
-                                    func.regexp_replace(AdultDomainCatalog.domain, r'^(?:[0-9]+-)+', '') == RemnawaveDNSUnique.dns_root,
-                                    RemnawaveDNSUnique.dns_root.like(func.concat('%.', AdultDomainCatalog.domain)),
-                                    RemnawaveDNSUnique.dns_root.like(func.concat('%.', func.regexp_replace(AdultDomainCatalog.domain, r'^(?:[0-9]+-)+', ''))),
-                                ),
-                            )
-                        )
+                    or_(
+                        RemnawaveDNSUnique.mark_version.is_not(None),
+                        RemnawaveDNSUnique.is_adult.is_(True),
                     )
                 ).label("matched_total"),
             )

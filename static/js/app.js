@@ -86,6 +86,7 @@ document.querySelectorAll('.nav-link').forEach(link => {
         }
         else if (section === 'journal') refreshLogs();
         else if (section === 'remnawave-logs') {
+            resetRemnawaveSelection();
             loadRemnawaveNodes();
             loadRemnawaveAccounts();
         }
@@ -1429,18 +1430,35 @@ async function loadRemnawaveNodes(page = 1) {
     renderPagination(document.getElementById('rnw-nodes-pagination'), d.total, d.page, d.per_page, 'loadRemnawaveNodes');
 }
 
+function resetRemnawaveSelection() {
+    remnawaveSelectedAccount = null;
+    const topTitle = document.getElementById('rnw-top-title');
+    const lastTitle = document.getElementById('rnw-last-title');
+    const topBody = document.getElementById('rnw-top-tbody');
+    const recentBody = document.getElementById('rnw-recent-tbody');
+    const recentPagination = document.getElementById('rnw-recent-pagination');
+    if (topTitle) topTitle.textContent = 'Топ 25 доменов';
+    if (lastTitle) lastTitle.textContent = 'Последние запросы';
+    if (topBody) topBody.innerHTML = '<tr><td colspan="2">Выберите аккаунт</td></tr>';
+    if (recentBody) recentBody.innerHTML = '<tr><td colspan="2">Выберите аккаунт</td></tr>';
+    if (recentPagination) recentPagination.innerHTML = '';
+}
+
 async function loadRemnawaveAccounts(page = 1) {
     const search = document.getElementById('rnw-account-search')?.value || '';
     const resp = await api(`/admin/remnawave-logs/accounts?page=${page}&per_page=50&search=${encodeURIComponent(search)}`);
     const d = await resp.json();
     const tbody = document.getElementById('rnw-accounts-tbody');
-    tbody.innerHTML = d.items.map(i => `
-        <tr onclick="selectRemnawaveAccount('${escapeHtml(i.account)}')" style="cursor:pointer;">
+    tbody.innerHTML = d.items.map(i => {
+        const accountJson = JSON.stringify(String(i.account || ''));
+        return `
+        <tr onclick='selectRemnawaveAccount(${accountJson})' style="cursor:pointer;">
             <td>${escapeHtml(i.account)}</td>
             <td>${formatDate(i.last_activity)}</td>
             <td>${Number(i.total_requests || 0).toLocaleString('ru-RU')}</td>
         </tr>
-    `).join('') || '<tr><td colspan="3">Нет данных</td></tr>';
+    `;
+    }).join('') || '<tr><td colspan="3">Нет данных</td></tr>';
     renderPagination(document.getElementById('rnw-accounts-pagination'), d.total, d.page, d.per_page, 'loadRemnawaveAccounts');
 }
 
