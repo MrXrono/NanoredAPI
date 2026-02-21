@@ -632,18 +632,19 @@ def _canonical_domain_for_match(domain: str | None) -> str | None:
     raw = str(domain).strip().lower().strip('.')
     if not raw:
         return None
-    if _is_domain_db_safe(raw):
-        return raw
 
     parts = raw.split('.', 1)
-    if len(parts) != 2:
-        return None
-    first, rest = parts
-    stripped_first = re.sub(r"^\d+-", "", first)
-    if stripped_first and stripped_first != first:
-        candidate = f"{stripped_first}.{rest}"
-        if _is_domain_db_safe(candidate):
-            return candidate
+    if len(parts) == 2:
+        first, rest = parts
+        # strip one or many leading numeric prefixes: 0-foo, 0-0-foo, 127-0-0-1-foo
+        stripped_first = re.sub(r"^(?:\d+-)+", "", first)
+        if stripped_first and stripped_first != first:
+            candidate = f"{stripped_first}.{rest}"
+            if _is_domain_db_safe(candidate):
+                return candidate
+
+    if _is_domain_db_safe(raw):
+        return raw
     return None
 
 
@@ -1309,6 +1310,7 @@ async def _upsert_adult_catalog_rows(db: AsyncSession, rows: list[dict]) -> int:
 
 
 async def _mark_matching_domains_for_recheck(db: AsyncSession, version: str) -> int:
+    canonical_catalog_domain = func.regexp_replace(AdultDomainCatalog.domain, r"^(?:[0-9]+-)+", "")
     recheck_stmt = (
         update(RemnawaveDNSUnique)
         .where(
@@ -1317,9 +1319,14 @@ async def _mark_matching_domains_for_recheck(db: AsyncSession, version: str) -> 
                 .select_from(AdultDomainCatalog)
                 .where(
                     and_(
-                        AdultDomainCatalog.domain == RemnawaveDNSUnique.dns_root,
                         AdultDomainCatalog.is_enabled.is_(True),
                         AdultDomainCatalog.list_version == version,
+                        or_(
+                            AdultDomainCatalog.domain == RemnawaveDNSUnique.dns_root,
+                            canonical_catalog_domain == RemnawaveDNSUnique.dns_root,
+                            RemnawaveDNSUnique.dns_root.like(func.concat('%.', AdultDomainCatalog.domain)),
+                            RemnawaveDNSUnique.dns_root.like(func.concat('%.', canonical_catalog_domain)),
+                        ),
                     )
                 )
             ),
@@ -1426,7 +1433,16 @@ async def _process_dns_unique_recheck_batch(db: AsyncSession, limit: int) -> int
         excluded_set: set[str] = set()
 
         if all_candidates:
-            prefixed_candidates = [f"0-{candidate}" for candidate in all_candidates if candidate]
+            prefixed_candidates = []
+            for candidate in all_candidates:
+                if not candidate:
+                    continue
+                prefixed_candidates.extend((
+                    f"0-{candidate}",
+                    f"0-0-{candidate}",
+                    f"0-0-0-{candidate}",
+                    f"127-0-0-1-{candidate}",
+                ))
             lookup_candidates = list(all_candidates) + prefixed_candidates
             catalog_rows = (
                 await db.execute(
