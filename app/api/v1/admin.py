@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Body
 from sqlalchemy import select, func, desc, and_, or_, delete, text, exists, update, case
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db
+from app.core.database import get_db, async_session
 from app.core.redis import get_redis
 from app.core.security import get_current_admin
 from app.core.logging_buffer import logging_buffer
@@ -32,6 +32,7 @@ from app.models.remnawave_log import (
     AdultDomainCatalog,
     AdultDomainExclusion,
     AdultSyncState,
+    AdultTaskRun,
 )
 
 from app.services.ingest_metrics import get_ingest_metrics_snapshot
@@ -73,6 +74,9 @@ _adult_manual_txt_sync_task: asyncio.Task | None = None
 _adult_manual_cleanup_task: asyncio.Task | None = None
 _DATABASE_STATUS_CACHE_TTL_SEC = 20
 _database_status_cache: dict[str, object] = {"ts": 0.0, "data": None}
+_TASK_PERSIST_INTERVAL_SEC = 2.0
+_TASK_MESSAGE_MAX_CHARS = 16000
+_TASK_ERROR_MAX_CHARS = 200000
 _adult_task_state: dict[str, dict] = {
     "sync": {"label": "sync", "running": False, "status": "idle"},
     "recheck": {"label": "recheck", "running": False, "status": "idle"},
@@ -92,7 +96,94 @@ def _task_running(task_ref_name: str) -> bool:
 
 
 def _task_state_snapshot() -> dict[str, dict]:
-    return {k: dict(v) for k, v in _adult_task_state.items()}
+    cleaned: dict[str, dict] = {}
+    for key, value in _adult_task_state.items():
+        item = dict(value)
+        item.pop("_persist_scheduled_at", None)
+        cleaned[key] = item
+    return cleaned
+
+
+def _trim_text(value: str | None, max_chars: int) -> str | None:
+    if value is None:
+        return None
+    text_value = str(value)
+    if len(text_value) <= max_chars:
+        return text_value
+    return text_value[:max_chars] + "...[truncated]"
+
+
+def _task_payload(item: dict, task_key: str) -> dict:
+    started_at = item.get("started_at")
+    finished_at = item.get("finished_at")
+    try:
+        started_dt = datetime.fromisoformat(str(started_at)) if started_at else datetime.now(timezone.utc)
+    except Exception:
+        started_dt = datetime.now(timezone.utc)
+    try:
+        finished_dt = datetime.fromisoformat(str(finished_at)) if finished_at else None
+    except Exception:
+        finished_dt = None
+
+    return {
+        "task_key": task_key,
+        "label": str(item.get("label") or task_key),
+        "status": str(item.get("status") or "unknown"),
+        "running": bool(item.get("running")),
+        "phase": str(item.get("phase") or "") or None,
+        "message": _trim_text(item.get("message"), _TASK_MESSAGE_MAX_CHARS),
+        "progress_current": int(item.get("progress_current") or 0),
+        "progress_total": int(item.get("progress_total") or 0),
+        "progress_percent": float(item.get("progress_percent") or 0.0),
+        "result_json": item.get("result") if isinstance(item.get("result"), dict) else None,
+        "error_short": _trim_text(item.get("last_error"), 512),
+        "error_full": _trim_text(item.get("last_error"), _TASK_ERROR_MAX_CHARS),
+        "started_at": started_dt,
+        "finished_at": finished_dt,
+    }
+
+
+async def _persist_task_state(task_key: str, *, force: bool = False) -> None:
+    item = _adult_task_state.get(task_key)
+    if not isinstance(item, dict):
+        return
+    run_id_raw = item.get("run_id")
+    if not run_id_raw:
+        return
+
+    now = time.time()
+    last_persist = float(item.get("_persist_scheduled_at", 0.0) or 0.0)
+    if not force and (now - last_persist) < _TASK_PERSIST_INTERVAL_SEC:
+        return
+    item["_persist_scheduled_at"] = now
+
+    try:
+        run_id = uuid.UUID(str(run_id_raw))
+    except Exception:
+        return
+
+    payload = _task_payload(item, task_key=task_key)
+    try:
+        async with async_session() as db:
+            row = await db.get(AdultTaskRun, run_id)
+            if row is None:
+                row = AdultTaskRun(id=run_id, **payload)
+                db.add(row)
+            else:
+                for key, value in payload.items():
+                    setattr(row, key, value)
+            await db.commit()
+    except Exception:
+        # Best-effort persistence; task execution should not fail due to telemetry.
+        return
+
+
+def _schedule_task_persist(task_key: str, *, force: bool = False) -> None:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    asyncio.create_task(_persist_task_state(task_key, force=force))
 
 
 def _task_set_started(task_key: str) -> None:
@@ -100,6 +191,7 @@ def _task_set_started(task_key: str) -> None:
     item = _adult_task_state.setdefault(task_key, {})
     item.update(
         {
+            "run_id": str(uuid.uuid4()),
             "running": True,
             "status": "running",
             "started_at": now,
@@ -111,35 +203,44 @@ def _task_set_started(task_key: str) -> None:
             "last_error": None,
         }
     )
+    _schedule_task_persist(task_key, force=True)
 
 
 def _task_progress_cb(task_key: str):
     def _inner(payload: dict):
         item = _adult_task_state.setdefault(task_key, {})
+        if not item.get("run_id"):
+            item["run_id"] = str(uuid.uuid4())
+            item["started_at"] = datetime.now(timezone.utc).isoformat()
         item["running"] = True
         item["status"] = str(payload.get("status") or "running")
-        item["message"] = str(payload.get("message") or item.get("message") or "")
+        item["message"] = _trim_text(str(payload.get("message") or item.get("message") or ""), _TASK_MESSAGE_MAX_CHARS)
         item["phase"] = str(payload.get("phase") or item.get("phase") or "")
         item["progress_current"] = int(payload.get("progress_current", item.get("progress_current", 0)) or 0)
         item["progress_total"] = int(payload.get("progress_total", item.get("progress_total", 0)) or 0)
         item["progress_percent"] = round(float(payload.get("progress_percent", item.get("progress_percent", 0.0)) or 0.0), 2)
         item["updated_at"] = datetime.now(timezone.utc).isoformat()
+        _schedule_task_persist(task_key, force=False)
     return _inner
 
 
 def _task_set_done(task_key: str, *, status: str, result: dict | None = None, error: str | None = None) -> None:
     item = _adult_task_state.setdefault(task_key, {})
+    if not item.get("run_id"):
+        item["run_id"] = str(uuid.uuid4())
+        item["started_at"] = datetime.now(timezone.utc).isoformat()
     item["running"] = False
     item["status"] = status
     item["finished_at"] = datetime.now(timezone.utc).isoformat()
     if result is not None:
         item["result"] = result
     if error:
-        item["last_error"] = error
-        item["message"] = error
+        item["last_error"] = _trim_text(error, _TASK_ERROR_MAX_CHARS)
+        item["message"] = _trim_text(error, _TASK_MESSAGE_MAX_CHARS)
     elif status in {"ok", "done", "completed"}:
         item["message"] = "Completed"
         item["progress_percent"] = 100.0
+    _schedule_task_persist(task_key, force=True)
 
 
 
@@ -200,6 +301,53 @@ def _start_background_task(task_name: str, task_ref_name: str, runner, task_key:
     globals_ref[task_ref_name] = asyncio.create_task(_guarded_runner())
     _invalidate_database_status_cache()
     return {"ok": True, "started": True, "message": f"{task_name} started"}
+
+
+async def _load_latest_task_runs(db: AsyncSession) -> dict[str, dict]:
+    data: dict[str, dict] = {}
+    for task_key in _adult_task_state.keys():
+        row = (
+            await db.execute(
+                select(AdultTaskRun)
+                .where(AdultTaskRun.task_key == task_key)
+                .order_by(desc(AdultTaskRun.started_at))
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if not row:
+            continue
+        data[task_key] = {
+            "run_id": str(row.id),
+            "label": row.label,
+            "running": bool(row.running),
+            "status": row.status,
+            "phase": row.phase,
+            "message": row.message,
+            "progress_current": int(row.progress_current or 0),
+            "progress_total": int(row.progress_total or 0),
+            "progress_percent": round(float(row.progress_percent or 0.0), 2),
+            "result": row.result_json,
+            "last_error": row.error_short,
+            "started_at": row.started_at.isoformat() if row.started_at else None,
+            "finished_at": row.finished_at.isoformat() if row.finished_at else None,
+        }
+    return data
+
+
+def _merge_live_and_persisted_tasks(live: dict[str, dict], persisted: dict[str, dict]) -> dict[str, dict]:
+    merged = dict(live)
+    for key, persisted_item in persisted.items():
+        live_item = merged.get(key)
+        if not live_item:
+            merged[key] = dict(persisted_item)
+            continue
+        live_status = str(live_item.get("status") or "idle")
+        should_override = live_status == "idle" or not live_item.get("started_at")
+        if should_override:
+            combined = dict(persisted_item)
+            combined.update({"label": live_item.get("label") or persisted_item.get("label") or key})
+            merged[key] = combined
+    return merged
 
 
 def _is_ip_literal(value: str | None) -> bool:
@@ -422,6 +570,7 @@ async def database_status(db: AsyncSession = Depends(get_db)):
     except Exception:
         rsyslog_stats = {"count_1m": 0, "bytes_1m": 0, "bytes_per_entry_1m": 0}
 
+    live_task_details = _task_state_snapshot()
     adult_sync = {
         "status": "not_started",
         "status_hint": "sync has not run yet",
@@ -446,7 +595,7 @@ async def database_status(db: AsyncSession = Depends(get_db)):
             "txt_sync": _task_running("_adult_manual_txt_sync_task"),
             "cleanup": _task_running("_adult_manual_cleanup_task"),
         },
-        "task_details": _task_state_snapshot(),
+        "task_details": live_task_details,
         "services": {
             "scheduler": "unknown",
             "recheck_worker": "unknown",
@@ -462,6 +611,12 @@ async def database_status(db: AsyncSession = Depends(get_db)):
             "source": "default",
         },
     }
+
+    try:
+        persisted_task_details = await _load_latest_task_runs(db)
+        adult_sync["task_details"] = _merge_live_and_persisted_tasks(live_task_details, persisted_task_details)
+    except Exception:
+        adult_sync["task_details"] = live_task_details
 
     try:
         sync_state = await db.get(AdultSyncState, "adult_domain_sync")
@@ -729,6 +884,46 @@ async def set_adult_sync_schedule_endpoint(
         raise HTTPException(status_code=503, detail=str(exc))
     _invalidate_database_status_cache()
     return {"ok": True, "schedule": data, "message": "weekly schedule updated"}
+
+
+@router.get("/adult-sync/task-runs/{task_key}/latest")
+async def get_latest_adult_task_run(task_key: str, db: AsyncSession = Depends(get_db)):
+    if task_key not in _adult_task_state:
+        raise HTTPException(status_code=404, detail="Unknown task key")
+
+    row = (
+        await db.execute(
+            select(AdultTaskRun)
+            .where(AdultTaskRun.task_key == task_key)
+            .order_by(desc(AdultTaskRun.started_at))
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+    if not row:
+        return {"ok": True, "task_key": task_key, "run": None}
+
+    return {
+        "ok": True,
+        "task_key": task_key,
+        "run": {
+            "id": str(row.id),
+            "label": row.label,
+            "status": row.status,
+            "running": bool(row.running),
+            "phase": row.phase,
+            "message": row.message,
+            "progress_current": int(row.progress_current or 0),
+            "progress_total": int(row.progress_total or 0),
+            "progress_percent": round(float(row.progress_percent or 0.0), 2),
+            "result": row.result_json,
+            "error_short": row.error_short,
+            "error_full": row.error_full,
+            "started_at": row.started_at.isoformat() if row.started_at else None,
+            "finished_at": row.finished_at.isoformat() if row.finished_at else None,
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        },
+    }
 
 
 @router.get("/dashboard")

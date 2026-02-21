@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String
+from sqlalchemy import Boolean, BigInteger, DateTime, ForeignKey, Integer, String, Text, Float
 from sqlalchemy import JSON, Index, text
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import UUID
@@ -87,4 +87,25 @@ class AdultDomainExclusion(Base):
     domain: Mapped[str] = mapped_column(String(255), primary_key=True)
     reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+
+class AdultTaskRun(Base):
+    __tablename__ = "adult_task_runs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    task_key: Mapped[str] = mapped_column(String(32), index=True)
+    label: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32), index=True, default="idle")
+    running: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    phase: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    progress_current: Mapped[int] = mapped_column(BigInteger, default=0)
+    progress_total: Mapped[int] = mapped_column(BigInteger, default=0)
+    progress_percent: Mapped[float] = mapped_column(Float, default=0.0)
+    result_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    error_short: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    error_full: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))

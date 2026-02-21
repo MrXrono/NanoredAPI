@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "NanoredVPN API"
-    VERSION: str = "1.16.0.9"
+    VERSION: str = "1.16.0.10"
     API_V1_PREFIX: str = "/api/v1"
 
     # Database
@@ -18,6 +18,12 @@ class Settings(BaseSettings):
     DB_POOL_TIMEOUT_SECONDS: int = max(5, int(os.getenv("DB_POOL_TIMEOUT_SECONDS", "30")))
     DB_POOL_RECYCLE_SECONDS: int = max(60, int(os.getenv("DB_POOL_RECYCLE_SECONDS", "1800")))
     DB_POOL_PRE_PING: bool = os.getenv("DB_POOL_PRE_PING", "1").strip() in ("1", "true", "yes", "on")
+
+    DB_COMMAND_TIMEOUT_SECONDS: int = max(5, int(os.getenv("DB_COMMAND_TIMEOUT_SECONDS", "60")))
+    DB_STATEMENT_TIMEOUT_MS: int = max(1000, int(os.getenv("DB_STATEMENT_TIMEOUT_MS", "30000")))
+    DB_LOCK_TIMEOUT_MS: int = max(500, int(os.getenv("DB_LOCK_TIMEOUT_MS", "5000")))
+    DB_IDLE_IN_TX_TIMEOUT_MS: int = max(5000, int(os.getenv("DB_IDLE_IN_TX_TIMEOUT_MS", "60000")))
+
 
     # Redis
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://nanored-redis:6379/0")
@@ -53,7 +59,7 @@ class Settings(BaseSettings):
     LOG_FILE_ROTATION_INTERVAL: int = max(1, int(os.getenv("LOG_FILE_ROTATION_INTERVAL", "1")))
     LOG_FILE_RETENTION_DAYS: int = max(1, int(os.getenv("LOG_FILE_RETENTION_DAYS", "7")))
 
-    FUNCTION_CALL_LOGGING_ENABLED: bool = os.getenv("FUNCTION_CALL_LOGGING_ENABLED", "1").strip() in ("1", "true", "yes", "on")
+    FUNCTION_CALL_LOGGING_ENABLED: bool = os.getenv("FUNCTION_CALL_LOGGING_ENABLED", "0").strip() in ("1", "true", "yes", "on")
     FUNCTION_CALL_LOG_EXCLUDE_MODULES: str = os.getenv("FUNCTION_CALL_LOG_EXCLUDE_MODULES", "app.core.logging_setup")
 
 

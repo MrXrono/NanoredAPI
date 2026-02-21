@@ -49,6 +49,9 @@ ADULT_SYNC_HTTP_MAX_CONCURRENCY = max(1, int(os.getenv("ADULT_SYNC_HTTP_MAX_CONC
 ADULT_SYNC_DB_CHUNK_SIZE = max(500, int(os.getenv("ADULT_SYNC_DB_CHUNK_SIZE", "5000")))
 ADULT_SYNC_TXT_DB_CHUNK_SIZE = max(500, min(20000, int(os.getenv("ADULT_SYNC_TXT_DB_CHUNK_SIZE", str(ADULT_SYNC_DB_CHUNK_SIZE)))))
 ADULT_SYNC_TXT_DB_COMMIT_EVERY = max(1, int(os.getenv("ADULT_SYNC_TXT_DB_COMMIT_EVERY", "10")))
+ADULT_SYNC_TXT_COPY_ENABLED = os.getenv("ADULT_SYNC_TXT_COPY_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
+ADULT_SYNC_DB_RETRY_MAX_ATTEMPTS = max(1, int(os.getenv("ADULT_SYNC_DB_RETRY_MAX_ATTEMPTS", "4")))
+ADULT_SYNC_DB_RETRY_BASE_SLEEP_MS = max(10, int(os.getenv("ADULT_SYNC_DB_RETRY_BASE_SLEEP_MS", "100")))
 ADULT_SYNC_TXT_PATH = os.getenv("ADULT_SYNC_TXT_PATH", "/app/data/artifacts/adult_domains_merged.txt").strip()
 ADULT_SYNC_GARBAGE_RETENTION_DAYS = max(1, int(os.getenv("ADULT_SYNC_GARBAGE_RETENTION_DAYS", "30")))
 ADULT_SYNC_WEEKDAY_DEFAULT = max(0, min(6, int(os.getenv("ADULT_SYNC_WEEKDAY", "6"))))
@@ -95,6 +98,7 @@ _ADULT_TABLES = {
 _adult_schema_ready = False
 _adult_table_tuned = False
 _ADULT_STAGING_TABLE = "adult_domain_catalog_staging"
+_ADULT_TXT_STAGING_TABLE = "adult_domain_catalog_txt_staging"
 ProgressCallback = Callable[[dict], None | Awaitable[None]]
 _SCHEDULE_LOCK = asyncio.Lock()
 _schedule_cache: dict | None = None
@@ -120,6 +124,42 @@ def _msg_has_undefined_table(err: Exception) -> bool:
 def _msg_has_deadlock(err: Exception) -> bool:
     msg = str(err).lower()
     return "deadlock detected" in msg or "deadlockdetectederror" in msg
+
+
+def _msg_has_retryable_db_error(err: Exception) -> bool:
+    msg = str(err).lower()
+    tokens = (
+        "deadlock detected",
+        "deadlockdetectederror",
+        "could not serialize access",
+        "serializationfailure",
+        "lock timeout",
+        "locknotavailable",
+        "statement timeout",
+    )
+    return any(token in msg for token in tokens)
+
+
+async def _run_with_db_retry(
+    op: Callable[[], Awaitable[None]],
+    *,
+    db: AsyncSession,
+    op_name: str,
+    max_attempts: int = ADULT_SYNC_DB_RETRY_MAX_ATTEMPTS,
+) -> None:
+    for attempt in range(1, max_attempts + 1):
+        try:
+            await op()
+            return
+        except Exception as exc:
+            await db.rollback()
+            retryable = _msg_has_retryable_db_error(exc)
+            if retryable and attempt < max_attempts:
+                sleep_sec = (ADULT_SYNC_DB_RETRY_BASE_SLEEP_MS / 1000.0) * attempt
+                logger.warning("%s failed with retryable error (%s/%s): %s", op_name, attempt, max_attempts, exc)
+                await asyncio.sleep(sleep_sec)
+                continue
+            raise
 
 
 async def _required_adult_tables_exist() -> bool:
@@ -207,6 +247,90 @@ async def _prepare_adult_staging_table(db: AsyncSession) -> None:
         )
     )
     await db.execute(text(f"TRUNCATE TABLE {_ADULT_STAGING_TABLE}"))
+
+
+async def _prepare_adult_txt_staging_table(db: AsyncSession) -> None:
+    await db.execute(
+        text(
+            f"""
+            CREATE UNLOGGED TABLE IF NOT EXISTS {_ADULT_TXT_STAGING_TABLE} (
+                domain varchar(255) NOT NULL
+            )
+            """
+        )
+    )
+    await db.execute(text(f"TRUNCATE TABLE {_ADULT_TXT_STAGING_TABLE}"))
+
+
+async def _copy_insert_txt_domains(db: AsyncSession, domains: list[str]) -> None:
+    if not domains:
+        return
+    filtered_domains = [d for d in domains if _is_domain_db_safe(d)]
+    if not filtered_domains:
+        return
+
+    if ADULT_SYNC_TXT_COPY_ENABLED:
+        try:
+            conn = await db.connection()
+            raw_conn = await conn.get_raw_connection()
+            driver_conn = getattr(raw_conn, "driver_connection", None)
+            if driver_conn is None:
+                raise RuntimeError("No asyncpg driver connection available")
+            records = [(domain,) for domain in filtered_domains]
+            await driver_conn.copy_records_to_table(
+                _ADULT_TXT_STAGING_TABLE,
+                records=records,
+                columns=["domain"],
+            )
+            return
+        except Exception as exc:
+            logger.warning("adult txt sync: COPY failed, fallback to array insert: %s", exc)
+
+    stmt = text(
+        f"""
+        INSERT INTO {_ADULT_TXT_STAGING_TABLE} (domain)
+        SELECT d.domain
+        FROM unnest(:domains) AS d(domain)
+        """
+    ).bindparams(bindparam("domains", type_=ARRAY(String())))
+    await db.execute(stmt, {"domains": filtered_domains})
+
+
+async def _merge_txt_staging_into_main_staging(
+    db: AsyncSession,
+    *,
+    version: str,
+    checked_at: datetime,
+) -> int:
+    res = await db.execute(
+        text(
+            f"""
+            INSERT INTO {_ADULT_STAGING_TABLE}
+                (domain, category, source_mask, source_text, list_version, checked_at, is_enabled)
+            SELECT
+                t.domain,
+                'adult',
+                :source_mask,
+                CAST(:source_text AS jsonb),
+                :list_version,
+                :checked_at,
+                TRUE
+            FROM (
+                SELECT domain
+                FROM {_ADULT_TXT_STAGING_TABLE}
+                GROUP BY domain
+            ) AS t
+            ON CONFLICT (domain) DO NOTHING
+            """
+        ),
+        {
+            "source_mask": int(SOURCE_TXT_IMPORT),
+            "source_text": json.dumps(["txt_import"]),
+            "list_version": version,
+            "checked_at": checked_at,
+        },
+    )
+    return int(res.rowcount or 0)
 
 
 async def _bulk_insert_staging_rows(db: AsyncSession, rows: list[dict]) -> None:
@@ -446,6 +570,33 @@ def _is_domain_db_safe(domain: str) -> bool:
         if not lbl or len(lbl) > 63:
             return False
     return True
+
+
+def _chunk_normalized_domains(lines: list[str], chunk_size: int) -> tuple[list[list[str]], int]:
+    """Utility helper for tests: normalize, validate, dedupe inside each chunk."""
+    size = max(1, int(chunk_size or 1))
+    chunks: list[list[str]] = []
+    current: list[str] = []
+    seen: set[str] = set()
+    skipped_invalid = 0
+
+    for raw_line in lines:
+        domain = normalize_remnawave_domain(raw_line)
+        if not domain or not _is_domain_db_safe(domain):
+            skipped_invalid += 1
+            continue
+        if domain in seen:
+            continue
+        seen.add(domain)
+        current.append(domain)
+        if len(current) >= size:
+            chunks.append(current)
+            current = []
+            seen = set()
+
+    if current:
+        chunks.append(current)
+    return chunks, skipped_invalid
 
 
 def _sources_from_mask(mask: int) -> list[str]:
@@ -924,6 +1075,7 @@ async def sync_adult_catalog_from_txt(path: str | None = None, progress_cb: Prog
 
         async with async_session() as db:
             await _prepare_adult_staging_table(db)
+            await _prepare_adult_txt_staging_table(db)
             with txt_path.open("r", encoding="utf-8", errors="replace") as fp:
                 for line in fp:
                     bytes_read += len(line)
@@ -938,7 +1090,11 @@ async def sync_adult_catalog_from_txt(path: str | None = None, progress_cb: Prog
                     chunk_seen.add(domain)
                     domains_buffer.append(domain)
                     if len(domains_buffer) >= txt_chunk_size:
-                        await _bulk_insert_staging_domains(db, domains_buffer, version=version, checked_at=checked_at)
+                        await _run_with_db_retry(
+                            lambda: _copy_insert_txt_domains(db, domains_buffer),
+                            db=db,
+                            op_name="txt chunk insert",
+                        )
                         rows_total += len(domains_buffer)
                         chunks_since_commit += 1
                         if total_bytes > 0:
@@ -957,7 +1113,11 @@ async def sync_adult_catalog_from_txt(path: str | None = None, progress_cb: Prog
                             chunks_since_commit = 0
 
                 if domains_buffer:
-                    await _bulk_insert_staging_domains(db, domains_buffer, version=version, checked_at=checked_at)
+                    await _run_with_db_retry(
+                        lambda: _copy_insert_txt_domains(db, domains_buffer),
+                        db=db,
+                        op_name="txt tail insert",
+                    )
                     rows_total += len(domains_buffer)
                     chunks_since_commit += 1
                     if total_bytes > 0:
@@ -975,6 +1135,11 @@ async def sync_adult_catalog_from_txt(path: str | None = None, progress_cb: Prog
             if chunks_since_commit > 0:
                 await db.commit()
 
+            await _run_with_db_retry(
+                lambda: _merge_txt_staging_into_main_staging(db, version=version, checked_at=checked_at),
+                db=db,
+                op_name="txt staging merge",
+            )
             inserted_total = await _merge_staging_into_catalog(db, version=version)
             await _emit_progress(progress_cb, phase="merge", progress_current=1, progress_total=1, progress_percent=92.0, message="Merged TXT into catalog")
 
