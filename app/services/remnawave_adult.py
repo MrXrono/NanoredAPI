@@ -4,11 +4,12 @@ import logging
 import os
 import re
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from urllib.parse import urljoin
 
 import httpx
 from sqlalchemy import inspect
-from sqlalchemy import and_, exists, select, update
+from sqlalchemy import and_, delete, exists, or_, select, text, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,10 +30,12 @@ ADULT_SYNC_JOB = "adult_domain_sync"
 SOURCE_BLOCKLIST = 1
 SOURCE_OISD = 2
 SOURCE_V2FLY = 4
+SOURCE_TXT_IMPORT = 8
 SOURCE_LABELS = {
     SOURCE_BLOCKLIST: "blocklistproject",
     SOURCE_OISD: "oisd",
     SOURCE_V2FLY: "v2fly",
+    SOURCE_TXT_IMPORT: "txt_import",
 }
 
 BLOCKLIST_URL = "https://blocklistproject.github.io/Lists/alt-version/porn-nl.txt"
@@ -41,6 +44,15 @@ V2FLY_ROOT_URL = "https://raw.githubusercontent.com/v2fly/domain-list-community/
 
 ADULT_SYNC_HTTP_MAX_CONCURRENCY = max(1, int(os.getenv("ADULT_SYNC_HTTP_MAX_CONCURRENCY", "1")))
 ADULT_SYNC_STARTUP_DELAY_SECONDS = max(0, int(os.getenv("ADULT_SYNC_STARTUP_DELAY_SECONDS", "3600")))
+ADULT_SYNC_DB_CHUNK_SIZE = max(500, int(os.getenv("ADULT_SYNC_DB_CHUNK_SIZE", "5000")))
+ADULT_SYNC_TXT_PATH = os.getenv("ADULT_SYNC_TXT_PATH", "/app/data/artifacts/adult_domains_merged.txt").strip()
+ADULT_SYNC_GARBAGE_RETENTION_DAYS = max(1, int(os.getenv("ADULT_SYNC_GARBAGE_RETENTION_DAYS", "30")))
+ADULT_SYNC_CLEANUP_TABLES = (
+    "adult_domain_catalog",
+    "remnawave_dns_unique",
+    "remnawave_dns_queries",
+    "remnawave_accounts",
+)
 KNOWN_E_TLD_SUFFIXES = {
     "co.uk",
     "com.au",
@@ -60,6 +72,8 @@ KNOWN_E_TLD_SUFFIXES = {
 
 _CATALOG_SYNC_LOCK = asyncio.Lock()
 _FULL_RECHECK_LOCK = asyncio.Lock()
+_TXT_SYNC_LOCK = asyncio.Lock()
+_MAINTENANCE_LOCK = asyncio.Lock()
 _SCHEMA_READY_LOCK = asyncio.Lock()
 _CATALOG_STARTUP_CHECK_DAYS = 7
 _ADULT_TABLES = {
@@ -69,6 +83,7 @@ _ADULT_TABLES = {
     "adult_domain_exclusions",
 }
 _adult_schema_ready = False
+_adult_table_tuned = False
 
 
 def _msg_has_undefined_table(err: Exception) -> bool:
@@ -100,12 +115,39 @@ async def _ensure_adult_schema() -> bool:
         if not _adult_schema_ready:
             logger.warning("adult schema ensure: remnawave tables still missing after global bootstrap")
             return False
+        await _ensure_adult_catalog_table_tuning()
         return True
 
 
 async def ensure_adult_schema_ready() -> bool:
     """Public helper for ensuring adult detection tables exist before write/reads."""
     return await _ensure_adult_schema()
+
+
+async def _ensure_adult_catalog_table_tuning() -> None:
+    """Apply per-table storage/autovacuum options for lower write overhead."""
+    global _adult_table_tuned
+    if _adult_table_tuned:
+        return
+
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    """
+                    ALTER TABLE adult_domain_catalog SET (
+                        fillfactor = 90,
+                        autovacuum_vacuum_scale_factor = 0.01,
+                        autovacuum_analyze_scale_factor = 0.005,
+                        autovacuum_vacuum_threshold = 1000,
+                        autovacuum_analyze_threshold = 500
+                    )
+                    """
+                )
+            )
+        _adult_table_tuned = True
+    except Exception:
+        logger.warning("adult catalog tuning skipped", exc_info=True)
 
 
 
@@ -392,7 +434,7 @@ async def _sync_adult_catalog_internal() -> dict:
         return stats
 
     items = list(domain_map.items())
-    chunk_size = 1000
+    chunk_size = ADULT_SYNC_DB_CHUNK_SIZE
 
     async with async_session() as db:
         for i in range(0, len(items), chunk_size):
@@ -422,9 +464,17 @@ async def _sync_adult_catalog_internal() -> dict:
                     "is_enabled": stmt.excluded.is_enabled,
                     "category": stmt.excluded.category,
                 },
+                where=or_(
+                    AdultDomainCatalog.is_enabled.is_(False),
+                    AdultDomainCatalog.list_version.is_distinct_from(stmt.excluded.list_version),
+                    AdultDomainCatalog.source_mask.is_distinct_from(
+                        AdultDomainCatalog.source_mask.op("|")(stmt.excluded.source_mask)
+                    ),
+                    AdultDomainCatalog.source_text.is_distinct_from(stmt.excluded.source_text),
+                    AdultDomainCatalog.category.is_distinct_from(stmt.excluded.category),
+                ),
             )
             await db.execute(stmt)
-            await db.commit()
 
         stale_stmt = (
             update(AdultDomainCatalog)
@@ -539,6 +589,172 @@ async def force_recheck_all_dns_unique(limit: int = 5000) -> dict[str, int]:
                 "processed": processed,
                 "status": "ok",
             }
+
+
+async def sync_adult_catalog_from_txt(path: str | None = None) -> dict:
+    """Sync adult catalog from merged TXT list (domain per line)."""
+    if not await _ensure_adult_schema():
+        return {"status": "schema_missing", "inserted": 0, "processed": 0, "path": path or ADULT_SYNC_TXT_PATH}
+
+    async with _TXT_SYNC_LOCK:
+        txt_path = Path((path or ADULT_SYNC_TXT_PATH).strip() or ADULT_SYNC_TXT_PATH).expanduser()
+        if not txt_path.exists():
+            return {
+                "status": "missing_file",
+                "inserted": 0,
+                "processed": 0,
+                "path": str(txt_path),
+            }
+
+        started_at = datetime.now(timezone.utc)
+        version = f"txt-{started_at.strftime('%Y%m%dT%H%M%SZ')}"
+        rows_buffer: list[dict] = []
+        rows_total = 0
+        inserted_total = 0
+        checked_at = started_at
+
+        async with async_session() as db:
+            with txt_path.open("r", encoding="utf-8", errors="replace") as fp:
+                for line in fp:
+                    domain = normalize_remnawave_domain(line)
+                    if not domain:
+                        continue
+                    rows_buffer.append(
+                        {
+                            "domain": domain,
+                            "category": "adult",
+                            "source_mask": int(SOURCE_TXT_IMPORT),
+                            "source_text": ["txt_import"],
+                            "list_version": version,
+                            "checked_at": checked_at,
+                            "is_enabled": True,
+                        }
+                    )
+                    if len(rows_buffer) >= ADULT_SYNC_DB_CHUNK_SIZE:
+                        inserted = await _upsert_adult_catalog_rows(db, rows_buffer)
+                        inserted_total += inserted
+                        rows_total += len(rows_buffer)
+                        rows_buffer.clear()
+
+                if rows_buffer:
+                    inserted = await _upsert_adult_catalog_rows(db, rows_buffer)
+                    inserted_total += inserted
+                    rows_total += len(rows_buffer)
+                    rows_buffer.clear()
+
+            stale_stmt = (
+                update(AdultDomainCatalog)
+                .where(and_(AdultDomainCatalog.is_enabled.is_(True), AdultDomainCatalog.list_version != version))
+                .values(
+                    {
+                        "is_enabled": False,
+                        "source_mask": 0,
+                        "source_text": [],
+                    }
+                )
+            )
+            await db.execute(stale_stmt)
+            await db.commit()
+
+            await _mark_matching_domains_for_recheck(db=db, version=version)
+
+        stats = {
+            "status": "ok",
+            "path": str(txt_path),
+            "processed": rows_total,
+            "inserted": inserted_total,
+            "version": version,
+        }
+        await _upsert_sync_state(status="ok", stats=stats, version=version, last_watermark=str(started_at))
+        return stats
+
+
+async def _upsert_adult_catalog_rows(db: AsyncSession, rows: list[dict]) -> int:
+    if not rows:
+        return 0
+    stmt = pg_insert(AdultDomainCatalog).values(rows)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[AdultDomainCatalog.domain],
+        set_={
+            "source_mask": AdultDomainCatalog.source_mask.op("|")(stmt.excluded.source_mask),
+            "source_text": stmt.excluded.source_text,
+            "list_version": stmt.excluded.list_version,
+            "checked_at": stmt.excluded.checked_at,
+            "is_enabled": stmt.excluded.is_enabled,
+            "category": stmt.excluded.category,
+        },
+        where=or_(
+            AdultDomainCatalog.is_enabled.is_(False),
+            AdultDomainCatalog.list_version.is_distinct_from(stmt.excluded.list_version),
+            AdultDomainCatalog.source_mask.is_distinct_from(
+                AdultDomainCatalog.source_mask.op("|")(stmt.excluded.source_mask)
+            ),
+            AdultDomainCatalog.source_text.is_distinct_from(stmt.excluded.source_text),
+            AdultDomainCatalog.category.is_distinct_from(stmt.excluded.category),
+        ),
+    )
+    result = await db.execute(stmt)
+    return int(result.rowcount or 0)
+
+
+async def _mark_matching_domains_for_recheck(db: AsyncSession, version: str) -> int:
+    recheck_stmt = (
+        update(RemnawaveDNSUnique)
+        .where(
+            exists(
+                select(1)
+                .select_from(AdultDomainCatalog)
+                .where(
+                    and_(
+                        AdultDomainCatalog.domain == RemnawaveDNSUnique.dns_root,
+                        AdultDomainCatalog.is_enabled.is_(True),
+                        AdultDomainCatalog.list_version == version,
+                    )
+                )
+            ),
+            RemnawaveDNSUnique.mark_version != version,
+        )
+        .values(need_recheck=True)
+    )
+    res = await db.execute(recheck_stmt)
+    await db.commit()
+    return int(res.rowcount or 0)
+
+
+async def cleanup_adult_catalog_garbage() -> dict:
+    """Delete stale catalog rows and run VACUUM ANALYZE for hot tables."""
+    if not await _ensure_adult_schema():
+        return {"status": "schema_missing", "deleted": 0, "vacuumed_tables": []}
+
+    async with _MAINTENANCE_LOCK:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=ADULT_SYNC_GARBAGE_RETENTION_DAYS)
+        deleted_rows = 0
+        async with async_session() as db:
+            delete_stmt = delete(AdultDomainCatalog).where(
+                AdultDomainCatalog.is_enabled.is_(False),
+                AdultDomainCatalog.checked_at.is_not(None),
+                AdultDomainCatalog.checked_at < cutoff,
+            )
+            result = await db.execute(delete_stmt)
+            deleted_rows = int(result.rowcount or 0)
+            await db.commit()
+
+        vacuumed: list[str] = []
+        async with engine.connect() as conn:
+            auto_conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
+            for table_name in ADULT_SYNC_CLEANUP_TABLES:
+                try:
+                    await auto_conn.exec_driver_sql(f"VACUUM (ANALYZE) {table_name}")
+                    vacuumed.append(table_name)
+                except Exception:
+                    logger.warning("adult cleanup vacuum failed for %s", table_name, exc_info=True)
+
+        return {
+            "status": "ok",
+            "deleted": deleted_rows,
+            "vacuumed_tables": vacuumed,
+            "retention_days": ADULT_SYNC_GARBAGE_RETENTION_DAYS,
+        }
 
 
 async def _process_dns_unique_recheck_batch(db: AsyncSession, limit: int) -> int:

@@ -33,7 +33,13 @@ from app.models.remnawave_log import (
     AdultSyncState,
 )
 
-from app.services.remnawave_adult import normalize_remnawave_domain, sync_adult_catalog, force_recheck_all_dns_unique
+from app.services.remnawave_adult import (
+    cleanup_adult_catalog_garbage,
+    force_recheck_all_dns_unique,
+    normalize_remnawave_domain,
+    sync_adult_catalog,
+    sync_adult_catalog_from_txt,
+)
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(get_current_admin)])
 
@@ -57,6 +63,8 @@ _IP_DOMAIN_CACHE_TTL_SEC = 60 * 60 * 6
 _ip_domain_cache: dict[str, tuple[float, str | None]] = {}
 _adult_manual_sync_task: asyncio.Task | None = None
 _adult_manual_recheck_task: asyncio.Task | None = None
+_adult_manual_txt_sync_task: asyncio.Task | None = None
+_adult_manual_cleanup_task: asyncio.Task | None = None
 
 
 # ==================== HELPER ====================
@@ -491,6 +499,40 @@ async def run_adult_recheck_all_now():
 
     _adult_manual_recheck_task = asyncio.create_task(_runner())
     return {"ok": True, "started": True, "message": "full recheck started"}
+
+
+@router.post("/adult-sync/sync-from-txt")
+async def run_adult_sync_from_txt_now(path: str | None = Body(default=None, embed=True)):
+    global _adult_manual_txt_sync_task
+
+    if _adult_manual_txt_sync_task and not _adult_manual_txt_sync_task.done():
+        return {"ok": True, "started": False, "message": "txt sync is already running"}
+
+    async def _runner():
+        try:
+            await sync_adult_catalog_from_txt(path=path)
+        except Exception:
+            pass
+
+    _adult_manual_txt_sync_task = asyncio.create_task(_runner())
+    return {"ok": True, "started": True, "message": "txt sync started"}
+
+
+@router.post("/adult-sync/cleanup-garbage")
+async def run_adult_cleanup_now():
+    global _adult_manual_cleanup_task
+
+    if _adult_manual_cleanup_task and not _adult_manual_cleanup_task.done():
+        return {"ok": True, "started": False, "message": "cleanup is already running"}
+
+    async def _runner():
+        try:
+            await cleanup_adult_catalog_garbage()
+        except Exception:
+            pass
+
+    _adult_manual_cleanup_task = asyncio.create_task(_runner())
+    return {"ok": True, "started": True, "message": "cleanup started"}
 
 
 @router.get("/dashboard")

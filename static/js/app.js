@@ -156,6 +156,38 @@ async function runAdultRecheckAllNow() {
     }
 }
 
+async function runAdultTxtSyncNow() {
+    const btn = document.getElementById('run-adult-sync-txt-btn');
+    if (btn) btn.disabled = true;
+    try {
+        const resp = await api('/admin/adult-sync/sync-from-txt', { method: 'POST' });
+        const data = await resp.json();
+        if (data && data.message) alert(data.message);
+        await loadDatabaseStatus();
+    } catch (err) {
+        console.error('run adult txt sync error:', err);
+        alert('Не удалось запустить TXT sync');
+    } finally {
+        if (btn) btn.disabled = false;
+    }
+}
+
+async function runAdultCleanupNow() {
+    const btn = document.getElementById('run-adult-cleanup-btn');
+    if (btn) btn.disabled = true;
+    try {
+        const resp = await api('/admin/adult-sync/cleanup-garbage', { method: 'POST' });
+        const data = await resp.json();
+        if (data && data.message) alert(data.message);
+        await loadDatabaseStatus();
+    } catch (err) {
+        console.error('run adult cleanup error:', err);
+        alert('Не удалось запустить cleanup');
+    } finally {
+        if (btn) btn.disabled = false;
+    }
+}
+
 async function loadDatabaseStatus() {
     try {
         const resp = await api('/admin/database-status');
