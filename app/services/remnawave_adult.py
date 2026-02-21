@@ -1346,6 +1346,7 @@ async def _mark_matching_domains_for_recheck(db: AsyncSession, version: str) -> 
             or_(
                 RemnawaveDNSUnique.mark_version.is_(None),
                 RemnawaveDNSUnique.mark_version != version,
+                RemnawaveDNSUnique.is_adult.is_(False),
             ),
         )
         .values(need_recheck=True)
