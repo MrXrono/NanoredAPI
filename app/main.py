@@ -11,7 +11,7 @@ from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import JSONResponse
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 
 from app.core.config import settings
 from app.core.database import engine, async_session
@@ -84,28 +84,49 @@ async def _ensure_telegram_webhook() -> None:
 
 async def _cleanup_stale_sessions():
     """Background task: close sessions whose Redis online key has expired."""
+    interval = settings.BG_SESSION_CLEANUP_INTERVAL_SECONDS
+    batch_size = settings.BG_SESSION_CLEANUP_BATCH_SIZE
     while True:
         try:
-            await asyncio.sleep(180)  # every 3 minutes
+            await asyncio.sleep(interval)
             redis = await get_redis()
             async with async_session() as db:
-                result = await db.execute(
-                    select(Session).where(Session.disconnected_at.is_(None))
+                rows = (
+                    await db.execute(
+                        select(Session.id, Session.device_id)
+                        .where(Session.disconnected_at.is_(None))
+                        .order_by(Session.connected_at)
+                        .limit(batch_size)
+                    )
+                ).all()
+                if not rows:
+                    continue
+
+                pipe = redis.pipeline(transaction=False)
+                for _, device_id in rows:
+                    pipe.exists(f"online:{device_id}")
+                exists_results = await pipe.execute()
+
+                stale_ids = [
+                    session_id
+                    for (session_id, _), online_exists in zip(rows, exists_results)
+                    if not online_exists
+                ]
+                if not stale_ids:
+                    continue
+
+                now = datetime.now(timezone.utc)
+                await db.execute(
+                    update(Session)
+                    .where(Session.id.in_(stale_ids))
+                    .values(disconnected_at=now)
                 )
-                active_sessions = result.scalars().all()
-                closed = 0
-                for s in active_sessions:
-                    online_key = f"online:{s.device_id}"
-                    exists = await redis.exists(online_key)
-                    if not exists:
-                        s.disconnected_at = datetime.now(timezone.utc)
-                        closed += 1
-                if closed > 0:
-                    await db.commit()
-                    logging_buffer.add("processing", f"Автозакрытие: {closed} зависших сессий")
-                    logger.info(f"Auto-closed {closed} stale sessions")
+                await db.commit()
+                closed = len(stale_ids)
+                logging_buffer.add("processing", f"Автозакрытие: {closed} зависших сессий")
+                logger.info("Auto-closed %s stale sessions", closed)
         except Exception as e:
-            logger.error(f"Session cleanup error: {e}")
+            logger.error("Session cleanup error: %s", e)
 
 
 @asynccontextmanager

@@ -2,6 +2,8 @@ import threading
 from collections import deque
 from datetime import datetime, timezone
 
+from app.core.config import settings
+
 
 class LoggingBuffer:
     def __init__(self, maxlen: int = 5000):
@@ -51,4 +53,4 @@ class LoggingBuffer:
         self.enabled = False
 
 
-logging_buffer = LoggingBuffer()
+logging_buffer = LoggingBuffer(maxlen=settings.LOG_BUFFER_MAXLEN)

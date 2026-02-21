@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "NanoredVPN API"
-    VERSION: str = "1.16.0.4"
+    VERSION: str = "1.16.0.5"
     API_V1_PREFIX: str = "/api/v1"
 
     # Database
@@ -13,8 +13,15 @@ class Settings(BaseSettings):
         "postgresql+asyncpg://nanored:nanored_secret@nanored-db:5432/nanored_api",
     )
 
+    DB_POOL_SIZE: int = max(1, int(os.getenv("DB_POOL_SIZE", "3")))
+    DB_MAX_OVERFLOW: int = max(0, int(os.getenv("DB_MAX_OVERFLOW", "1")))
+    DB_POOL_TIMEOUT_SECONDS: int = max(5, int(os.getenv("DB_POOL_TIMEOUT_SECONDS", "30")))
+    DB_POOL_RECYCLE_SECONDS: int = max(60, int(os.getenv("DB_POOL_RECYCLE_SECONDS", "1800")))
+    DB_POOL_PRE_PING: bool = os.getenv("DB_POOL_PRE_PING", "1").strip() in ("1", "true", "yes", "on")
+
     # Redis
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://nanored-redis:6379/0")
+    REDIS_MAX_CONNECTIONS: int = max(5, int(os.getenv("REDIS_MAX_CONNECTIONS", "20")))
 
     # JWT
     SECRET_KEY: str = os.getenv("SECRET_KEY", "change-me-in-production-nanored-secret-key-2026")
@@ -35,7 +42,9 @@ class Settings(BaseSettings):
     # External base URL used to derive webhook URL if TELEGRAM_WEBHOOK_URL is not set.
     # Example: https://api.nanored.top
     PUBLIC_BASE_URL: str = os.getenv("PUBLIC_BASE_URL", "")
-    REQUEST_LOG_MAX_BODY_BYTES: int = int(os.getenv("REQUEST_LOG_MAX_BODY_BYTES", "32768"))
+    REQUEST_LOG_MAX_BODY_BYTES: int = int(os.getenv("REQUEST_LOG_MAX_BODY_BYTES", "4096"))
+
+    LOG_BUFFER_MAXLEN: int = max(100, int(os.getenv("LOG_BUFFER_MAXLEN", "1000")))
 
 
     # Remnawave logs ingest
@@ -54,6 +63,12 @@ class Settings(BaseSettings):
     REMNAWAVE_INGEST_DEAD_MAXLEN: int = int(os.getenv("REMNAWAVE_INGEST_DEAD_MAXLEN", "10000"))
     # GeoIP
     GEOIP_DB_PATH: str = "/app/data/GeoLite2-City.mmdb"
+
+    BG_SESSION_CLEANUP_INTERVAL_SECONDS: int = max(30, int(os.getenv("BG_SESSION_CLEANUP_INTERVAL_SECONDS", "300")))
+    BG_SESSION_CLEANUP_BATCH_SIZE: int = max(100, int(os.getenv("BG_SESSION_CLEANUP_BATCH_SIZE", "1000")))
+    ADULT_RECHECK_BATCH_LIMIT: int = max(100, int(os.getenv("ADULT_RECHECK_BATCH_LIMIT", "1000")))
+    ADULT_RECHECK_MAX_BATCHES_PER_LOOP: int = max(1, int(os.getenv("ADULT_RECHECK_MAX_BATCHES_PER_LOOP", "2")))
+    ADULT_RECHECK_LOOP_SLEEP_SECONDS: int = max(5, int(os.getenv("ADULT_RECHECK_LOOP_SLEEP_SECONDS", "30")))
 
     class Config:
         case_sensitive = True

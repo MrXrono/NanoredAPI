@@ -54,6 +54,9 @@ ADULT_SYNC_WEEKDAY_DEFAULT = max(0, min(6, int(os.getenv("ADULT_SYNC_WEEKDAY", "
 ADULT_SYNC_HOUR_DEFAULT = max(0, min(23, int(os.getenv("ADULT_SYNC_HOUR_UTC", "3"))))
 ADULT_SYNC_MINUTE_DEFAULT = max(0, min(59, int(os.getenv("ADULT_SYNC_MINUTE_UTC", "0"))))
 ADULT_SYNC_USE_TLDEXTRACT = os.getenv("ADULT_SYNC_USE_TLDEXTRACT", "0").strip().lower() in {"1", "true", "yes", "on"}
+ADULT_RECHECK_BATCH_LIMIT = max(100, int(os.getenv("ADULT_RECHECK_BATCH_LIMIT", "1000")))
+ADULT_RECHECK_MAX_BATCHES_PER_LOOP = max(1, int(os.getenv("ADULT_RECHECK_MAX_BATCHES_PER_LOOP", "2")))
+ADULT_RECHECK_LOOP_SLEEP_SECONDS = max(5, int(os.getenv("ADULT_RECHECK_LOOP_SLEEP_SECONDS", "30")))
 ADULT_SYNC_CLEANUP_TABLES = (
     "adult_domain_catalog",
     "remnawave_dns_unique",
@@ -770,14 +773,14 @@ async def _sync_adult_catalog_internal(progress_cb: ProgressCallback | None = No
         return stats
 
 
-async def process_dns_unique_recheck_batch(limit: int = 5000, session: AsyncSession | None = None) -> int:
+async def process_dns_unique_recheck_batch(limit: int = ADULT_RECHECK_BATCH_LIMIT, session: AsyncSession | None = None) -> int:
     if session is None:
         async with async_session() as db:
             return await _process_dns_unique_recheck_batch(db, limit=limit)
     return await _process_dns_unique_recheck_batch(session, limit=limit)
 
 
-async def force_recheck_all_dns_unique(limit: int = 5000, progress_cb: ProgressCallback | None = None) -> dict[str, int]:
+async def force_recheck_all_dns_unique(limit: int = ADULT_RECHECK_BATCH_LIMIT, progress_cb: ProgressCallback | None = None) -> dict[str, int]:
     """Force full recheck of all unique domains against current adult catalog."""
     if not await _ensure_adult_schema():
         return {
@@ -1212,14 +1215,14 @@ async def background_remnawave_adult_tasks(stop_event: asyncio.Event) -> None:
                     )
                     _bg_runtime_state["next_sync_at"] = next_sync.isoformat()
 
-            for _ in range(6):
+            for _ in range(ADULT_RECHECK_MAX_BATCHES_PER_LOOP):
                 if stop_event.is_set():
                     break
-                changed = await process_dns_unique_recheck_batch(limit=5000)
+                changed = await process_dns_unique_recheck_batch(limit=ADULT_RECHECK_BATCH_LIMIT)
                 if changed == 0:
                     break
 
-            await _sleep_with_stop(stop_event, 20)
+            await _sleep_with_stop(stop_event, ADULT_RECHECK_LOOP_SLEEP_SECONDS)
         except asyncio.CancelledError:
             raise
         except Exception:
