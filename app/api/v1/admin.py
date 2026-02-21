@@ -587,14 +587,24 @@ async def database_status(db: AsyncSession = Depends(get_db)):
                     relname,
                     pg_total_relation_size(format('%I.%I', schemaname, relname)) AS size_bytes,
                     COALESCE(n_live_tup, 0) AS live_rows,
-                    COALESCE(n_dead_tup, 0) AS dead_rows
+                    COALESCE(n_dead_tup, 0) AS dead_rows,
+                    COALESCE(n_tup_ins, 0) AS tup_ins,
+                    COALESCE(n_tup_upd, 0) AS tup_upd,
+                    COALESCE(n_tup_del, 0) AS tup_del,
+                    COALESCE(n_tup_hot_upd, 0) AS tup_hot_upd,
+                    COALESCE(vacuum_count, 0) AS vacuum_count,
+                    COALESCE(autovacuum_count, 0) AS autovacuum_count,
+                    GREATEST(
+                        COALESCE(last_autovacuum, to_timestamp(0)),
+                        COALESCE(last_vacuum, to_timestamp(0))
+                    ) AS last_vacuum_at
                 FROM pg_stat_user_tables
                 ORDER BY size_bytes DESC
                 LIMIT 8
                 """
             )
         )
-        db_tables = db_tables.all()
+        db_tables = db_tables.mappings().all()
     except Exception:
         db_tables = []
 
@@ -635,12 +645,23 @@ async def database_status(db: AsyncSession = Depends(get_db)):
         },
         "database_tables": [
             {
-                "name": name,
-                "size_bytes": int(size_bytes or 0),
-                "live_rows": int(live_rows or 0),
-                "dead_rows": int(dead_rows or 0),
+                "name": str(row.get("relname") or "-"),
+                "size_bytes": int(row.get("size_bytes") or 0),
+                "live_rows": int(row.get("live_rows") or 0),
+                "dead_rows": int(row.get("dead_rows") or 0),
+                "dead_ratio_percent": round(
+                    (int(row.get("dead_rows") or 0) / max(1, (int(row.get("live_rows") or 0) + int(row.get("dead_rows") or 0)))) * 100,
+                    2,
+                ),
+                "tup_ins": int(row.get("tup_ins") or 0),
+                "tup_upd": int(row.get("tup_upd") or 0),
+                "tup_del": int(row.get("tup_del") or 0),
+                "tup_hot_upd": int(row.get("tup_hot_upd") or 0),
+                "vacuum_count": int(row.get("vacuum_count") or 0),
+                "autovacuum_count": int(row.get("autovacuum_count") or 0),
+                "last_vacuum_at": row.get("last_vacuum_at").isoformat() if row.get("last_vacuum_at") else None,
             }
-            for name, size_bytes, live_rows, dead_rows in db_tables
+            for row in db_tables
         ],
         "rsyslog": rsyslog_stats,
         "adult_sync": adult_sync,

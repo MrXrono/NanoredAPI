@@ -338,11 +338,26 @@ async function loadDatabaseStatus() {
 
         const tableRows = (d.database_tables || []);
         if (tableRows.length === 0) {
-            document.getElementById('db-table-sizes-tbody').innerHTML = '<tr><td>Нет данных</td><td>-</td><td>-</td><td>-</td></tr>';
+            document.getElementById('db-table-sizes-tbody').innerHTML = '<tr><td>Нет данных</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>';
         } else {
-            document.getElementById('db-table-sizes-tbody').innerHTML = tableRows.map(item => `
-                <tr><td>${escapeHtml(item.name || '-')}</td><td>${formatBytes(Number(item.size_bytes || 0))}</td><td>${Number(item.live_rows || 0)}</td><td>${Number(item.dead_rows || 0)}</td></tr>
-            `).join('');
+            document.getElementById('db-table-sizes-tbody').innerHTML = tableRows.map(item => {
+                const ins = Number(item.tup_ins || 0);
+                const upd = Number(item.tup_upd || 0);
+                const del = Number(item.tup_del || 0);
+                const hotUpd = Number(item.tup_hot_upd || 0);
+                const writeOps = `${ins}/${upd}/${del}`;
+                const vacuumInfo = `v:${Number(item.vacuum_count || 0)}, av:${Number(item.autovacuum_count || 0)}${item.last_vacuum_at ? `, last:${formatDate(item.last_vacuum_at)}` : ''}`;
+                return `
+                <tr>
+                    <td>${escapeHtml(item.name || '-')}</td>
+                    <td>${formatBytes(Number(item.size_bytes || 0))}</td>
+                    <td>${Number(item.live_rows || 0)}</td>
+                    <td>${Number(item.dead_rows || 0)}</td>
+                    <td>${Number(item.dead_ratio_percent || 0).toFixed(2)}%</td>
+                    <td title="HOT updates: ${hotUpd}">${writeOps}</td>
+                    <td>${escapeHtml(vacuumInfo)}</td>
+                </tr>`;
+            }).join('');
         }
     } catch (err) {
         console.error('Database status error:', err);
