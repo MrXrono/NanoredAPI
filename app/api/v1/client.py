@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Header, Request, status
 from sqlalchemy import func, select, delete
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -25,10 +24,7 @@ from app.models.error_log import ErrorLog
 from app.models.device_permission import DevicePermission
 from app.models.device_log import DeviceLog
 from app.models.device_change_log import DeviceChangeLog
-from app.models.remnawave_log import RemnawaveAccount, RemnawaveDNSQuery, RemnawaveDNSUnique
-from app.services.remnawave_adult import ensure_adult_schema_ready, normalize_remnawave_domain
-from app.services.schema_bootstrap import ensure_base_schema_ready
-from app.services.ingest_metrics import record_nanoredvpn_ingest, record_rsyslog_ingest
+from app.services.ingest_metrics import record_nanoredvpn_ingest, record_rsyslog_enqueue, record_rsyslog_processed
 from app.schemas.device import DeviceRegisterRequest, DeviceRegisterResponse
 from app.schemas.session import SessionStartRequest, SessionStartResponse, SessionEndRequest, ServerChangeRequest
 from app.schemas.telemetry import (
@@ -39,6 +35,8 @@ from app.schemas.telemetry import (
 )
 from app.services.geoip import lookup_ip
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from app.services.remnawave_ingest_processor import process_remnawave_ingest_entries
+from app.services.remnawave_ingest_queue import enqueue_remnawave_entries
 
 import bcrypt
 
@@ -791,116 +789,47 @@ async def ingest_remnawave_logs(
     if not x_remnawave_token or x_remnawave_token != token:
         raise HTTPException(status_code=401, detail="Invalid ingest token")
 
-    if not req.entries:
-        record_rsyslog_ingest(0, 0)
-        return {"status": "ok", "inserted": 0, "accounts_upserted": 0}
+    entries_payload = [
+        {
+            "account": entry.account,
+            "dns": entry.dns,
+            "timestamp": entry.timestamp.isoformat() if entry.timestamp else None,
+            "node": entry.node,
+        }
+        for entry in req.entries
+    ]
 
-    now = datetime.now(timezone.utc)
-    inserted = 0
-    account_last_activity: dict[str, datetime] = {}
-    dns_unique_points: dict[str, tuple[datetime, datetime]] = {}
-    query_rows: list[dict] = []
+    if not entries_payload:
+        return {"status": "ok", "queued": 0, "mode": "noop"}
 
-    for entry in req.entries:
-        account_login = (entry.account or "").strip()
-        dns_root = normalize_remnawave_domain(entry.dns)
-        if not account_login or not dns_root:
-            continue
-
-        ts = entry.timestamp or now
-        prev_ts = account_last_activity.get(account_login)
-        if prev_ts is None or ts > prev_ts:
-            account_last_activity[account_login] = ts
-
-        prev_dns = dns_unique_points.get(dns_root)
-        if prev_dns is None:
-            dns_unique_points[dns_root] = (ts, ts)
-        else:
-            first_seen, last_seen = prev_dns
-            dns_unique_points[dns_root] = (min(first_seen, ts), max(last_seen, ts))
-
-        query_rows.append(
-            {
-                "id": uuid.uuid4(),
-                "account_login": account_login,
-                "dns": dns_root,
-                "node_name": (entry.node or "").strip() or None,
-                "requested_at": ts,
-            }
-        )
-        inserted += 1
-
-    if not inserted:
-        record_rsyslog_ingest(len(req.entries), 0)
-        return {"status": "ok", "inserted": 0, "accounts_upserted": 0}
-
-    async def _upsert_accounts_once() -> None:
-        for account_login in sorted(account_last_activity):
-            ts = account_last_activity[account_login]
-            account_stmt = pg_insert(RemnawaveAccount).values(
-                account_login=account_login,
-                last_activity_at=ts,
-                created_at=now,
-                updated_at=now,
+    if settings.REMNAWAVE_INGEST_QUEUE_ENABLED:
+        try:
+            msg_id = await enqueue_remnawave_entries(entries_payload)
+            logging_buffer.add(
+                "processing",
+                f"Remnawave ingest queued: entries={len(entries_payload)}, message_id={msg_id}",
             )
-            account_stmt = account_stmt.on_conflict_do_update(
-                index_elements=[RemnawaveAccount.account_login],
-                set_={
-                    "last_activity_at": func.greatest(RemnawaveAccount.last_activity_at, account_stmt.excluded.last_activity_at),
-                    "updated_at": now,
-                },
-            )
-            await db.execute(account_stmt)
-
-    try:
-        await _upsert_accounts_once()
-    except Exception as exc:
-        if any(tag in str(exc).lower() for tag in ("does not exist", "undefinedtable", "undefined table")):
-            if not await ensure_base_schema_ready(force=True):
-                raise
-            await _upsert_accounts_once()
-        else:
-            raise
-
-    accounts_upserted = len(account_last_activity)
-
-    for i in range(0, len(query_rows), 1000):
-        await db.execute(pg_insert(RemnawaveDNSQuery).values(query_rows[i : i + 1000]))
-
-    if await ensure_adult_schema_ready():
-        dns_rows = [
-            {
-                "dns_root": dns_root,
-                "is_adult": False,
-                "first_seen": first_seen,
-                "last_seen": last_seen,
-                "need_recheck": True,
+            return {
+                "status": "queued",
+                "queued": len(entries_payload),
+                "message_id": msg_id,
+                "mode": "redis_stream",
             }
-            for dns_root, (first_seen, last_seen) in sorted(dns_unique_points.items())
-        ]
-        for i in range(0, len(dns_rows), 1000):
-            chunk = dns_rows[i : i + 1000]
-            try:
-                dns_unique_stmt = pg_insert(RemnawaveDNSUnique).values(chunk)
-                dns_unique_stmt = dns_unique_stmt.on_conflict_do_update(
-                    index_elements=[RemnawaveDNSUnique.dns_root],
-                    set_={
-                        "first_seen": func.least(RemnawaveDNSUnique.first_seen, dns_unique_stmt.excluded.first_seen),
-                        "last_seen": func.greatest(RemnawaveDNSUnique.last_seen, dns_unique_stmt.excluded.last_seen),
-                        "need_recheck": True,
-                    },
-                )
-                await db.execute(dns_unique_stmt)
-            except SQLAlchemyError as exc:
-                msg = str(exc).lower()
-                if "does not exist" in msg or "undefinedtable" in msg:
-                    logger.warning("Remnawave DNS unique table missing during ingest, skipping dns_unique upsert batch")
-                    break
-                raise
+        except Exception as exc:
+            logger.warning("Redis queue unavailable, fallback to direct ingest: %s", exc)
 
+    result = await process_remnawave_ingest_entries(db, entries_payload)
+    record_rsyslog_enqueue(result.received)
+    record_rsyslog_processed(result.processed)
     logging_buffer.add(
         "processing",
-        f"Remnawave ingest: entries={len(req.entries)}, inserted={inserted}, accounts={accounts_upserted}",
+        f"Remnawave ingest: entries={result.received}, processed={result.processed}, accounts={result.accounts_upserted}",
     )
-    record_rsyslog_ingest(len(req.entries), inserted)
-    return {"status": "ok", "inserted": inserted, "accounts_upserted": accounts_upserted}
+    return {
+        "status": "ok",
+        "inserted": result.inserted_queries,
+        "processed": result.processed,
+        "accounts_upserted": result.accounts_upserted,
+        "mode": "direct",
+    }
+

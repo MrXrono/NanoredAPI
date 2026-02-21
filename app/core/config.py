@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "NanoredVPN API"
-    VERSION: str = "1.14.0.0"
+    VERSION: str = "1.15.0.0"
     API_V1_PREFIX: str = "/api/v1"
 
     # Database
@@ -40,6 +40,18 @@ class Settings(BaseSettings):
 
     # Remnawave logs ingest
     REMNAWAVE_LOG_INGEST_TOKEN: str = os.getenv("REMNAWAVE_LOG_INGEST_TOKEN", "")
+
+
+    # Remnawave ingest queue
+    REMNAWAVE_INGEST_QUEUE_ENABLED: bool = os.getenv("REMNAWAVE_INGEST_QUEUE_ENABLED", "1").strip() in ("1", "true", "yes", "on")
+    REMNAWAVE_INGEST_STREAM: str = os.getenv("REMNAWAVE_INGEST_STREAM", "stream:remnawave:ingest")
+    REMNAWAVE_INGEST_GROUP: str = os.getenv("REMNAWAVE_INGEST_GROUP", "remnawave_ingest")
+    REMNAWAVE_INGEST_CONSUMER: str = os.getenv("REMNAWAVE_INGEST_CONSUMER", "worker-1")
+    REMNAWAVE_INGEST_READ_COUNT: int = int(os.getenv("REMNAWAVE_INGEST_READ_COUNT", "10"))
+    REMNAWAVE_INGEST_STREAM_MAXLEN: int = int(os.getenv("REMNAWAVE_INGEST_STREAM_MAXLEN", "50000"))
+    REMNAWAVE_INGEST_MAX_RETRIES: int = int(os.getenv("REMNAWAVE_INGEST_MAX_RETRIES", "3"))
+    REMNAWAVE_INGEST_DEAD_STREAM: str = os.getenv("REMNAWAVE_INGEST_DEAD_STREAM", "stream:remnawave:ingest:dead")
+    REMNAWAVE_INGEST_DEAD_MAXLEN: int = int(os.getenv("REMNAWAVE_INGEST_DEAD_MAXLEN", "10000"))
     # GeoIP
     GEOIP_DB_PATH: str = "/app/data/GeoLite2-City.mmdb"
 

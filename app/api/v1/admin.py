@@ -34,6 +34,7 @@ from app.models.remnawave_log import (
 )
 
 from app.services.ingest_metrics import get_ingest_metrics_snapshot
+from app.services.remnawave_ingest_queue import get_remnawave_queue_stats
 from app.services.remnawave_adult import (
     cleanup_adult_catalog_garbage,
     force_recheck_all_dns_unique,
@@ -616,6 +617,10 @@ async def database_status(db: AsyncSession = Depends(get_db)):
         online_devices = 0
 
     ingest_metrics = get_ingest_metrics_snapshot()
+    try:
+        ingest_metrics["rsyslog_queue"] = await get_remnawave_queue_stats()
+    except Exception:
+        ingest_metrics["rsyslog_queue"] = {"stream_len": 0, "pending": 0, "dead_len": 0}
 
     response_data = {
         "timestamp": datetime.now(timezone.utc).isoformat(),

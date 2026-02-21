@@ -41,6 +41,7 @@ from app.models.remnawave_log import (
 )
 from app.services.schema_bootstrap import ensure_base_schema_ready
 from app.services.remnawave_adult import background_remnawave_adult_tasks
+from app.services.remnawave_ingest_queue import background_remnawave_ingest_worker
 from app.services.ingest_metrics import observe_api_timing
 from app.services.telegram_support_forum import telegram_support_forum
 
@@ -152,13 +153,19 @@ async def lifespan(app: FastAPI):
     cleanup_task = asyncio.create_task(_cleanup_stale_sessions())
     adult_stop_event = asyncio.Event()
     adult_task = asyncio.create_task(background_remnawave_adult_tasks(adult_stop_event))
+    remnawave_ingest_stop_event = asyncio.Event()
+    remnawave_ingest_task = asyncio.create_task(background_remnawave_ingest_worker(remnawave_ingest_stop_event))
     await _ensure_telegram_webhook()
 
     yield
 
     cleanup_task.cancel()
     adult_stop_event.set()
+    remnawave_ingest_stop_event.set()
     adult_task.cancel()
+    remnawave_ingest_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await remnawave_ingest_task
     with suppress(asyncio.CancelledError):
         await adult_task
     with suppress(asyncio.CancelledError):

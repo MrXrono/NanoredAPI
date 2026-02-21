@@ -16,6 +16,7 @@ _state: dict[str, dict[str, float | int]] = {
     "rsyslog": {
         "received": 0,
         "processed": 0,
+        "failed": 0,
         "requests_total": 0,
         "requests_ok": 0,
         "latency_total_ms": 0.0,
@@ -53,11 +54,28 @@ def observe_api_timing(path: str, status_code: int, duration_ms: float) -> None:
         bucket["latency_samples"] = int(bucket["latency_samples"]) + 1
 
 
-def record_rsyslog_ingest(received: int, processed: int) -> None:
+def record_rsyslog_enqueue(received: int) -> None:
     with _lock:
         bucket = _state["rsyslog"]
         bucket["received"] = int(bucket["received"]) + max(0, int(received))
+
+
+def record_rsyslog_processed(processed: int) -> None:
+    with _lock:
+        bucket = _state["rsyslog"]
         bucket["processed"] = int(bucket["processed"]) + max(0, int(processed))
+
+
+def record_rsyslog_failed(failed: int) -> None:
+    with _lock:
+        bucket = _state["rsyslog"]
+        bucket["failed"] = int(bucket.get("failed", 0)) + max(0, int(failed))
+
+
+def record_rsyslog_ingest(received: int, processed: int) -> None:
+    # Backward-compatible helper for old code paths.
+    record_rsyslog_enqueue(received)
+    record_rsyslog_processed(processed)
 
 
 def record_nanoredvpn_ingest(received: int, processed: int) -> None:
@@ -73,6 +91,7 @@ def _snapshot_bucket(bucket: dict[str, float | int]) -> dict[str, Any]:
     return {
         "received": int(bucket.get("received", 0) or 0),
         "processed": int(bucket.get("processed", 0) or 0),
+        "failed": int(bucket.get("failed", 0) or 0),
         "requests_total": int(bucket.get("requests_total", 0) or 0),
         "requests_ok": int(bucket.get("requests_ok", 0) or 0),
         "avg_latency_ms": round((total_ms / samples), 2) if samples > 0 else 0.0,
