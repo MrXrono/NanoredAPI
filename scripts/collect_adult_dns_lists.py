@@ -10,6 +10,7 @@ Sources:
 from __future__ import annotations
 
 import argparse
+import os
 import re
 from collections import defaultdict
 from pathlib import Path
@@ -224,8 +225,19 @@ def collect_all(session: requests.Session, timeout: int):
 
 
 def main() -> int:
+    default_output = os.getenv("ADULT_DOMAINS_OUTPUT")
+    if not default_output:
+        if Path("/app/data").exists():
+            default_output = "/app/data/artifacts/adult_domains_merged.txt"
+        else:
+            default_output = "data/artifacts/adult_domains_merged.txt"
+
     p = argparse.ArgumentParser()
-    p.add_argument("--output", default="artifacts/adult_domains_merged.txt", help="Output txt path")
+    p.add_argument(
+        "--output",
+        default=default_output,
+        help="Output txt path (default: ADULT_DOMAINS_OUTPUT or /app/data/artifacts/... in Docker)",
+    )
     p.add_argument("--timeout", type=int, default=30, help="HTTP timeout")
     args = p.parse_args()
 

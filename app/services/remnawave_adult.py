@@ -59,6 +59,7 @@ KNOWN_E_TLD_SUFFIXES = {
 }
 
 _CATALOG_SYNC_LOCK = asyncio.Lock()
+_FULL_RECHECK_LOCK = asyncio.Lock()
 _SCHEMA_READY_LOCK = asyncio.Lock()
 _CATALOG_STARTUP_CHECK_DAYS = 7
 _ADULT_TABLES = {
@@ -507,6 +508,37 @@ async def process_dns_unique_recheck_batch(limit: int = 5000, session: AsyncSess
         async with async_session() as db:
             return await _process_dns_unique_recheck_batch(db, limit=limit)
     return await _process_dns_unique_recheck_batch(session, limit=limit)
+
+
+async def force_recheck_all_dns_unique(limit: int = 5000) -> dict[str, int]:
+    """Force full recheck of all unique domains against current adult catalog."""
+    if not await _ensure_adult_schema():
+        return {
+            "marked": 0,
+            "processed": 0,
+            "status": "schema_missing",
+        }
+
+    async with _FULL_RECHECK_LOCK:
+        async with async_session() as db:
+            mark_stmt = update(RemnawaveDNSUnique).values(need_recheck=True)
+            mark_res = await db.execute(mark_stmt)
+            await db.commit()
+
+            marked = int(mark_res.rowcount or 0)
+            processed = 0
+
+            while True:
+                changed = await _process_dns_unique_recheck_batch(db, limit=limit)
+                if changed <= 0:
+                    break
+                processed += changed
+
+            return {
+                "marked": marked,
+                "processed": processed,
+                "status": "ok",
+            }
 
 
 async def _process_dns_unique_recheck_batch(db: AsyncSession, limit: int) -> int:

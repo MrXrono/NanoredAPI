@@ -140,6 +140,22 @@ async function runAdultSyncNow() {
     }
 }
 
+async function runAdultRecheckAllNow() {
+    const btn = document.getElementById('run-adult-recheck-btn');
+    if (btn) btn.disabled = true;
+    try {
+        const resp = await api('/admin/adult-sync/recheck-all', { method: 'POST' });
+        const data = await resp.json();
+        if (data && data.message) alert(data.message);
+        await loadDatabaseStatus();
+    } catch (err) {
+        console.error('run adult full recheck error:', err);
+        alert('Не удалось запустить полную перепроверку');
+    } finally {
+        if (btn) btn.disabled = false;
+    }
+}
+
 async function loadDatabaseStatus() {
     try {
         const resp = await api('/admin/database-status');

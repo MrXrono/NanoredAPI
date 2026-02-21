@@ -227,7 +227,10 @@
                 <div class="table-container">
                     <div class="table-header">
                         <h3>18+ Sync</h3>
-                        <button id="run-adult-sync-btn" class="btn btn-sm" onclick="runAdultSyncNow()">Запустить sync</button>
+                        <div style="display:flex; gap:8px;">
+                            <button id="run-adult-sync-btn" class="btn btn-sm" onclick="runAdultSyncNow()">Запустить sync</button>
+                            <button id="run-adult-recheck-btn" class="btn btn-sm" onclick="runAdultRecheckAllNow()">Перепроверить все</button>
+                        </div>
                     </div>
                     <table>
                         <thead>
