@@ -815,8 +815,11 @@ async def database_status(db: AsyncSession = Depends(get_db)):
                         .select_from(AdultDomainCatalog)
                         .where(
                             and_(
-                                AdultDomainCatalog.domain == RemnawaveDNSUnique.dns_root,
                                 AdultDomainCatalog.is_enabled.is_(True),
+                                or_(
+                                    AdultDomainCatalog.domain == RemnawaveDNSUnique.dns_root,
+                                    RemnawaveDNSUnique.dns_root.like(func.concat('%.', AdultDomainCatalog.domain)),
+                                ),
                             )
                         )
                     )
