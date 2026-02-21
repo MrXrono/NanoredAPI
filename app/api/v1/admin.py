@@ -572,15 +572,16 @@ async def dashboard(db: AsyncSession = Depends(get_db)):
     )).one()
 
     week_start = today_start - timedelta(days=6)
+    day_bucket = func.date_trunc(text("'day'"), Session.connected_at)
     sessions_daily_rows = (
         await db.execute(
             select(
-                func.date_trunc("day", Session.connected_at).label("day"),
+                day_bucket.label("day"),
                 func.count(Session.id).label("count"),
             )
             .where(Session.connected_at >= week_start)
-            .group_by(func.date_trunc("day", Session.connected_at))
-            .order_by(func.date_trunc("day", Session.connected_at))
+            .group_by(day_bucket)
+            .order_by(day_bucket)
         )
     ).all()
     sessions_daily_map = {
