@@ -1191,7 +1191,7 @@ async def sql_browser_table_rows(
                 f"""
                 SELECT *
                 FROM (
-                    SELECT *
+                    SELECT *, ctid::text AS __ctid
                     FROM {quoted_table}
                     {where_sql}
                     ORDER BY {reverse_order}
@@ -1222,7 +1222,7 @@ async def sql_browser_table_rows(
     rows_result = await db.execute(
         text(
             f"""
-            SELECT *
+            SELECT *, ctid::text AS __ctid
             FROM {quoted_table}
             {where_sql}
             ORDER BY {forward_order}
@@ -1250,6 +1250,69 @@ async def sql_browser_table_rows(
         'at_end': at_end,
     }
 
+
+@router.delete('/sql-browser/table/{table_name}/row')
+async def sql_browser_delete_row(
+    table_name: str,
+    payload: dict | None = Body(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    table_name = _validate_sql_table_name(table_name)
+    await _assert_public_table_exists(db, table_name)
+
+    pk_rows = await db.execute(
+        text(
+            """
+            SELECT a.attname AS column_name
+            FROM pg_index i
+            JOIN pg_class c ON c.oid = i.indrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = ANY(i.indkey)
+            WHERE i.indisprimary = TRUE
+              AND n.nspname = 'public'
+              AND c.relname = :table_name
+            ORDER BY array_position(i.indkey, a.attnum)
+            """
+        ),
+        {'table_name': table_name},
+    )
+    primary_keys = [str(r.column_name) for r in pk_rows]
+
+    quoted_table = _quote_ident(table_name)
+    payload = payload or {}
+
+    if primary_keys:
+        pk_values = payload.get('pk_values')
+        if not isinstance(pk_values, dict):
+            raise HTTPException(status_code=400, detail='pk_values is required')
+
+        where_parts: list[str] = []
+        params: dict[str, object] = {}
+        for idx, col in enumerate(primary_keys):
+            if col not in pk_values:
+                raise HTTPException(status_code=400, detail=f'Missing primary key value: {col}')
+            param_name = f'pk_{idx}'
+            where_parts.append(f'{_quote_ident(col)} = :{param_name}')
+            params[param_name] = pk_values[col]
+
+        delete_stmt = text(f"DELETE FROM {quoted_table} WHERE {' AND '.join(where_parts)}")
+        result = await db.execute(delete_stmt, params)
+    else:
+        ctid_value = str(payload.get('ctid') or '').strip()
+        if not ctid_value:
+            raise HTTPException(status_code=400, detail='ctid is required for tables without primary key')
+        result = await db.execute(
+            text(f"DELETE FROM {quoted_table} WHERE ctid = CAST(:ctid AS tid)"),
+            {'ctid': ctid_value},
+        )
+
+    affected = int(result.rowcount or 0)
+    if affected <= 0:
+        await db.rollback()
+        raise HTTPException(status_code=404, detail='Row not found or already removed')
+
+    await db.commit()
+    return {'ok': True, 'deleted': affected}
 
 
 @router.get("/dashboard")

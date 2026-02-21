@@ -4,7 +4,7 @@ let accountsCache = [];
 let journalInterval = null;
 let remnawaveSelectedAccount = null;
 let dbStatusInterval = null;
-let sqlBrowserState = { tableName: '', offset: 0, limit: 25, atStart: true, atEnd: false, search: '' };
+let sqlBrowserState = { tableName: '', offset: 0, limit: 25, atStart: true, atEnd: false, search: '', mode: 'page', primaryKeys: [], rows: [] };
 
 // ========== AUTH ==========
 async function api(path, opts = {}) {
@@ -260,20 +260,27 @@ function updateSqlBrowserNavButtons() {
     if (nextBtn) nextBtn.disabled = !!sqlBrowserState.atEnd;
 }
 
-function renderSqlBrowserTable(columns, rows) {
+function renderSqlBrowserTable(columns, rows, primaryKeys) {
     const thead = document.getElementById('sql-browser-thead');
     const tbody = document.getElementById('sql-browser-tbody');
     if (!thead || !tbody) return;
 
     const safeColumns = Array.isArray(columns) && columns.length ? columns : ['value'];
-    thead.innerHTML = `<tr>${safeColumns.map(c => `<th>${escapeHtml(String(c))}</th>`).join('')}</tr>`;
+    const pkCols = Array.isArray(primaryKeys) ? primaryKeys : [];
+    thead.innerHTML = `<tr>${safeColumns.map(c => `<th>${escapeHtml(String(c))}</th>`).join('')}<th style="width:96px;">Действия</th></tr>`;
 
     if (!Array.isArray(rows) || !rows.length) {
-        tbody.innerHTML = `<tr><td colspan="${safeColumns.length}">Нет данных</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="${safeColumns.length + 1}">Нет данных</td></tr>`;
         return;
     }
 
-    tbody.innerHTML = rows.map(row => {
+    tbody.innerHTML = rows.map((row, rowIndex) => {
+        const canDeleteByPk = pkCols.length > 0 && pkCols.every(pk => row && Object.prototype.hasOwnProperty.call(row, pk));
+        const canDeleteByCtid = !!(row && row.__ctid);
+        const canDelete = canDeleteByPk || canDeleteByCtid;
+        const deleteBtn = canDelete
+            ? `<button class="btn btn-sm btn-danger sql-browser-delete-row" data-row-index="${rowIndex}">Удалить</button>`
+            : '<span style="color:var(--text-secondary);font-size:12px;">—</span>';
         return `<tr>${safeColumns.map(col => {
             const value = row?.[col];
             let text = '';
@@ -283,8 +290,60 @@ function renderSqlBrowserTable(columns, rows) {
             const escaped = escapeHtml(text);
             const fullAttr = escapeHtml(text).replace(/"/g, '&quot;');
             return `<td class="sql-browser-cell" data-full-text="${fullAttr}" title="${fullAttr}">${escaped}</td>`;
-        }).join('')}</tr>`;
+        }).join('')}<td>${deleteBtn}</td></tr>`;
     }).join('');
+}
+
+async function deleteSqlBrowserRowByIndex(rowIndex) {
+    const tableName = sqlBrowserState.tableName;
+    const rows = Array.isArray(sqlBrowserState.rows) ? sqlBrowserState.rows : [];
+    const primaryKeys = Array.isArray(sqlBrowserState.primaryKeys) ? sqlBrowserState.primaryKeys : [];
+    const idx = Number(rowIndex);
+    if (!tableName || !Number.isInteger(idx) || idx < 0 || idx >= rows.length) return;
+
+    const row = rows[idx] || {};
+    const payload = {};
+
+    if (primaryKeys.length > 0) {
+        const pkValues = {};
+        for (const key of primaryKeys) {
+            if (!Object.prototype.hasOwnProperty.call(row, key)) {
+                alert('Невозможно удалить строку: отсутствует значение первичного ключа.');
+                return;
+            }
+            pkValues[key] = row[key];
+        }
+        payload.pk_values = pkValues;
+    } else if (row.__ctid) {
+        payload.ctid = row.__ctid;
+    } else {
+        alert('Невозможно удалить строку: таблица без PK и без ctid.');
+        return;
+    }
+
+    if (!confirm('Удалить выбранную строку? Это действие необратимо.')) return;
+
+    try {
+        const resp = await api(`/admin/sql-browser/table/${encodeURIComponent(tableName)}/row`, {
+            method: 'DELETE',
+            body: JSON.stringify(payload),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+            alert('Ошибка удаления: ' + (data.detail || 'Неизвестная ошибка'));
+            return;
+        }
+
+        if (sqlBrowserState.mode === 'last') {
+            await loadSqlBrowserRows('last');
+        } else {
+            const offset = typeof sqlBrowserState.offset === 'number' ? sqlBrowserState.offset : 0;
+            await loadSqlBrowserRows('page', offset);
+        }
+    } catch (err) {
+        console.error('sql browser row delete error:', err);
+        alert('Ошибка удаления строки');
+    }
 }
 
 async function loadSqlBrowserRows(mode = 'page', forcedOffset = null) {
@@ -318,7 +377,13 @@ async function loadSqlBrowserRows(mode = 'page', forcedOffset = null) {
         const rows = Array.isArray(data?.rows) ? data.rows : [];
         const columns = Array.isArray(data?.columns) ? data.columns : [];
 
-        renderSqlBrowserTable(columns, rows);
+        const primaryKeys = Array.isArray(data?.primary_keys) ? data.primary_keys : [];
+
+        sqlBrowserState.rows = rows;
+        sqlBrowserState.primaryKeys = primaryKeys;
+        sqlBrowserState.mode = data?.mode === 'last' ? 'last' : 'page';
+
+        renderSqlBrowserTable(columns, rows, primaryKeys);
 
         if (data?.mode === 'last') {
             sqlBrowserState.offset = null;
@@ -1494,6 +1559,14 @@ document.addEventListener('click', (e) => {
 });
 
 document.addEventListener('click', (e) => {
+    const deleteBtn = e.target.closest('.sql-browser-delete-row');
+    if (deleteBtn) {
+        e.preventDefault();
+        const rowIndex = Number(deleteBtn.getAttribute('data-row-index'));
+        deleteSqlBrowserRowByIndex(rowIndex);
+        return;
+    }
+
     if (e.target.id === 'table-cell-viewer-close') {
         closeTableCellViewer();
         return;
