@@ -2319,8 +2319,12 @@ async def remnawave_top_domains(
     account_login: str,
     limit: int = Query(25, ge=1, le=100),
     days: int = Query(365, ge=1, le=3650),
+    selected: bool = Query(False),
     db: AsyncSession = Depends(get_db),
 ):
+    if not selected:
+        return {'account': account_login, 'items': []}
+
     since = datetime.now(timezone.utc) - timedelta(days=days)
     rows = (await db.execute(
         select(
@@ -2350,8 +2354,12 @@ async def remnawave_recent_queries(
     from_ts: datetime | None = None,
     to_ts: datetime | None = None,
     q: str | None = None,
+    selected: bool = Query(False),
     db: AsyncSession = Depends(get_db),
 ):
+    if not selected:
+        return {'total': 0, 'page': page, 'per_page': per_page, 'items': []}
+
     query = select(RemnawaveDNSQuery).where(RemnawaveDNSQuery.account_login == account_login)
 
     if from_ts:

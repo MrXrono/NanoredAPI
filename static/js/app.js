@@ -1475,7 +1475,7 @@ async function selectRemnawaveAccount(account) {
 
 async function loadRemnawaveTop() {
     if (!remnawaveSelectedAccount) return;
-    const resp = await api(`/admin/remnawave-logs/${encodeURIComponent(remnawaveSelectedAccount)}/top-domains?limit=25&days=365`);
+    const resp = await api(`/admin/remnawave-logs/${encodeURIComponent(remnawaveSelectedAccount)}/top-domains?selected=1&limit=25&days=365`);
     const d = await resp.json();
     const tbody = document.getElementById('rnw-top-tbody');
     tbody.innerHTML = d.items.map(i => `
@@ -1492,7 +1492,7 @@ async function loadRemnawaveRecent(page = 1) {
     const toVal = document.getElementById('rnw-to')?.value || '';
     const qVal = document.getElementById('rnw-q')?.value || '';
 
-    let url = `/admin/remnawave-logs/${encodeURIComponent(remnawaveSelectedAccount)}/queries?page=${page}&per_page=50`;
+    let url = `/admin/remnawave-logs/${encodeURIComponent(remnawaveSelectedAccount)}/queries?selected=1&page=${page}&per_page=50`;
     if (fromVal) url += `&from_ts=${encodeURIComponent(new Date(fromVal).toISOString())}`;
     if (toVal) url += `&to_ts=${encodeURIComponent(new Date(toVal).toISOString())}`;
     if (qVal) url += `&q=${encodeURIComponent(qVal)}`;

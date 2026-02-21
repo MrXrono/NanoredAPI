@@ -600,29 +600,42 @@ def normalize_remnawave_domain(value: str | None) -> str | None:
 def _match_candidate_domains(value: str | None) -> list[str]:
     """Return possible catalog/exclusion domain candidates for a DNS value.
 
-    Supports historical rows where dns_root may still contain a full host.
+    Supports historical rows where dns_root may still contain a full host
+    and/or prefixed domains like 0-0-...-example.com.
     """
     if not value:
         return []
     raw = str(value).strip().lower().strip('.')
     if not raw:
         return []
+
     candidates: list[str] = []
     seen: set[str] = set()
 
-    normalized = normalize_remnawave_domain(raw)
-    if normalized and normalized not in seen:
-        seen.add(normalized)
-        candidates.append(normalized)
+    def _push(v: str | None) -> None:
+        if not v:
+            return
+        vv = v.strip().lower().strip('.')
+        if not vv or vv in seen:
+            return
+        if not _is_domain_db_safe(vv):
+            return
+        seen.add(vv)
+        candidates.append(vv)
 
+    # 1) canonical normalized root
+    _push(normalize_remnawave_domain(raw))
+
+    # 2) canonicalized current value (strips numeric-prefix patterns)
+    _push(_canonical_domain_for_match(raw))
+
+    # 3) specific -> generic suffix chain
     parts = raw.split('.')
     if len(parts) >= 2:
-        # specific -> generic (foo.bar.example.com, bar.example.com, example.com)
         for i in range(0, len(parts) - 1):
             suffix = '.'.join(parts[i:])
-            if suffix and suffix not in seen and _is_domain_db_safe(suffix):
-                seen.add(suffix)
-                candidates.append(suffix)
+            _push(suffix)
+            _push(_canonical_domain_for_match(suffix))
 
     return candidates
 
