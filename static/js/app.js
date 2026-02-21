@@ -123,6 +123,84 @@ function escapeHtml(str) {
     return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+// ========== TABLE CELL FULL TEXT VIEWER ==========
+const TABLE_CELL_VIEWER_ID = 'table-cell-viewer';
+
+function ensureTableCellViewer() {
+    let overlay = document.getElementById(TABLE_CELL_VIEWER_ID);
+    if (overlay) return overlay;
+
+    overlay = document.createElement('div');
+    overlay.id = TABLE_CELL_VIEWER_ID;
+    overlay.className = 'table-cell-viewer-overlay';
+    overlay.style.display = 'none';
+    overlay.innerHTML = `
+        <div class="table-cell-viewer-modal">
+            <div class="table-cell-viewer-header">
+                <h3>Полный текст</h3>
+                <button class="btn btn-sm btn-danger" id="table-cell-viewer-close">&times;</button>
+            </div>
+            <textarea id="table-cell-viewer-text" readonly></textarea>
+            <div class="table-cell-viewer-actions">
+                <button class="btn btn-sm btn-primary" id="table-cell-viewer-copy">Скопировать</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+
+    overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) closeTableCellViewer();
+    });
+
+    return overlay;
+}
+
+function openTableCellViewer(text) {
+    const overlay = ensureTableCellViewer();
+    const textarea = document.getElementById('table-cell-viewer-text');
+    if (!textarea) return;
+    textarea.value = text || '';
+    overlay.style.display = 'flex';
+    setTimeout(() => {
+        textarea.focus();
+        textarea.select();
+    }, 0);
+}
+
+function closeTableCellViewer() {
+    const overlay = document.getElementById(TABLE_CELL_VIEWER_ID);
+    if (overlay) overlay.style.display = 'none';
+}
+
+async function copyTableCellViewerText() {
+    const textarea = document.getElementById('table-cell-viewer-text');
+    if (!textarea) return;
+    const text = textarea.value || '';
+    try {
+        await navigator.clipboard.writeText(text);
+    } catch (e) {
+        textarea.focus();
+        textarea.select();
+        document.execCommand('copy');
+    }
+}
+
+function getCellFullText(td) {
+    if (!td) return '';
+    const fromData = td.getAttribute('data-full-text');
+    if (fromData) return fromData.trim();
+    const fromTitle = td.getAttribute('title');
+    if (fromTitle) return fromTitle.trim();
+    return (td.innerText || td.textContent || '').trim();
+}
+
+function shouldOpenCellViewer(td, fullText) {
+    if (!td || !fullText) return false;
+    if (td.scrollWidth > td.clientWidth) return true;
+    const shortText = (td.textContent || '').trim();
+    return shortText !== fullText;
+}
+
 // ========== DATABASE STATUS ==========
 async function runAdultSyncNow() {
     const btn = document.getElementById('run-adult-sync-btn');
@@ -1153,6 +1231,32 @@ document.addEventListener('click', (e) => {
     };
     const fn = modals[e.target.id];
     if (fn) fn();
+});
+
+document.addEventListener('click', (e) => {
+    if (e.target.id === 'table-cell-viewer-close') {
+        closeTableCellViewer();
+        return;
+    }
+
+    if (e.target.id === 'table-cell-viewer-copy') {
+        copyTableCellViewerText();
+        return;
+    }
+
+    const td = e.target.closest('table tbody td');
+    if (!td) return;
+
+    if (e.target.closest('button, a, input, select, textarea, label')) return;
+
+    const fullText = getCellFullText(td);
+    if (!shouldOpenCellViewer(td, fullText)) return;
+
+    openTableCellViewer(fullText);
+});
+
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeTableCellViewer();
 });
 
 // ========== INIT ==========

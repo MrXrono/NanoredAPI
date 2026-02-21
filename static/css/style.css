@@ -122,6 +122,61 @@ tbody td {
     max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 tbody tr:hover { background: rgba(233, 69, 96, 0.05); }
+tbody td[title] { cursor: zoom-in; }
+
+.table-cell-viewer-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.7);
+    z-index: 1200;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+}
+
+.table-cell-viewer-modal {
+    width: min(920px, 95vw);
+    max-height: 85vh;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.table-cell-viewer-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.table-cell-viewer-header h3 {
+    margin: 0;
+    font-size: 16px;
+}
+
+#table-cell-viewer-text {
+    width: 100%;
+    min-height: 300px;
+    max-height: 60vh;
+    resize: vertical;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    padding: 12px;
+    font-family: Consolas, 'Courier New', monospace;
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.table-cell-viewer-actions {
+    display: flex;
+    justify-content: flex-end;
+}
 .badge {
     display: inline-block; padding: 3px 8px; border-radius: 4px;
     font-size: 11px; font-weight: 600;
