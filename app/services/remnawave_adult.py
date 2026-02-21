@@ -47,11 +47,13 @@ V2FLY_ROOT_URL = "https://raw.githubusercontent.com/v2fly/domain-list-community/
 
 ADULT_SYNC_HTTP_MAX_CONCURRENCY = max(1, int(os.getenv("ADULT_SYNC_HTTP_MAX_CONCURRENCY", "1")))
 ADULT_SYNC_DB_CHUNK_SIZE = max(500, int(os.getenv("ADULT_SYNC_DB_CHUNK_SIZE", "5000")))
+ADULT_SYNC_TXT_DB_CHUNK_SIZE = max(1000, int(os.getenv("ADULT_SYNC_TXT_DB_CHUNK_SIZE", str(ADULT_SYNC_DB_CHUNK_SIZE))))
 ADULT_SYNC_TXT_PATH = os.getenv("ADULT_SYNC_TXT_PATH", "/app/data/artifacts/adult_domains_merged.txt").strip()
 ADULT_SYNC_GARBAGE_RETENTION_DAYS = max(1, int(os.getenv("ADULT_SYNC_GARBAGE_RETENTION_DAYS", "30")))
 ADULT_SYNC_WEEKDAY_DEFAULT = max(0, min(6, int(os.getenv("ADULT_SYNC_WEEKDAY", "6"))))
 ADULT_SYNC_HOUR_DEFAULT = max(0, min(23, int(os.getenv("ADULT_SYNC_HOUR_UTC", "3"))))
 ADULT_SYNC_MINUTE_DEFAULT = max(0, min(59, int(os.getenv("ADULT_SYNC_MINUTE_UTC", "0"))))
+ADULT_SYNC_USE_TLDEXTRACT = os.getenv("ADULT_SYNC_USE_TLDEXTRACT", "0").strip().lower() in {"1", "true", "yes", "on"}
 ADULT_SYNC_CLEANUP_TABLES = (
     "adult_domain_catalog",
     "remnawave_dns_unique",
@@ -232,6 +234,42 @@ async def _bulk_insert_staging_rows(db: AsyncSession, rows: list[dict]) -> None:
     )
 
 
+async def _bulk_insert_staging_domains(
+    db: AsyncSession,
+    domains: list[str],
+    *,
+    version: str,
+    checked_at: datetime,
+) -> None:
+    if not domains:
+        return
+    await db.execute(
+        text(
+            f"""
+            INSERT INTO {_ADULT_STAGING_TABLE}
+                (domain, category, source_mask, source_text, list_version, checked_at, is_enabled)
+            SELECT
+                d.domain,
+                'adult',
+                :source_mask,
+                CAST(:source_text AS jsonb),
+                :list_version,
+                :checked_at,
+                TRUE
+            FROM unnest(CAST(:domains AS text[])) AS d(domain)
+            ON CONFLICT (domain) DO NOTHING
+            """
+        ),
+        {
+            "domains": domains,
+            "source_mask": int(SOURCE_TXT_IMPORT),
+            "source_text": json.dumps(["txt_import"]),
+            "list_version": version,
+            "checked_at": checked_at,
+        },
+    )
+
+
 async def _merge_staging_into_catalog(db: AsyncSession, version: str) -> int:
     res = await db.execute(
         text(
@@ -349,7 +387,7 @@ def normalize_remnawave_domain(value: str | None) -> str | None:
     if any(not p or p.startswith("-") or p.endswith("-") for p in parts):
         return None
 
-    if tldextract is not None:
+    if tldextract is not None and ADULT_SYNC_USE_TLDEXTRACT:
         extracted = tldextract.extract(host)
         if extracted.domain and extracted.suffix:
             root = f"{extracted.domain}.{extracted.suffix}".lower()
@@ -832,34 +870,29 @@ async def sync_adult_catalog_from_txt(path: str | None = None, progress_cb: Prog
             last_watermark=str(started_at),
         )
         await _emit_progress(progress_cb, phase="read", progress_current=0, progress_total=total_bytes, progress_percent=1.0, message="Reading TXT list")
-        rows_buffer: list[dict] = []
+        domains_buffer: list[str] = []
+        chunk_seen: set[str] = set()
         rows_total = 0
         inserted_total = 0
         bytes_read = 0
         checked_at = started_at
+        txt_chunk_size = ADULT_SYNC_TXT_DB_CHUNK_SIZE
 
         async with async_session() as db:
             await _prepare_adult_staging_table(db)
             with txt_path.open("r", encoding="utf-8", errors="replace") as fp:
                 for line in fp:
-                    bytes_read += len(line.encode("utf-8", errors="ignore"))
+                    bytes_read += len(line)
                     domain = normalize_remnawave_domain(line)
                     if not domain:
                         continue
-                    rows_buffer.append(
-                        {
-                            "domain": domain,
-                            "category": "adult",
-                            "source_mask": int(SOURCE_TXT_IMPORT),
-                            "source_text": ["txt_import"],
-                            "list_version": version,
-                            "checked_at": checked_at,
-                            "is_enabled": True,
-                        }
-                    )
-                    if len(rows_buffer) >= ADULT_SYNC_DB_CHUNK_SIZE:
-                        await _bulk_insert_staging_rows(db, rows_buffer)
-                        rows_total += len(rows_buffer)
+                    if domain in chunk_seen:
+                        continue
+                    chunk_seen.add(domain)
+                    domains_buffer.append(domain)
+                    if len(domains_buffer) >= txt_chunk_size:
+                        await _bulk_insert_staging_domains(db, domains_buffer, version=version, checked_at=checked_at)
+                        rows_total += len(domains_buffer)
                         if total_bytes > 0:
                             await _emit_progress(
                                 progress_cb,
@@ -869,11 +902,12 @@ async def sync_adult_catalog_from_txt(path: str | None = None, progress_cb: Prog
                                 progress_percent=5.0 + (bytes_read / total_bytes) * 80.0,
                                 message=f"Staged {rows_total} rows",
                             )
-                        rows_buffer.clear()
+                        domains_buffer.clear()
+                        chunk_seen.clear()
 
-                if rows_buffer:
-                    await _bulk_insert_staging_rows(db, rows_buffer)
-                    rows_total += len(rows_buffer)
+                if domains_buffer:
+                    await _bulk_insert_staging_domains(db, domains_buffer, version=version, checked_at=checked_at)
+                    rows_total += len(domains_buffer)
                     if total_bytes > 0:
                         await _emit_progress(
                             progress_cb,
@@ -883,7 +917,10 @@ async def sync_adult_catalog_from_txt(path: str | None = None, progress_cb: Prog
                             progress_percent=85.0,
                             message=f"Staged {rows_total} rows",
                         )
-                    rows_buffer.clear()
+                    domains_buffer.clear()
+                    chunk_seen.clear()
+
+            await db.commit()
 
             inserted_total = await _merge_staging_into_catalog(db, version=version)
             await _emit_progress(progress_cb, phase="merge", progress_current=1, progress_total=1, progress_percent=92.0, message="Merged TXT into catalog")
