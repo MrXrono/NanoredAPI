@@ -50,6 +50,7 @@ ADULT_SYNC_DB_CHUNK_SIZE = max(500, int(os.getenv("ADULT_SYNC_DB_CHUNK_SIZE", "5
 ADULT_SYNC_TXT_DB_CHUNK_SIZE = max(500, min(20000, int(os.getenv("ADULT_SYNC_TXT_DB_CHUNK_SIZE", str(ADULT_SYNC_DB_CHUNK_SIZE)))))
 ADULT_SYNC_TXT_DB_COMMIT_EVERY = max(1, int(os.getenv("ADULT_SYNC_TXT_DB_COMMIT_EVERY", "10")))
 ADULT_SYNC_TXT_COPY_ENABLED = os.getenv("ADULT_SYNC_TXT_COPY_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
+ADULT_SYNC_TXT_MERGE_CHUNK_SIZE = max(1000, int(os.getenv("ADULT_SYNC_TXT_MERGE_CHUNK_SIZE", "50000")))
 ADULT_SYNC_DB_RETRY_MAX_ATTEMPTS = max(1, int(os.getenv("ADULT_SYNC_DB_RETRY_MAX_ATTEMPTS", "4")))
 ADULT_SYNC_DB_RETRY_BASE_SLEEP_MS = max(10, int(os.getenv("ADULT_SYNC_DB_RETRY_BASE_SLEEP_MS", "100")))
 ADULT_SYNC_TXT_PATH = os.getenv("ADULT_SYNC_TXT_PATH", "/app/data/artifacts/adult_domains_merged.txt").strip()
@@ -254,12 +255,15 @@ async def _prepare_adult_txt_staging_table(db: AsyncSession) -> None:
         text(
             f"""
             CREATE UNLOGGED TABLE IF NOT EXISTS {_ADULT_TXT_STAGING_TABLE} (
+                id BIGSERIAL PRIMARY KEY,
                 domain varchar(255) NOT NULL
             )
             """
         )
     )
-    await db.execute(text(f"TRUNCATE TABLE {_ADULT_TXT_STAGING_TABLE}"))
+    await db.execute(text(f"ALTER TABLE {_ADULT_TXT_STAGING_TABLE} ADD COLUMN IF NOT EXISTS id BIGSERIAL"))
+    await db.execute(text(f"CREATE INDEX IF NOT EXISTS ix_{_ADULT_TXT_STAGING_TABLE}_id ON {_ADULT_TXT_STAGING_TABLE}(id)"))
+    await db.execute(text(f"TRUNCATE TABLE {_ADULT_TXT_STAGING_TABLE} RESTART IDENTITY"))
 
 
 async def _copy_insert_txt_domains(db: AsyncSession, domains: list[str]) -> None:
@@ -302,35 +306,67 @@ async def _merge_txt_staging_into_main_staging(
     version: str,
     checked_at: datetime,
 ) -> int:
-    res = await db.execute(
-        text(
-            f"""
-            INSERT INTO {_ADULT_STAGING_TABLE}
-                (domain, category, source_mask, source_text, list_version, checked_at, is_enabled)
-            SELECT
-                t.domain,
-                'adult',
-                :source_mask,
-                CAST(:source_text AS jsonb),
-                :list_version,
-                :checked_at,
-                TRUE
-            FROM (
-                SELECT domain
-                FROM {_ADULT_TXT_STAGING_TABLE}
-                GROUP BY domain
-            ) AS t
-            ON CONFLICT (domain) DO NOTHING
-            """
-        ),
-        {
-            "source_mask": int(SOURCE_TXT_IMPORT),
-            "source_text": json.dumps(["txt_import"]),
-            "list_version": version,
-            "checked_at": checked_at,
-        },
-    )
-    return int(res.rowcount or 0)
+    """Merge TXT staging in bounded chunks to avoid full-table GROUP BY timeouts."""
+    total_inserted = 0
+    last_id = 0
+
+    while True:
+        res = await db.execute(
+            text(
+                f"""
+                WITH batch AS (
+                    SELECT id, domain
+                    FROM {_ADULT_TXT_STAGING_TABLE}
+                    WHERE id > :last_id
+                    ORDER BY id
+                    LIMIT :batch_size
+                ),
+                ins AS (
+                    INSERT INTO {_ADULT_STAGING_TABLE}
+                        (domain, category, source_mask, source_text, list_version, checked_at, is_enabled)
+                    SELECT
+                        b.domain,
+                        'adult',
+                        :source_mask,
+                        CAST(:source_text AS jsonb),
+                        :list_version,
+                        :checked_at,
+                        TRUE
+                    FROM batch AS b
+                    ON CONFLICT (domain) DO NOTHING
+                    RETURNING 1
+                )
+                SELECT
+                    COALESCE((SELECT MAX(id) FROM batch), :last_id) AS next_last_id,
+                    (SELECT COUNT(*) FROM batch) AS batch_count,
+                    (SELECT COUNT(*) FROM ins) AS inserted_count
+                """
+            ),
+            {
+                "last_id": last_id,
+                "batch_size": ADULT_SYNC_TXT_MERGE_CHUNK_SIZE,
+                "source_mask": int(SOURCE_TXT_IMPORT),
+                "source_text": json.dumps(["txt_import"]),
+                "list_version": version,
+                "checked_at": checked_at,
+            },
+        )
+        row = res.first()
+        if not row:
+            break
+
+        batch_count = int(row.batch_count or 0)
+        inserted_count = int(row.inserted_count or 0)
+        last_id = int(row.next_last_id or last_id)
+        total_inserted += inserted_count
+
+        if batch_count <= 0:
+            break
+
+        await db.commit()
+
+    return total_inserted
+
 
 
 async def _bulk_insert_staging_rows(db: AsyncSession, rows: list[dict]) -> None:

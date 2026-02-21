@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "NanoredVPN API"
-    VERSION: str = "1.16.0.10"
+    VERSION: str = "1.16.0.11"
     API_V1_PREFIX: str = "/api/v1"
 
     # Database
