@@ -667,15 +667,23 @@ async def sync_adult_catalog_from_txt(path: str | None = None) -> dict:
     async with _TXT_SYNC_LOCK:
         txt_path = Path((path or ADULT_SYNC_TXT_PATH).strip() or ADULT_SYNC_TXT_PATH).expanduser()
         if not txt_path.exists():
-            return {
+            stats = {
                 "status": "missing_file",
                 "inserted": 0,
                 "processed": 0,
                 "path": str(txt_path),
             }
+            await _upsert_sync_state(status="missing_file", stats=stats, version="txt-missing", last_watermark=None)
+            return stats
 
         started_at = datetime.now(timezone.utc)
         version = f"txt-{started_at.strftime('%Y%m%dT%H%M%SZ')}"
+        await _upsert_sync_state(
+            status="running",
+            stats={"status": "running", "path": str(txt_path), "started_at": started_at.isoformat()},
+            version=version,
+            last_watermark=str(started_at),
+        )
         rows_buffer: list[dict] = []
         rows_total = 0
         inserted_total = 0

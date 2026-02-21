@@ -69,6 +69,17 @@ _DATABASE_STATUS_CACHE_TTL_SEC = 20
 _database_status_cache: dict[str, object] = {"ts": 0.0, "data": None}
 
 
+def _invalidate_database_status_cache() -> None:
+    _database_status_cache["ts"] = 0.0
+    _database_status_cache["data"] = None
+
+
+def _task_running(task_ref_name: str) -> bool:
+    task = globals().get(task_ref_name)
+    return isinstance(task, asyncio.Task) and not task.done()
+
+
+
 # ==================== HELPER ====================
 
 async def _device_ids_for_account(account_id: str, db: AsyncSession) -> list[uuid.UUID]:
@@ -110,10 +121,13 @@ def _start_background_task(task_name: str, task_ref_name: str, runner):
     async def _guarded_runner():
         try:
             await runner()
-        except Exception:
-            logging_buffer.add("error", f"adult-sync {task_name} failed")
+        except Exception as exc:
+            logging_buffer.add("error", f"adult-sync {task_name} failed: {exc}")
+        finally:
+            _invalidate_database_status_cache()
 
     globals_ref[task_ref_name] = asyncio.create_task(_guarded_runner())
+    _invalidate_database_status_cache()
     return {"ok": True, "started": True, "message": f"{task_name} started"}
 
 
@@ -355,6 +369,12 @@ async def database_status(db: AsyncSession = Depends(get_db)):
         "unique_adult_total": 0,
         "unique_need_recheck": 0,
         "adult_coverage_percent": 0.0,
+        "manual_tasks": {
+            "sync": _task_running("_adult_manual_sync_task"),
+            "recheck": _task_running("_adult_manual_recheck_task"),
+            "txt_sync": _task_running("_adult_manual_txt_sync_task"),
+            "cleanup": _task_running("_adult_manual_cleanup_task"),
+        },
     }
 
     try:

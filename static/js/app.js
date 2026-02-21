@@ -227,6 +227,7 @@ async function loadDatabaseStatus() {
         const adultSyncRows = [
             ['Статус', String(adult.status || 'unknown')],
             ['Комментарий', String(adult.status_hint || '-')],
+            ['Фоновые задачи', `sync:${adult.manual_tasks?.sync ? 'ON' : 'off'}, recheck:${adult.manual_tasks?.recheck ? 'ON' : 'off'}, txt:${adult.manual_tasks?.txt_sync ? 'ON' : 'off'}, cleanup:${adult.manual_tasks?.cleanup ? 'ON' : 'off'}`],
             ['Последний запуск', formatDate(adult.last_run_at)],
             ['Версия листа', String(adult.last_version || '-')],
             ['Обновлено доменов', Number(adult.last_updated_rows || 0)],
