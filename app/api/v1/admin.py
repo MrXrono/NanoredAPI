@@ -809,21 +809,17 @@ async def database_status(db: AsyncSession = Depends(get_db)):
                 func.count(RemnawaveDNSUnique.dns_root).label("unique_total"),
                 func.count(RemnawaveDNSUnique.dns_root).filter(RemnawaveDNSUnique.is_adult.is_(True)).label("adult_total"),
                 func.count(RemnawaveDNSUnique.dns_root).filter(RemnawaveDNSUnique.need_recheck.is_(True)).label("need_recheck"),
-                func.count(RemnawaveDNSUnique.dns_root).filter(
-                    or_(
-                        RemnawaveDNSUnique.mark_version.is_not(None),
-                        RemnawaveDNSUnique.is_adult.is_(True),
-                    )
-                ).label("matched_total"),
             )
         )
         data = row.mappings().first() or {}
         unique_total = int(data.get("unique_total", 0) or 0)
         unique_adult = int(data.get("adult_total", 0) or 0)
+        unique_need_recheck = int(data.get("need_recheck", 0) or 0)
+        unique_matched = max(0, unique_total - unique_need_recheck)
         adult_sync["unique_domains_total"] = unique_total
         adult_sync["unique_adult_total"] = unique_adult
-        adult_sync["unique_need_recheck"] = int(data.get("need_recheck", 0) or 0)
-        adult_sync["unique_matched_total"] = int(data.get("matched_total", 0) or 0)
+        adult_sync["unique_need_recheck"] = unique_need_recheck
+        adult_sync["unique_matched_total"] = unique_matched
         adult_sync["adult_coverage_percent"] = round((unique_adult / unique_total) * 100, 2) if unique_total else 0.0
     except Exception:
         pass
@@ -2324,6 +2320,18 @@ async def remnawave_top_domains(
 ):
     if not selected:
         return {'account': account_login, 'items': []}
+    account_login = account_login.strip()
+    if not account_login:
+        return {'account': account_login, 'items': []}
+    account_exists = (
+        await db.execute(
+            select(RemnawaveAccount.account_login)
+            .where(RemnawaveAccount.account_login == account_login)
+            .limit(1)
+        )
+    ).first()
+    if account_exists is None:
+        return {'account': account_login, 'items': []}
 
     since = datetime.now(timezone.utc) - timedelta(days=days)
     rows = (await db.execute(
@@ -2331,8 +2339,12 @@ async def remnawave_top_domains(
             RemnawaveDNSQuery.dns,
             func.count(RemnawaveDNSQuery.id).label('hits'),
         )
+        .join(
+            RemnawaveAccount,
+            RemnawaveAccount.account_login == RemnawaveDNSQuery.account_login,
+        )
         .where(
-            RemnawaveDNSQuery.account_login == account_login,
+            RemnawaveAccount.account_login == account_login,
             RemnawaveDNSQuery.requested_at >= since,
         )
         .group_by(RemnawaveDNSQuery.dns)
@@ -2359,8 +2371,27 @@ async def remnawave_recent_queries(
 ):
     if not selected:
         return {'total': 0, 'page': page, 'per_page': per_page, 'items': []}
+    account_login = account_login.strip()
+    if not account_login:
+        return {'total': 0, 'page': page, 'per_page': per_page, 'items': []}
+    account_exists = (
+        await db.execute(
+            select(RemnawaveAccount.account_login)
+            .where(RemnawaveAccount.account_login == account_login)
+            .limit(1)
+        )
+    ).first()
+    if account_exists is None:
+        return {'total': 0, 'page': page, 'per_page': per_page, 'items': []}
 
-    query = select(RemnawaveDNSQuery).where(RemnawaveDNSQuery.account_login == account_login)
+    query = (
+        select(RemnawaveDNSQuery)
+        .join(
+            RemnawaveAccount,
+            RemnawaveAccount.account_login == RemnawaveDNSQuery.account_login,
+        )
+        .where(RemnawaveAccount.account_login == account_login)
+    )
 
     if from_ts:
         query = query.where(RemnawaveDNSQuery.requested_at >= from_ts)

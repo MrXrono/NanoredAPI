@@ -1452,13 +1452,13 @@ async function loadRemnawaveAccounts(page = 1) {
     tbody.innerHTML = d.items.map(i => {
         const account = String(i.account || '');
         const accountEsc = escapeHtml(account);
-        const accountAttr = accountEsc.replace(/"/g, '&quot;');
+        const accountAttr = encodeURIComponent(account);
         return `
         <tr>
             <td>${accountEsc}</td>
             <td>${formatDate(i.last_activity)}</td>
             <td>${Number(i.total_requests || 0).toLocaleString('ru-RU')}</td>
-            <td><button class="btn btn-sm btn-primary rnw-select-account-btn" data-account="${accountAttr}">Открыть</button></td>
+            <td><button class="btn btn-sm btn-primary rnw-select-account-btn" data-account-enc="${accountAttr}">Открыть</button></td>
         </tr>
     `;
     }).join('') || '<tr><td colspan="4">Нет данных</td></tr>';
@@ -1585,7 +1585,8 @@ document.addEventListener('click', (e) => {
     const accountBtn = e.target.closest('.rnw-select-account-btn');
     if (accountBtn) {
         e.preventDefault();
-        const account = String(accountBtn.getAttribute('data-account') || '').trim();
+        const accountEncoded = String(accountBtn.getAttribute('data-account-enc') || '').trim();
+        const account = accountEncoded ? decodeURIComponent(accountEncoded) : '';
         if (account) {
             selectRemnawaveAccount(account);
         }
