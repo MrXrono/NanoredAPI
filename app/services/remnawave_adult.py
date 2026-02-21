@@ -11,7 +11,7 @@ from collections.abc import Awaitable, Callable
 
 import httpx
 from sqlalchemy import inspect
-from sqlalchemy import and_, delete, exists, or_, select, text, update
+from sqlalchemy import and_, delete, exists, func, or_, select, text, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -109,6 +109,11 @@ _bg_runtime_state: dict[str, object] = {
 def _msg_has_undefined_table(err: Exception) -> bool:
     msg = str(err).lower()
     return "does not exist" in msg or "undefinedtable" in msg or "undefined table" in msg
+
+
+def _msg_has_deadlock(err: Exception) -> bool:
+    msg = str(err).lower()
+    return "deadlock detected" in msg or "deadlockdetectederror" in msg
 
 
 async def _required_adult_tables_exist() -> bool:
@@ -746,7 +751,11 @@ async def force_recheck_all_dns_unique(limit: int = 5000, progress_cb: ProgressC
     async with _FULL_RECHECK_LOCK:
         async with async_session() as db:
             await _emit_progress(progress_cb, phase="mark", progress_current=0, progress_total=1, progress_percent=2.0, message="Marking rows for recheck")
-            mark_stmt = update(RemnawaveDNSUnique).values(need_recheck=True)
+            mark_stmt = (
+                update(RemnawaveDNSUnique)
+                .where(RemnawaveDNSUnique.need_recheck.is_(False))
+                .values(need_recheck=True)
+            )
             mark_res = await db.execute(mark_stmt)
             await db.commit()
 
@@ -775,12 +784,23 @@ async def force_recheck_all_dns_unique(limit: int = 5000, progress_cb: ProgressC
                     message=f"Processed {processed}/{marked}",
                 )
 
+            remaining = int((await db.execute(select(func.count(RemnawaveDNSUnique.dns_root)).where(RemnawaveDNSUnique.need_recheck.is_(True)))).scalar() or 0)
+            status = "ok" if remaining == 0 else "partial"
             result = {
                 "marked": marked,
                 "processed": processed,
-                "status": "ok",
+                "remaining": remaining,
+                "status": status,
             }
-            await _emit_progress(progress_cb, phase="done", progress_current=processed, progress_total=marked, progress_percent=100.0, message="Full recheck finished", status="ok")
+            await _emit_progress(
+                progress_cb,
+                phase="done",
+                progress_current=processed,
+                progress_total=marked,
+                progress_percent=100.0,
+                message="Full recheck finished" if remaining == 0 else f"Full recheck finished with {remaining} remaining rows",
+                status=status,
+            )
             return result
 
 
@@ -1001,78 +1021,96 @@ async def _process_dns_unique_recheck_batch(db: AsyncSession, limit: int) -> int
     if not await _ensure_adult_schema():
         return 0
 
-    try:
-        rows = (
+    max_attempts = 3
+    for attempt in range(1, max_attempts + 1):
+        try:
+            rows = (
+                await db.execute(
+                    select(RemnawaveDNSUnique)
+                    .where(RemnawaveDNSUnique.need_recheck.is_(True))
+                    .order_by(RemnawaveDNSUnique.last_seen, RemnawaveDNSUnique.dns_root)
+                    .limit(limit)
+                    .with_for_update(skip_locked=True)
+                )
+            ).scalars().all()
+        except SQLAlchemyError as exc:
+            await db.rollback()
+            global _adult_schema_ready
+            if _msg_has_undefined_table(exc):
+                logger.warning("adult recheck skipped: remnawave_dns_unique table not ready yet")
+                _adult_schema_ready = False  # force refresh on next attempt
+                return 0
+            if _msg_has_deadlock(exc) and attempt < max_attempts:
+                logger.warning("adult recheck select deadlock: retry %s/%s", attempt, max_attempts)
+                await asyncio.sleep(0.1 * attempt)
+                continue
+            logger.exception("adult recheck query failed")
+            return 0
+
+        if not rows:
+            return 0
+
+        roots = [row.dns_root for row in rows]
+        catalog_rows = (
             await db.execute(
-                select(RemnawaveDNSUnique)
-                .where(RemnawaveDNSUnique.need_recheck.is_(True))
-                .order_by(RemnawaveDNSUnique.last_seen)
-                .limit(limit)
+                select(AdultDomainCatalog.domain, AdultDomainCatalog.source_mask, AdultDomainCatalog.list_version)
+                .where(and_(AdultDomainCatalog.domain.in_(roots), AdultDomainCatalog.is_enabled.is_(True)))
+            )
+        ).all()
+
+        catalog_map: dict[str, tuple[int, str | None]] = {
+            domain: (int(mask), list_version)
+            for domain, mask, list_version in catalog_rows
+        }
+
+        excluded_rows = (
+            await db.execute(
+                select(AdultDomainExclusion.domain)
+                .where(AdultDomainExclusion.domain.in_(roots))
             )
         ).scalars().all()
-    except SQLAlchemyError as exc:
-        global _adult_schema_ready
-        if _msg_has_undefined_table(exc):
-            logger.warning("adult recheck skipped: remnawave_dns_unique table not ready yet")
-            _adult_schema_ready = False  # force refresh on next attempt
-            return 0
-        logger.exception("adult recheck query failed")
-        return 0
+        excluded_set = set(excluded_rows)
 
-    if not rows:
-        return 0
+        now = datetime.now(timezone.utc)
+        processed = 0
+        for row in rows:
+            if row.dns_root in excluded_set:
+                row.is_adult = False
+                row.mark_source = ["manual_exclude"]
+                row.mark_version = "manual_exclude"
+                row.last_marked_at = now
+                row.need_recheck = False
+                processed += 1
+                continue
 
-    roots = [row.dns_root for row in rows]
-    catalog_rows = (
-        await db.execute(
-            select(AdultDomainCatalog.domain, AdultDomainCatalog.source_mask, AdultDomainCatalog.list_version)
-            .where(and_(AdultDomainCatalog.domain.in_(roots), AdultDomainCatalog.is_enabled.is_(True)))
-        )
-    ).all()
+            item = catalog_map.get(row.dns_root)
+            if item is None:
+                row.is_adult = False
+                row.mark_source = []
+                row.mark_version = None
+            else:
+                source_mask, list_version = item
+                row.is_adult = True
+                row.mark_source = _sources_from_mask(source_mask)
+                row.mark_version = list_version
 
-    catalog_map: dict[str, tuple[int, str | None]] = {
-        domain: (int(mask), list_version)
-        for domain, mask, list_version in catalog_rows
-    }
-
-    excluded_rows = (
-        await db.execute(
-            select(AdultDomainExclusion.domain)
-            .where(AdultDomainExclusion.domain.in_(roots))
-        )
-    ).scalars().all()
-    excluded_set = set(excluded_rows)
-
-    now = datetime.now(timezone.utc)
-    processed = 0
-    for row in rows:
-        if row.dns_root in excluded_set:
-            row.is_adult = False
-            row.mark_source = ["manual_exclude"]
-            row.mark_version = "manual_exclude"
             row.last_marked_at = now
             row.need_recheck = False
             processed += 1
-            continue
 
-        item = catalog_map.get(row.dns_root)
-        if item is None:
-            row.is_adult = False
-            row.mark_source = []
-            row.mark_version = None
-        else:
-            source_mask, list_version = item
-            row.is_adult = True
-            row.mark_source = _sources_from_mask(source_mask)
-            row.mark_version = list_version
+        try:
+            await db.commit()
+            return processed
+        except SQLAlchemyError as exc:
+            await db.rollback()
+            if _msg_has_deadlock(exc) and attempt < max_attempts:
+                logger.warning("adult recheck commit deadlock: retry %s/%s", attempt, max_attempts)
+                await asyncio.sleep(0.1 * attempt)
+                continue
+            logger.exception("adult recheck commit failed")
+            return 0
 
-        row.last_marked_at = now
-        row.need_recheck = False
-        processed += 1
-
-    await db.commit()
-    return processed
-
+    return 0
 
 async def _sleep_with_stop(stop_event: asyncio.Event, seconds: int) -> None:
     try:
