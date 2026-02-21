@@ -11,9 +11,9 @@ from collections.abc import Awaitable, Callable
 
 import httpx
 from sqlalchemy import inspect
-from sqlalchemy import and_, delete, exists, func, or_, select, text, update
+from sqlalchemy import String, and_, bindparam, delete, exists, func, or_, select, text, update
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.postgresql import ARRAY, insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import async_session, engine
@@ -47,7 +47,8 @@ V2FLY_ROOT_URL = "https://raw.githubusercontent.com/v2fly/domain-list-community/
 
 ADULT_SYNC_HTTP_MAX_CONCURRENCY = max(1, int(os.getenv("ADULT_SYNC_HTTP_MAX_CONCURRENCY", "1")))
 ADULT_SYNC_DB_CHUNK_SIZE = max(500, int(os.getenv("ADULT_SYNC_DB_CHUNK_SIZE", "5000")))
-ADULT_SYNC_TXT_DB_CHUNK_SIZE = max(1000, int(os.getenv("ADULT_SYNC_TXT_DB_CHUNK_SIZE", str(ADULT_SYNC_DB_CHUNK_SIZE))))
+ADULT_SYNC_TXT_DB_CHUNK_SIZE = max(500, min(20000, int(os.getenv("ADULT_SYNC_TXT_DB_CHUNK_SIZE", str(ADULT_SYNC_DB_CHUNK_SIZE)))))
+ADULT_SYNC_TXT_DB_COMMIT_EVERY = max(1, int(os.getenv("ADULT_SYNC_TXT_DB_COMMIT_EVERY", "10")))
 ADULT_SYNC_TXT_PATH = os.getenv("ADULT_SYNC_TXT_PATH", "/app/data/artifacts/adult_domains_merged.txt").strip()
 ADULT_SYNC_GARBAGE_RETENTION_DAYS = max(1, int(os.getenv("ADULT_SYNC_GARBAGE_RETENTION_DAYS", "30")))
 ADULT_SYNC_WEEKDAY_DEFAULT = max(0, min(6, int(os.getenv("ADULT_SYNC_WEEKDAY", "6"))))
@@ -246,31 +247,49 @@ async def _bulk_insert_staging_domains(
 ) -> None:
     if not domains:
         return
-    await db.execute(
-        text(
-            f"""
-            INSERT INTO {_ADULT_STAGING_TABLE}
-                (domain, category, source_mask, source_text, list_version, checked_at, is_enabled)
-            SELECT
-                d.domain,
-                'adult',
-                :source_mask,
-                CAST(:source_text AS jsonb),
-                :list_version,
-                :checked_at,
-                TRUE
-            FROM unnest(CAST(:domains AS text[])) AS d(domain)
-            ON CONFLICT (domain) DO NOTHING
-            """
-        ),
-        {
-            "domains": domains,
-            "source_mask": int(SOURCE_TXT_IMPORT),
-            "source_text": json.dumps(["txt_import"]),
-            "list_version": version,
-            "checked_at": checked_at,
-        },
-    )
+
+    stmt = text(
+        f"""
+        INSERT INTO {_ADULT_STAGING_TABLE}
+            (domain, category, source_mask, source_text, list_version, checked_at, is_enabled)
+        SELECT
+            d.domain,
+            'adult',
+            :source_mask,
+            CAST(:source_text AS jsonb),
+            :list_version,
+            :checked_at,
+            TRUE
+        FROM unnest(:domains) AS d(domain)
+        ON CONFLICT (domain) DO NOTHING
+        """
+    ).bindparams(bindparam("domains", type_=ARRAY(String())))
+
+    params = {
+        "domains": domains,
+        "source_mask": int(SOURCE_TXT_IMPORT),
+        "source_text": json.dumps(["txt_import"]),
+        "list_version": version,
+        "checked_at": checked_at,
+    }
+
+    try:
+        await db.execute(stmt, params)
+    except SQLAlchemyError as exc:
+        logger.warning("adult txt sync: fast array insert failed, fallback to executemany: %s", exc)
+        fallback_rows = [
+            {
+                "domain": domain,
+                "category": "adult",
+                "source_mask": int(SOURCE_TXT_IMPORT),
+                "source_text": ["txt_import"],
+                "list_version": version,
+                "checked_at": checked_at,
+                "is_enabled": True,
+            }
+            for domain in domains
+        ]
+        await _bulk_insert_staging_rows(db, fallback_rows)
 
 
 async def _merge_staging_into_catalog(db: AsyncSession, version: str) -> int:
@@ -880,6 +899,8 @@ async def sync_adult_catalog_from_txt(path: str | None = None, progress_cb: Prog
         bytes_read = 0
         checked_at = started_at
         txt_chunk_size = ADULT_SYNC_TXT_DB_CHUNK_SIZE
+        commit_every = ADULT_SYNC_TXT_DB_COMMIT_EVERY
+        chunks_since_commit = 0
 
         async with async_session() as db:
             await _prepare_adult_staging_table(db)
@@ -896,6 +917,7 @@ async def sync_adult_catalog_from_txt(path: str | None = None, progress_cb: Prog
                     if len(domains_buffer) >= txt_chunk_size:
                         await _bulk_insert_staging_domains(db, domains_buffer, version=version, checked_at=checked_at)
                         rows_total += len(domains_buffer)
+                        chunks_since_commit += 1
                         if total_bytes > 0:
                             await _emit_progress(
                                 progress_cb,
@@ -907,10 +929,14 @@ async def sync_adult_catalog_from_txt(path: str | None = None, progress_cb: Prog
                             )
                         domains_buffer.clear()
                         chunk_seen.clear()
+                        if chunks_since_commit >= commit_every:
+                            await db.commit()
+                            chunks_since_commit = 0
 
                 if domains_buffer:
                     await _bulk_insert_staging_domains(db, domains_buffer, version=version, checked_at=checked_at)
                     rows_total += len(domains_buffer)
+                    chunks_since_commit += 1
                     if total_bytes > 0:
                         await _emit_progress(
                             progress_cb,
@@ -923,7 +949,8 @@ async def sync_adult_catalog_from_txt(path: str | None = None, progress_cb: Prog
                     domains_buffer.clear()
                     chunk_seen.clear()
 
-            await db.commit()
+            if chunks_since_commit > 0:
+                await db.commit()
 
             inserted_total = await _merge_staging_into_catalog(db, version=version)
             await _emit_progress(progress_cb, phase="merge", progress_current=1, progress_total=1, progress_percent=92.0, message="Merged TXT into catalog")
