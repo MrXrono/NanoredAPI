@@ -1424,66 +1424,35 @@ async def _process_dns_unique_recheck_batch(db: AsyncSession, limit: int) -> int
         if not rows:
             return 0
 
-        row_candidates: dict[str, list[str]] = {
-            row.dns_root: _match_candidate_domains(row.dns_root)
-            for row in rows
-        }
-        all_candidates: set[str] = set()
-        for cands in row_candidates.values():
-            all_candidates.update(cands)
+        now = datetime.now(timezone.utc)
+        processed = 0
+        canonical_catalog_domain = func.regexp_replace(AdultDomainCatalog.domain, r'^(?:[0-9]+-)+', '')
+        canonical_exclusion_domain = func.regexp_replace(AdultDomainExclusion.domain, r'^(?:[0-9]+-)+', '')
 
-        catalog_map: dict[str, tuple[int, str | None]] = {}
-        excluded_set: set[str] = set()
+        for row in rows:
+            candidates = _match_candidate_domains(row.dns_root)
+            if not candidates:
+                row.is_adult = False
+                row.mark_source = []
+                row.mark_version = None
+                row.last_marked_at = now
+                row.need_recheck = False
+                processed += 1
+                continue
 
-        if all_candidates:
-            candidates_list = sorted(c for c in all_candidates if c)
-            canonical_catalog_domain = func.regexp_replace(AdultDomainCatalog.domain, r'^(?:[0-9]+-)+', '')
-            catalog_rows = (
-                await db.execute(
-                    select(AdultDomainCatalog.domain, AdultDomainCatalog.source_mask, AdultDomainCatalog.list_version)
-                    .where(
-                        and_(
-                            AdultDomainCatalog.is_enabled.is_(True),
-                            or_(
-                                AdultDomainCatalog.domain.in_(candidates_list),
-                                canonical_catalog_domain.in_(candidates_list),
-                            ),
-                        )
-                    )
-                )
-            ).all()
-            for domain, mask, list_version in catalog_rows:
-                canonical_domain = _canonical_domain_for_match(domain)
-                if not canonical_domain:
-                    continue
-                if canonical_domain not in all_candidates:
-                    continue
-                catalog_map.setdefault(canonical_domain, (int(mask), list_version))
-
-            canonical_exclusion_domain = func.regexp_replace(AdultDomainExclusion.domain, r'^(?:[0-9]+-)+', '')
-            excluded_rows = (
+            excluded_row = (
                 await db.execute(
                     select(AdultDomainExclusion.domain)
                     .where(
                         or_(
-                            AdultDomainExclusion.domain.in_(candidates_list),
-                            canonical_exclusion_domain.in_(candidates_list),
+                            AdultDomainExclusion.domain.in_(candidates),
+                            canonical_exclusion_domain.in_(candidates),
                         )
                     )
+                    .limit(1)
                 )
-            ).scalars().all()
-            excluded_set = {
-                canonical
-                for canonical in (_canonical_domain_for_match(d) for d in excluded_rows)
-                if canonical
-            }
-
-        now = datetime.now(timezone.utc)
-        processed = 0
-        for row in rows:
-            candidates = row_candidates.get(row.dns_root) or []
-            matched_excluded = next((d for d in candidates if d in excluded_set), None)
-            if matched_excluded is not None:
+            ).first()
+            if excluded_row is not None:
                 row.is_adult = False
                 row.mark_source = ["manual_exclude"]
                 row.mark_version = "manual_exclude"
@@ -1492,17 +1461,28 @@ async def _process_dns_unique_recheck_batch(db: AsyncSession, limit: int) -> int
                 processed += 1
                 continue
 
-            item = None
-            for candidate in candidates:
-                if candidate in catalog_map:
-                    item = catalog_map[candidate]
-                    break
-            if item is None:
+            catalog_row = (
+                await db.execute(
+                    select(AdultDomainCatalog.source_mask, AdultDomainCatalog.list_version)
+                    .where(
+                        and_(
+                            AdultDomainCatalog.is_enabled.is_(True),
+                            or_(
+                                AdultDomainCatalog.domain.in_(candidates),
+                                canonical_catalog_domain.in_(candidates),
+                            ),
+                        )
+                    )
+                    .order_by(desc(AdultDomainCatalog.checked_at), desc(AdultDomainCatalog.list_version))
+                    .limit(1)
+                )
+            ).first()
+            if catalog_row is None:
                 row.is_adult = False
                 row.mark_source = []
                 row.mark_version = None
             else:
-                source_mask, list_version = item
+                source_mask, list_version = catalog_row
                 row.is_adult = True
                 row.mark_source = _sources_from_mask(source_mask)
                 row.mark_version = list_version

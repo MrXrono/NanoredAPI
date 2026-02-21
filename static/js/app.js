@@ -1450,15 +1450,18 @@ async function loadRemnawaveAccounts(page = 1) {
     const d = await resp.json();
     const tbody = document.getElementById('rnw-accounts-tbody');
     tbody.innerHTML = d.items.map(i => {
-        const accountJson = JSON.stringify(String(i.account || ''));
+        const account = String(i.account || '');
+        const accountEsc = escapeHtml(account);
+        const accountAttr = accountEsc.replace(/"/g, '&quot;');
         return `
-        <tr onclick='selectRemnawaveAccount(${accountJson})' style="cursor:pointer;">
-            <td>${escapeHtml(i.account)}</td>
+        <tr>
+            <td>${accountEsc}</td>
             <td>${formatDate(i.last_activity)}</td>
             <td>${Number(i.total_requests || 0).toLocaleString('ru-RU')}</td>
+            <td><button class="btn btn-sm btn-primary rnw-select-account-btn" data-account="${accountAttr}">Открыть</button></td>
         </tr>
     `;
-    }).join('') || '<tr><td colspan="3">Нет данных</td></tr>';
+    }).join('') || '<tr><td colspan="4">Нет данных</td></tr>';
     renderPagination(document.getElementById('rnw-accounts-pagination'), d.total, d.page, d.per_page, 'loadRemnawaveAccounts');
 }
 
@@ -1579,6 +1582,16 @@ document.addEventListener('click', (e) => {
 });
 
 document.addEventListener('click', (e) => {
+    const accountBtn = e.target.closest('.rnw-select-account-btn');
+    if (accountBtn) {
+        e.preventDefault();
+        const account = String(accountBtn.getAttribute('data-account') || '').trim();
+        if (account) {
+            selectRemnawaveAccount(account);
+        }
+        return;
+    }
+
     const deleteBtn = e.target.closest('.sql-browser-delete-row');
     if (deleteBtn) {
         e.preventDefault();
