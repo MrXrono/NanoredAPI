@@ -188,6 +188,60 @@ async function runAdultCleanupNow() {
     }
 }
 
+async function setAdultWeeklySchedule() {
+    const btn = document.getElementById('run-adult-schedule-btn');
+    const weekdayEl = document.getElementById('adult-sync-weekday');
+    const timeEl = document.getElementById('adult-sync-time');
+    if (!weekdayEl || !timeEl) return;
+    const weekday = Number(weekdayEl.value || 6);
+    const raw = String(timeEl.value || '03:00');
+    const [h, m] = raw.split(':');
+    const hour = Number(h || 3);
+    const minute = Number(m || 0);
+    if (btn) btn.disabled = true;
+    try {
+        const resp = await api('/admin/adult-sync/schedule', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ weekday, hour, minute }),
+        });
+        const data = await resp.json();
+        if (data && data.message) alert(data.message);
+        await loadDatabaseStatus();
+    } catch (err) {
+        console.error('set adult schedule error:', err);
+        alert('Не удалось сохранить weekly расписание');
+    } finally {
+        if (btn) btn.disabled = false;
+    }
+}
+
+function formatTaskProgress(task) {
+    if (!task) return '-';
+    const percent = Number(task.progress_percent || 0);
+    const cur = Number(task.progress_current || 0);
+    const total = Number(task.progress_total || 0);
+    if (total > 0) return `${cur}/${total} (${percent.toFixed(1)}%)`;
+    return `${percent.toFixed(1)}%`;
+}
+
+function updateAdultButtonsByTaskState(tasks) {
+    const map = [
+        ['sync', 'run-adult-sync-btn', 'Запустить sync'],
+        ['recheck', 'run-adult-recheck-btn', 'Перепроверить все'],
+        ['txt_sync', 'run-adult-sync-txt-btn', 'TXT → DB'],
+        ['cleanup', 'run-adult-cleanup-btn', 'Удалить мусор'],
+    ];
+    for (const [taskKey, btnId, baseLabel] of map) {
+        const btn = document.getElementById(btnId);
+        if (!btn) continue;
+        const t = tasks?.[taskKey] || {};
+        const running = Boolean(t.running);
+        btn.disabled = running;
+        btn.textContent = running ? `${baseLabel} (${formatTaskProgress(t)})` : baseLabel;
+    }
+}
+
 async function loadDatabaseStatus() {
     try {
         const resp = await api('/admin/database-status');
@@ -224,14 +278,38 @@ async function loadDatabaseStatus() {
 
         const adultCatalogEnabled = Number(adult.catalog_domains_enabled || 0);
         const adultCatalogTotal = Number(adult.catalog_domains_total || 0);
+        const schedule = adult.schedule || {};
+        const services = adult.services || {};
+        const taskDetails = adult.task_details || {};
+        const syncTask = taskDetails.sync || {};
+        const recheckTask = taskDetails.recheck || {};
+        const txtTask = taskDetails.txt_sync || {};
+        const cleanupTask = taskDetails.cleanup || {};
+        const weekdaySelect = document.getElementById('adult-sync-weekday');
+        const timeInput = document.getElementById('adult-sync-time');
+        if (weekdaySelect && Number.isFinite(Number(schedule.weekday))) weekdaySelect.value = String(Number(schedule.weekday));
+        if (timeInput && Number.isFinite(Number(schedule.hour)) && Number.isFinite(Number(schedule.minute))) {
+            const h = String(Number(schedule.hour)).padStart(2, '0');
+            const m = String(Number(schedule.minute)).padStart(2, '0');
+            timeInput.value = `${h}:${m}`;
+        }
+        updateAdultButtonsByTaskState(taskDetails);
         const adultSyncRows = [
             ['Статус', String(adult.status || 'unknown')],
             ['Комментарий', String(adult.status_hint || '-')],
+            ['Службы', `scheduler:${services.scheduler || 'unknown'}, recheck:${services.recheck_worker || 'unknown'}, catalog:${services.catalog_sync_lock || 'unknown'}`],
             ['Фоновые задачи', `sync:${adult.manual_tasks?.sync ? 'ON' : 'off'}, recheck:${adult.manual_tasks?.recheck ? 'ON' : 'off'}, txt:${adult.manual_tasks?.txt_sync ? 'ON' : 'off'}, cleanup:${adult.manual_tasks?.cleanup ? 'ON' : 'off'}`],
+            ['Scheduler loop', formatDate(services.last_loop_at)],
+            ['Scheduler error', formatDate(services.last_error_at)],
+            ['Расписание weekly (UTC)', `${String(schedule.weekday_label || '?')} ${String(schedule.hour ?? '--').padStart(2, '0')}:${String(schedule.minute ?? '--').padStart(2, '0')} [${String(schedule.source || '-')}]`],
             ['Последний запуск', formatDate(adult.last_run_at)],
             ['Версия листа', String(adult.last_version || '-')],
             ['Обновлено доменов', Number(adult.last_updated_rows || 0)],
             ['Следующий sync (ETA)', formatDate(adult.next_sync_eta)],
+            ['Task sync', `${String(syncTask.status || '-')}; ${formatTaskProgress(syncTask)}; ${String(syncTask.message || '-')}`],
+            ['Task recheck', `${String(recheckTask.status || '-')}; ${formatTaskProgress(recheckTask)}; ${String(recheckTask.message || '-')}`],
+            ['Task TXT→DB', `${String(txtTask.status || '-')}; ${formatTaskProgress(txtTask)}; ${String(txtTask.message || '-')}`],
+            ['Task cleanup', `${String(cleanupTask.status || '-')}; ${formatTaskProgress(cleanupTask)}; ${String(cleanupTask.message || '-')}`],
             ['Catalog (enabled / total)', `${adultCatalogEnabled} / ${adultCatalogTotal}`],
             ['Catalog by source', `BLP: ${Number((adult.catalog_sources || {}).blocklistproject || 0)}, OISD: ${Number((adult.catalog_sources || {}).oisd || 0)}, V2Fly: ${Number((adult.catalog_sources || {}).v2fly || 0)}`],
             ['Unique 18+ / total', `${Number(adult.unique_adult_total || 0)} / ${Number(adult.unique_domains_total || 0)}`],

@@ -36,7 +36,10 @@ from app.models.remnawave_log import (
 from app.services.remnawave_adult import (
     cleanup_adult_catalog_garbage,
     force_recheck_all_dns_unique,
+    get_adult_sync_runtime_state,
+    get_adult_sync_schedule,
     normalize_remnawave_domain,
+    set_adult_sync_schedule,
     sync_adult_catalog,
     sync_adult_catalog_from_txt,
 )
@@ -67,6 +70,12 @@ _adult_manual_txt_sync_task: asyncio.Task | None = None
 _adult_manual_cleanup_task: asyncio.Task | None = None
 _DATABASE_STATUS_CACHE_TTL_SEC = 20
 _database_status_cache: dict[str, object] = {"ts": 0.0, "data": None}
+_adult_task_state: dict[str, dict] = {
+    "sync": {"label": "sync", "running": False, "status": "idle"},
+    "recheck": {"label": "recheck", "running": False, "status": "idle"},
+    "txt_sync": {"label": "txt_sync", "running": False, "status": "idle"},
+    "cleanup": {"label": "cleanup", "running": False, "status": "idle"},
+}
 
 
 def _invalidate_database_status_cache() -> None:
@@ -77,6 +86,57 @@ def _invalidate_database_status_cache() -> None:
 def _task_running(task_ref_name: str) -> bool:
     task = globals().get(task_ref_name)
     return isinstance(task, asyncio.Task) and not task.done()
+
+
+def _task_state_snapshot() -> dict[str, dict]:
+    return {k: dict(v) for k, v in _adult_task_state.items()}
+
+
+def _task_set_started(task_key: str) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    item = _adult_task_state.setdefault(task_key, {})
+    item.update(
+        {
+            "running": True,
+            "status": "running",
+            "started_at": now,
+            "finished_at": None,
+            "message": "Started",
+            "progress_current": 0,
+            "progress_total": 0,
+            "progress_percent": 0.0,
+            "last_error": None,
+        }
+    )
+
+
+def _task_progress_cb(task_key: str):
+    def _inner(payload: dict):
+        item = _adult_task_state.setdefault(task_key, {})
+        item["running"] = True
+        item["status"] = str(payload.get("status") or "running")
+        item["message"] = str(payload.get("message") or item.get("message") or "")
+        item["phase"] = str(payload.get("phase") or item.get("phase") or "")
+        item["progress_current"] = int(payload.get("progress_current", item.get("progress_current", 0)) or 0)
+        item["progress_total"] = int(payload.get("progress_total", item.get("progress_total", 0)) or 0)
+        item["progress_percent"] = round(float(payload.get("progress_percent", item.get("progress_percent", 0.0)) or 0.0), 2)
+        item["updated_at"] = datetime.now(timezone.utc).isoformat()
+    return _inner
+
+
+def _task_set_done(task_key: str, *, status: str, result: dict | None = None, error: str | None = None) -> None:
+    item = _adult_task_state.setdefault(task_key, {})
+    item["running"] = False
+    item["status"] = status
+    item["finished_at"] = datetime.now(timezone.utc).isoformat()
+    if result is not None:
+        item["result"] = result
+    if error:
+        item["last_error"] = error
+        item["message"] = error
+    elif status in {"ok", "done", "completed"}:
+        item["message"] = "Completed"
+        item["progress_percent"] = 100.0
 
 
 
@@ -112,17 +172,23 @@ async def _count_redis_keys(redis, pattern: str) -> int:
     return total
 
 
-def _start_background_task(task_name: str, task_ref_name: str, runner):
+def _start_background_task(task_name: str, task_ref_name: str, runner, task_key: str | None = None):
     globals_ref = globals()
     task = globals_ref.get(task_ref_name)
     if isinstance(task, asyncio.Task) and not task.done():
         return {"ok": True, "started": False, "message": f"{task_name} is already running"}
+    if task_key:
+        _task_set_started(task_key)
 
     async def _guarded_runner():
         try:
-            await runner()
+            result = await runner()
+            if task_key:
+                _task_set_done(task_key, status="ok", result=result if isinstance(result, dict) else {"result": str(result)})
         except Exception as exc:
             logging_buffer.add("error", f"adult-sync {task_name} failed: {exc}")
+            if task_key:
+                _task_set_done(task_key, status="failed", error=str(exc))
         finally:
             _invalidate_database_status_cache()
 
@@ -375,6 +441,21 @@ async def database_status(db: AsyncSession = Depends(get_db)):
             "txt_sync": _task_running("_adult_manual_txt_sync_task"),
             "cleanup": _task_running("_adult_manual_cleanup_task"),
         },
+        "task_details": _task_state_snapshot(),
+        "services": {
+            "scheduler": "unknown",
+            "recheck_worker": "unknown",
+            "catalog_sync_lock": "unknown",
+            "last_loop_at": None,
+            "last_error_at": None,
+        },
+        "schedule": {
+            "weekday": 6,
+            "hour": 3,
+            "minute": 0,
+            "weekday_label": "Sun",
+            "source": "default",
+        },
     }
 
     try:
@@ -393,6 +474,37 @@ async def database_status(db: AsyncSession = Depends(get_db)):
             adult_sync["last_updated_rows"] = int(state_stats.get("updated", 0) or 0)
             if state_stats.get("status"):
                 adult_sync["status_hint"] = str(state_stats.get("status"))
+    except Exception:
+        pass
+
+    try:
+        schedule = await get_adult_sync_schedule()
+        weekday = int(schedule.get("weekday", 6) or 6)
+        hour = int(schedule.get("hour", 3) or 3)
+        minute = int(schedule.get("minute", 0) or 0)
+        labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        adult_sync["schedule"] = {
+            "weekday": weekday,
+            "hour": hour,
+            "minute": minute,
+            "weekday_label": labels[weekday] if 0 <= weekday < 7 else str(weekday),
+            "source": str(schedule.get("source") or "unknown"),
+        }
+    except Exception:
+        pass
+
+    try:
+        runtime = get_adult_sync_runtime_state()
+        scheduler_running = bool(runtime.get("running"))
+        adult_sync["services"] = {
+            "scheduler": "running" if scheduler_running else "stopped",
+            "recheck_worker": "running" if adult_sync["manual_tasks"]["recheck"] else "idle",
+            "catalog_sync_lock": "running" if adult_sync["manual_tasks"]["sync"] or adult_sync["manual_tasks"]["txt_sync"] else "idle",
+            "last_loop_at": runtime.get("last_loop_at"),
+            "last_error_at": runtime.get("last_error"),
+        }
+        if runtime.get("next_sync_at"):
+            adult_sync["next_sync_eta"] = runtime.get("next_sync_at")
     except Exception:
         pass
 
@@ -540,28 +652,50 @@ async def database_status(db: AsyncSession = Depends(get_db)):
 
 @router.post("/adult-sync/run")
 async def run_adult_sync_now():
-    return _start_background_task("sync", "_adult_manual_sync_task", sync_adult_catalog)
+    async def _runner():
+        return await sync_adult_catalog(progress_cb=_task_progress_cb("sync"))
+
+    return _start_background_task("sync", "_adult_manual_sync_task", _runner, task_key="sync")
 
 
 @router.post("/adult-sync/recheck-all")
 async def run_adult_recheck_all_now():
     async def _runner():
-        await force_recheck_all_dns_unique(limit=5000)
+        return await force_recheck_all_dns_unique(limit=5000, progress_cb=_task_progress_cb("recheck"))
 
-    return _start_background_task("full recheck", "_adult_manual_recheck_task", _runner)
+    return _start_background_task("full recheck", "_adult_manual_recheck_task", _runner, task_key="recheck")
 
 
 @router.post("/adult-sync/sync-from-txt")
 async def run_adult_sync_from_txt_now(path: str | None = Body(default=None, embed=True)):
     async def _runner():
-        await sync_adult_catalog_from_txt(path=path)
+        return await sync_adult_catalog_from_txt(path=path, progress_cb=_task_progress_cb("txt_sync"))
 
-    return _start_background_task("txt sync", "_adult_manual_txt_sync_task", _runner)
+    return _start_background_task("txt sync", "_adult_manual_txt_sync_task", _runner, task_key="txt_sync")
 
 
 @router.post("/adult-sync/cleanup-garbage")
 async def run_adult_cleanup_now():
-    return _start_background_task("cleanup", "_adult_manual_cleanup_task", cleanup_adult_catalog_garbage)
+    async def _runner():
+        return await cleanup_adult_catalog_garbage(progress_cb=_task_progress_cb("cleanup"))
+
+    return _start_background_task("cleanup", "_adult_manual_cleanup_task", _runner, task_key="cleanup")
+
+
+@router.post("/adult-sync/schedule")
+async def set_adult_sync_schedule_endpoint(
+    weekday: int = Body(default=6, embed=True),
+    hour: int = Body(default=3, embed=True),
+    minute: int = Body(default=0, embed=True),
+):
+    try:
+        data = await set_adult_sync_schedule(weekday=weekday, hour=hour, minute=minute)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    _invalidate_database_status_cache()
+    return {"ok": True, "schedule": data, "message": "weekly schedule updated"}
 
 
 @router.get("/dashboard")

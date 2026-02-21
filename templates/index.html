@@ -228,11 +228,22 @@
                 <div class="table-container">
                     <div class="table-header">
                         <h3>18+ Sync</h3>
-                        <div style="display:flex; gap:8px;">
+                        <div style="display:flex; gap:8px; flex-wrap:wrap;">
                             <button id="run-adult-sync-btn" class="btn btn-sm" onclick="runAdultSyncNow()">Запустить sync</button>
                             <button id="run-adult-recheck-btn" class="btn btn-sm" onclick="runAdultRecheckAllNow()">Перепроверить все</button>
                             <button id="run-adult-sync-txt-btn" class="btn btn-sm" onclick="runAdultTxtSyncNow()">TXT → DB</button>
                             <button id="run-adult-cleanup-btn" class="btn btn-sm" onclick="runAdultCleanupNow()">Удалить мусор</button>
+                            <select id="adult-sync-weekday" class="btn btn-sm" style="min-width:100px;">
+                                <option value="0">Mon</option>
+                                <option value="1">Tue</option>
+                                <option value="2">Wed</option>
+                                <option value="3">Thu</option>
+                                <option value="4">Fri</option>
+                                <option value="5">Sat</option>
+                                <option value="6" selected>Sun</option>
+                            </select>
+                            <input id="adult-sync-time" class="btn btn-sm" type="time" value="03:00" style="min-width:110px;">
+                            <button id="run-adult-schedule-btn" class="btn btn-sm" onclick="setAdultWeeklySchedule()">Сохранить weekly time</button>
                         </div>
                     </div>
                     <table>

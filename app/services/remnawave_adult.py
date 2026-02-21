@@ -7,6 +7,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urljoin
+from collections.abc import Awaitable, Callable
 
 import httpx
 from sqlalchemy import inspect
@@ -28,6 +29,7 @@ except Exception:  # pragma: no cover
 
 
 ADULT_SYNC_JOB = "adult_domain_sync"
+ADULT_SYNC_SCHEDULE_JOB = "adult_domain_sync_schedule"
 SOURCE_BLOCKLIST = 1
 SOURCE_OISD = 2
 SOURCE_V2FLY = 4
@@ -44,10 +46,12 @@ OISD_ROOT_URL = "https://oisd.nl/includedlists/nsfw"
 V2FLY_ROOT_URL = "https://raw.githubusercontent.com/v2fly/domain-list-community/refs/heads/master/data/category-porn"
 
 ADULT_SYNC_HTTP_MAX_CONCURRENCY = max(1, int(os.getenv("ADULT_SYNC_HTTP_MAX_CONCURRENCY", "1")))
-ADULT_SYNC_STARTUP_DELAY_SECONDS = max(0, int(os.getenv("ADULT_SYNC_STARTUP_DELAY_SECONDS", "3600")))
 ADULT_SYNC_DB_CHUNK_SIZE = max(500, int(os.getenv("ADULT_SYNC_DB_CHUNK_SIZE", "5000")))
 ADULT_SYNC_TXT_PATH = os.getenv("ADULT_SYNC_TXT_PATH", "/app/data/artifacts/adult_domains_merged.txt").strip()
 ADULT_SYNC_GARBAGE_RETENTION_DAYS = max(1, int(os.getenv("ADULT_SYNC_GARBAGE_RETENTION_DAYS", "30")))
+ADULT_SYNC_WEEKDAY_DEFAULT = max(0, min(6, int(os.getenv("ADULT_SYNC_WEEKDAY", "6"))))
+ADULT_SYNC_HOUR_DEFAULT = max(0, min(23, int(os.getenv("ADULT_SYNC_HOUR_UTC", "3"))))
+ADULT_SYNC_MINUTE_DEFAULT = max(0, min(59, int(os.getenv("ADULT_SYNC_MINUTE_UTC", "0"))))
 ADULT_SYNC_CLEANUP_TABLES = (
     "adult_domain_catalog",
     "remnawave_dns_unique",
@@ -76,7 +80,6 @@ _FULL_RECHECK_LOCK = asyncio.Lock()
 _TXT_SYNC_LOCK = asyncio.Lock()
 _MAINTENANCE_LOCK = asyncio.Lock()
 _SCHEMA_READY_LOCK = asyncio.Lock()
-_CATALOG_STARTUP_CHECK_DAYS = 7
 _ADULT_TABLES = {
     "adult_domain_catalog",
     "remnawave_dns_unique",
@@ -86,6 +89,21 @@ _ADULT_TABLES = {
 _adult_schema_ready = False
 _adult_table_tuned = False
 _ADULT_STAGING_TABLE = "adult_domain_catalog_staging"
+ProgressCallback = Callable[[dict], None | Awaitable[None]]
+_SCHEDULE_LOCK = asyncio.Lock()
+_schedule_cache: dict | None = None
+_bg_runtime_state: dict[str, object] = {
+    "running": False,
+    "last_loop_at": None,
+    "last_error": None,
+    "next_sync_at": None,
+    "schedule": {
+        "weekday": ADULT_SYNC_WEEKDAY_DEFAULT,
+        "hour": ADULT_SYNC_HOUR_DEFAULT,
+        "minute": ADULT_SYNC_MINUTE_DEFAULT,
+        "source": "env/default",
+    },
+}
 
 
 def _msg_has_undefined_table(err: Exception) -> bool:
@@ -354,6 +372,106 @@ def _sources_from_mask(mask: int) -> list[str]:
     return out
 
 
+async def _emit_progress(progress_cb: ProgressCallback | None, **payload) -> None:
+    if progress_cb is None:
+        return
+    try:
+        maybe = progress_cb(payload)
+        if asyncio.iscoroutine(maybe):
+            await maybe
+    except Exception:
+        logger.debug("adult progress callback failed", exc_info=True)
+
+
+def _weekday_label(weekday: int) -> str:
+    names = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+    return names[max(0, min(6, weekday))]
+
+
+async def get_adult_sync_schedule() -> dict:
+    global _schedule_cache
+    async with _SCHEDULE_LOCK:
+        if _schedule_cache is not None:
+            return dict(_schedule_cache)
+
+        schedule = {
+            "weekday": ADULT_SYNC_WEEKDAY_DEFAULT,
+            "hour": ADULT_SYNC_HOUR_DEFAULT,
+            "minute": ADULT_SYNC_MINUTE_DEFAULT,
+            "source": "env/default",
+        }
+        try:
+            if await _ensure_adult_schema():
+                async with async_session() as db:
+                    state = await db.get(AdultSyncState, ADULT_SYNC_SCHEDULE_JOB)
+                if state and isinstance(state.stats_json, dict):
+                    stats = state.stats_json
+                    weekday = int(stats.get("weekday", schedule["weekday"]) or schedule["weekday"])
+                    hour = int(stats.get("hour", schedule["hour"]) or schedule["hour"])
+                    minute = int(stats.get("minute", schedule["minute"]) or schedule["minute"])
+                    schedule = {
+                        "weekday": max(0, min(6, weekday)),
+                        "hour": max(0, min(23, hour)),
+                        "minute": max(0, min(59, minute)),
+                        "source": "db",
+                    }
+        except Exception:
+            logger.warning("adult schedule read failed; fallback to defaults", exc_info=True)
+
+        _schedule_cache = schedule
+        return dict(schedule)
+
+
+async def set_adult_sync_schedule(*, weekday: int, hour: int, minute: int) -> dict:
+    if weekday < 0 or weekday > 6:
+        raise ValueError("weekday must be in range 0..6")
+    if hour < 0 or hour > 23:
+        raise ValueError("hour must be in range 0..23")
+    if minute < 0 or minute > 59:
+        raise ValueError("minute must be in range 0..59")
+    if not await _ensure_adult_schema():
+        raise RuntimeError("adult schema missing")
+
+    stats = {"weekday": int(weekday), "hour": int(hour), "minute": int(minute)}
+    async with async_session() as db:
+        stmt = pg_insert(AdultSyncState).values(
+            job_name=ADULT_SYNC_SCHEDULE_JOB,
+            last_run_at=datetime.now(timezone.utc),
+            last_watermark=f"{weekday}:{hour:02d}:{minute:02d}",
+            status="ok",
+            stats_json=stats,
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[AdultSyncState.job_name],
+            set_={
+                "last_run_at": stmt.excluded.last_run_at,
+                "last_watermark": stmt.excluded.last_watermark,
+                "status": stmt.excluded.status,
+                "stats_json": stmt.excluded.stats_json,
+            },
+        )
+        await db.execute(stmt)
+        await db.commit()
+
+    global _schedule_cache
+    _schedule_cache = {"weekday": weekday, "hour": hour, "minute": minute, "source": "db"}
+    return {
+        "weekday": weekday,
+        "hour": hour,
+        "minute": minute,
+        "weekday_label": _weekday_label(weekday),
+        "source": "db",
+    }
+
+
+def get_adult_sync_runtime_state() -> dict:
+    state = dict(_bg_runtime_state)
+    schedule = state.get("schedule")
+    if isinstance(schedule, dict):
+        state["schedule"] = dict(schedule)
+    return state
+
+
 def _extract_domains_from_text(text_value: str) -> set[str]:
     domains: set[str] = set()
     for raw_line in text_value.splitlines():
@@ -497,7 +615,7 @@ async def _upsert_sync_state(*, status: str, stats: dict, version: str, last_wat
         await db.commit()
 
 
-async def sync_adult_catalog() -> dict:
+async def sync_adult_catalog(progress_cb: ProgressCallback | None = None) -> dict:
     if not await _ensure_adult_schema():
         return {
             "version": datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
@@ -507,17 +625,27 @@ async def sync_adult_catalog() -> dict:
         }
 
     async with _CATALOG_SYNC_LOCK:
-        return await _sync_adult_catalog_internal()
+        return await _sync_adult_catalog_internal(progress_cb=progress_cb)
 
 
-async def _sync_adult_catalog_internal() -> dict:
+async def _sync_adult_catalog_internal(progress_cb: ProgressCallback | None = None) -> dict:
     start = datetime.now(timezone.utc)
     version = start.strftime("%Y%m%dT%H%M%SZ")
+    await _emit_progress(progress_cb, phase="collect", progress_current=0, progress_total=100, progress_percent=1.0, message="Collecting lists")
     domain_map = await collect_adult_domain_map()
+    await _emit_progress(
+        progress_cb,
+        phase="collect",
+        progress_current=len(domain_map),
+        progress_total=len(domain_map),
+        progress_percent=40.0,
+        message=f"Collected {len(domain_map)} domains",
+    )
 
     if not domain_map:
         stats = {"version": version, "domains": 0, "updated": 0, "status": "empty"}
         await _upsert_sync_state(status="warn", stats=stats, version=version)
+        await _emit_progress(progress_cb, phase="done", progress_current=0, progress_total=0, progress_percent=100.0, message="No domains collected", status="warn")
         return stats
 
     items = list(domain_map.items())
@@ -525,6 +653,8 @@ async def _sync_adult_catalog_internal() -> dict:
 
     async with async_session() as db:
         await _prepare_adult_staging_table(db)
+        total_items = len(items)
+        processed_items = 0
         for i in range(0, len(items), chunk_size):
             chunk = items[i : i + chunk_size]
             rows = []
@@ -541,8 +671,18 @@ async def _sync_adult_catalog_internal() -> dict:
                     }
                 )
             await _bulk_insert_staging_rows(db, rows)
+            processed_items += len(chunk)
+            await _emit_progress(
+                progress_cb,
+                phase="stage",
+                progress_current=processed_items,
+                progress_total=total_items,
+                progress_percent=40.0 + (processed_items / max(total_items, 1)) * 45.0,
+                message=f"Prepared {processed_items}/{total_items}",
+            )
 
         await _merge_staging_into_catalog(db, version=version)
+        await _emit_progress(progress_cb, phase="merge", progress_current=1, progress_total=1, progress_percent=90.0, message="Merged into catalog")
 
         stale_stmt = (
             update(AdultDomainCatalog)
@@ -583,42 +723,8 @@ async def _sync_adult_catalog_internal() -> dict:
             "status": "ok",
         }
         await _upsert_sync_state(status="ok", stats=stats, version=version, last_watermark=str(start))
+        await _emit_progress(progress_cb, phase="done", progress_current=1, progress_total=1, progress_percent=100.0, message="Catalog sync finished", status="ok")
         return stats
-
-
-async def _adult_catalog_needs_bootstrap_sync() -> bool:
-    if not await _ensure_adult_schema():
-        # Try to bootstrap sync once at startup so schema can be created automatically.
-        return True
-
-    async with async_session() as db:
-        state = await db.get(AdultSyncState, ADULT_SYNC_JOB)
-    if not state:
-        return True
-    if state.status != "ok" or state.last_run_at is None:
-        return True
-    cutoff = datetime.now(timezone.utc) - timedelta(days=_CATALOG_STARTUP_CHECK_DAYS)
-    return state.last_run_at < cutoff
-
-
-async def _run_startup_adult_catalog_sync(stop_event: asyncio.Event) -> None:
-    if stop_event.is_set():
-        return
-
-    if ADULT_SYNC_STARTUP_DELAY_SECONDS > 0:
-        logger.info("adult sync: startup bootstrap delayed by %s sec", ADULT_SYNC_STARTUP_DELAY_SECONDS)
-        await _sleep_with_stop(stop_event, ADULT_SYNC_STARTUP_DELAY_SECONDS)
-        if stop_event.is_set():
-            return
-
-    try:
-        if not await _adult_catalog_needs_bootstrap_sync():
-            return
-        logger.info("adult sync: startup bootstrap triggered (stale/missing catalog)")
-        stats = await sync_adult_catalog()
-        logger.info("adult sync: startup bootstrap finished: %s", stats)
-    except Exception:
-        logger.exception("adult sync: startup bootstrap failed")
 
 
 async def process_dns_unique_recheck_batch(limit: int = 5000, session: AsyncSession | None = None) -> int:
@@ -628,7 +734,7 @@ async def process_dns_unique_recheck_batch(limit: int = 5000, session: AsyncSess
     return await _process_dns_unique_recheck_batch(session, limit=limit)
 
 
-async def force_recheck_all_dns_unique(limit: int = 5000) -> dict[str, int]:
+async def force_recheck_all_dns_unique(limit: int = 5000, progress_cb: ProgressCallback | None = None) -> dict[str, int]:
     """Force full recheck of all unique domains against current adult catalog."""
     if not await _ensure_adult_schema():
         return {
@@ -639,27 +745,46 @@ async def force_recheck_all_dns_unique(limit: int = 5000) -> dict[str, int]:
 
     async with _FULL_RECHECK_LOCK:
         async with async_session() as db:
+            await _emit_progress(progress_cb, phase="mark", progress_current=0, progress_total=1, progress_percent=2.0, message="Marking rows for recheck")
             mark_stmt = update(RemnawaveDNSUnique).values(need_recheck=True)
             mark_res = await db.execute(mark_stmt)
             await db.commit()
 
             marked = int(mark_res.rowcount or 0)
             processed = 0
+            await _emit_progress(
+                progress_cb,
+                phase="recheck",
+                progress_current=processed,
+                progress_total=marked,
+                progress_percent=5.0 if marked else 100.0,
+                message=f"Marked {marked} rows",
+            )
 
             while True:
                 changed = await _process_dns_unique_recheck_batch(db, limit=limit)
                 if changed <= 0:
                     break
                 processed += changed
+                await _emit_progress(
+                    progress_cb,
+                    phase="recheck",
+                    progress_current=processed,
+                    progress_total=marked,
+                    progress_percent=5.0 + (processed / max(marked, 1)) * 95.0,
+                    message=f"Processed {processed}/{marked}",
+                )
 
-            return {
+            result = {
                 "marked": marked,
                 "processed": processed,
                 "status": "ok",
             }
+            await _emit_progress(progress_cb, phase="done", progress_current=processed, progress_total=marked, progress_percent=100.0, message="Full recheck finished", status="ok")
+            return result
 
 
-async def sync_adult_catalog_from_txt(path: str | None = None) -> dict:
+async def sync_adult_catalog_from_txt(path: str | None = None, progress_cb: ProgressCallback | None = None) -> dict:
     """Sync adult catalog from merged TXT list (domain per line)."""
     if not await _ensure_adult_schema():
         return {"status": "schema_missing", "inserted": 0, "processed": 0, "path": path or ADULT_SYNC_TXT_PATH}
@@ -674,25 +799,30 @@ async def sync_adult_catalog_from_txt(path: str | None = None) -> dict:
                 "path": str(txt_path),
             }
             await _upsert_sync_state(status="missing_file", stats=stats, version="txt-missing", last_watermark=None)
+            await _emit_progress(progress_cb, phase="error", progress_current=0, progress_total=0, progress_percent=100.0, message=f"File not found: {txt_path}", status="missing_file")
             return stats
 
         started_at = datetime.now(timezone.utc)
         version = f"txt-{started_at.strftime('%Y%m%dT%H%M%SZ')}"
+        total_bytes = max(0, int(txt_path.stat().st_size or 0))
         await _upsert_sync_state(
             status="running",
             stats={"status": "running", "path": str(txt_path), "started_at": started_at.isoformat()},
             version=version,
             last_watermark=str(started_at),
         )
+        await _emit_progress(progress_cb, phase="read", progress_current=0, progress_total=total_bytes, progress_percent=1.0, message="Reading TXT list")
         rows_buffer: list[dict] = []
         rows_total = 0
         inserted_total = 0
+        bytes_read = 0
         checked_at = started_at
 
         async with async_session() as db:
             await _prepare_adult_staging_table(db)
             with txt_path.open("r", encoding="utf-8", errors="replace") as fp:
                 for line in fp:
+                    bytes_read += len(line.encode("utf-8", errors="ignore"))
                     domain = normalize_remnawave_domain(line)
                     if not domain:
                         continue
@@ -710,14 +840,33 @@ async def sync_adult_catalog_from_txt(path: str | None = None) -> dict:
                     if len(rows_buffer) >= ADULT_SYNC_DB_CHUNK_SIZE:
                         await _bulk_insert_staging_rows(db, rows_buffer)
                         rows_total += len(rows_buffer)
+                        if total_bytes > 0:
+                            await _emit_progress(
+                                progress_cb,
+                                phase="stage",
+                                progress_current=bytes_read,
+                                progress_total=total_bytes,
+                                progress_percent=5.0 + (bytes_read / total_bytes) * 80.0,
+                                message=f"Staged {rows_total} rows",
+                            )
                         rows_buffer.clear()
 
                 if rows_buffer:
                     await _bulk_insert_staging_rows(db, rows_buffer)
                     rows_total += len(rows_buffer)
+                    if total_bytes > 0:
+                        await _emit_progress(
+                            progress_cb,
+                            phase="stage",
+                            progress_current=min(bytes_read, total_bytes),
+                            progress_total=total_bytes,
+                            progress_percent=85.0,
+                            message=f"Staged {rows_total} rows",
+                        )
                     rows_buffer.clear()
 
             inserted_total = await _merge_staging_into_catalog(db, version=version)
+            await _emit_progress(progress_cb, phase="merge", progress_current=1, progress_total=1, progress_percent=92.0, message="Merged TXT into catalog")
 
             stale_stmt = (
                 update(AdultDomainCatalog)
@@ -743,6 +892,7 @@ async def sync_adult_catalog_from_txt(path: str | None = None) -> dict:
             "version": version,
         }
         await _upsert_sync_state(status="ok", stats=stats, version=version, last_watermark=str(started_at))
+        await _emit_progress(progress_cb, phase="done", progress_current=rows_total, progress_total=rows_total, progress_percent=100.0, message=f"TXT sync finished ({rows_total} rows)", status="ok")
         return stats
 
 
@@ -798,12 +948,13 @@ async def _mark_matching_domains_for_recheck(db: AsyncSession, version: str) -> 
     return int(res.rowcount or 0)
 
 
-async def cleanup_adult_catalog_garbage() -> dict:
+async def cleanup_adult_catalog_garbage(progress_cb: ProgressCallback | None = None) -> dict:
     """Delete stale catalog rows and run VACUUM ANALYZE for hot tables."""
     if not await _ensure_adult_schema():
         return {"status": "schema_missing", "deleted": 0, "vacuumed_tables": []}
 
     async with _MAINTENANCE_LOCK:
+        await _emit_progress(progress_cb, phase="delete", progress_current=0, progress_total=1, progress_percent=10.0, message="Deleting stale rows")
         cutoff = datetime.now(timezone.utc) - timedelta(days=ADULT_SYNC_GARBAGE_RETENTION_DAYS)
         deleted_rows = 0
         async with async_session() as db:
@@ -815,23 +966,35 @@ async def cleanup_adult_catalog_garbage() -> dict:
             result = await db.execute(delete_stmt)
             deleted_rows = int(result.rowcount or 0)
             await db.commit()
+        await _emit_progress(progress_cb, phase="vacuum", progress_current=0, progress_total=len(ADULT_SYNC_CLEANUP_TABLES), progress_percent=30.0, message=f"Deleted {deleted_rows} rows")
 
         vacuumed: list[str] = []
         async with engine.connect() as conn:
             auto_conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
-            for table_name in ADULT_SYNC_CLEANUP_TABLES:
+            total_tables = len(ADULT_SYNC_CLEANUP_TABLES)
+            for idx, table_name in enumerate(ADULT_SYNC_CLEANUP_TABLES, start=1):
                 try:
                     await auto_conn.exec_driver_sql(f"VACUUM (ANALYZE) {table_name}")
                     vacuumed.append(table_name)
                 except Exception:
                     logger.warning("adult cleanup vacuum failed for %s", table_name, exc_info=True)
+                await _emit_progress(
+                    progress_cb,
+                    phase="vacuum",
+                    progress_current=idx,
+                    progress_total=total_tables,
+                    progress_percent=30.0 + (idx / max(total_tables, 1)) * 70.0,
+                    message=f"Vacuumed {idx}/{total_tables}",
+                )
 
-        return {
+        result = {
             "status": "ok",
             "deleted": deleted_rows,
             "vacuumed_tables": vacuumed,
             "retention_days": ADULT_SYNC_GARBAGE_RETENTION_DAYS,
         }
+        await _emit_progress(progress_cb, phase="done", progress_current=len(vacuumed), progress_total=len(ADULT_SYNC_CLEANUP_TABLES), progress_percent=100.0, message="Cleanup finished", status="ok")
+        return result
 
 
 async def _process_dns_unique_recheck_batch(db: AsyncSession, limit: int) -> int:
@@ -918,9 +1081,9 @@ async def _sleep_with_stop(stop_event: asyncio.Event, seconds: int) -> None:
         return
 
 
-def _next_sunday_3utc(now: datetime) -> datetime:
-    target = now.replace(hour=3, minute=0, second=0, microsecond=0)
-    days_ahead = (6 - now.weekday()) % 7
+def _next_weekly_sync(now: datetime, *, weekday: int, hour: int, minute: int) -> datetime:
+    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    days_ahead = (weekday - now.weekday()) % 7
     if target <= now:
         days_ahead = 7 if days_ahead == 0 else days_ahead
         target = target + timedelta(days=days_ahead)
@@ -930,21 +1093,49 @@ def _next_sunday_3utc(now: datetime) -> datetime:
 
 
 async def background_remnawave_adult_tasks(stop_event: asyncio.Event) -> None:
-    asyncio.create_task(_run_startup_adult_catalog_sync(stop_event))
-    next_sync = _next_sunday_3utc(datetime.now(timezone.utc))
+    _bg_runtime_state["running"] = True
+    _bg_runtime_state["last_error"] = None
+    active_schedule: dict | None = None
+    next_sync: datetime | None = None
     while True:
         if stop_event.is_set():
             break
 
         try:
             now = datetime.now(timezone.utc)
+            schedule = await get_adult_sync_schedule()
+            if active_schedule != schedule or next_sync is None:
+                active_schedule = dict(schedule)
+                next_sync = _next_weekly_sync(
+                    now,
+                    weekday=int(schedule["weekday"]),
+                    hour=int(schedule["hour"]),
+                    minute=int(schedule["minute"]),
+                )
+                logger.info(
+                    "adult sync scheduler configured: weekday=%s hour=%s minute=%s next=%s",
+                    schedule["weekday"],
+                    schedule["hour"],
+                    schedule["minute"],
+                    next_sync.isoformat(),
+                )
+            _bg_runtime_state["schedule"] = dict(schedule)
+            _bg_runtime_state["next_sync_at"] = next_sync.isoformat() if next_sync else None
+            _bg_runtime_state["last_loop_at"] = now.isoformat()
             if now >= next_sync:
                 try:
                     stats = await sync_adult_catalog()
                     logger.info("adult sync finished: %s", stats)
                 except Exception:
                     logger.exception("adult sync failed")
-                next_sync = _next_sunday_3utc(now + timedelta(days=1))
+                finally:
+                    next_sync = _next_weekly_sync(
+                        datetime.now(timezone.utc) + timedelta(minutes=1),
+                        weekday=int(schedule["weekday"]),
+                        hour=int(schedule["hour"]),
+                        minute=int(schedule["minute"]),
+                    )
+                    _bg_runtime_state["next_sync_at"] = next_sync.isoformat()
 
             for _ in range(6):
                 if stop_event.is_set():
@@ -957,5 +1148,7 @@ async def background_remnawave_adult_tasks(stop_event: asyncio.Event) -> None:
         except asyncio.CancelledError:
             raise
         except Exception:
+            _bg_runtime_state["last_error"] = datetime.now(timezone.utc).isoformat()
             logger.exception("adult background task error")
             await _sleep_with_stop(stop_event, 30)
+    _bg_runtime_state["running"] = False
