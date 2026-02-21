@@ -266,6 +266,79 @@ async function runAdultCleanupNow() {
     }
 }
 
+async function stopBackgroundServices() {
+    const btn = document.getElementById('services-stop-btn');
+    if (btn) btn.disabled = true;
+    try {
+        const resp = await api('/admin/services/stop', { method: 'POST' });
+        const data = await resp.json();
+        alert(data?.message || 'Службы остановлены');
+        await loadDatabaseStatus();
+    } catch (err) {
+        console.error('stop services error:', err);
+        alert('Не удалось остановить службы');
+    } finally {
+        if (btn) btn.disabled = false;
+    }
+}
+
+async function startBackgroundServices() {
+    const btn = document.getElementById('services-start-btn');
+    if (btn) btn.disabled = true;
+    try {
+        const resp = await api('/admin/services/start', { method: 'POST' });
+        const data = await resp.json();
+        alert(data?.message || 'Службы запущены');
+        await loadDatabaseStatus();
+    } catch (err) {
+        console.error('start services error:', err);
+        alert('Не удалось запустить службы');
+    } finally {
+        if (btn) btn.disabled = false;
+    }
+}
+
+async function runDbIntegrityCheckRepair() {
+    const btn = document.getElementById('db-integrity-check-btn');
+    if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Проверка...';
+    }
+    try {
+        const resp = await api('/admin/database/check-repair', { method: 'POST' });
+        const data = await resp.json();
+        const checks = data?.report?.checks || {};
+        const miss = Array.isArray(checks.missing_tables_after) ? checks.missing_tables_after.length : (Array.isArray(checks.missing_tables) ? checks.missing_tables.length : 0);
+        const badIdx = Array.isArray(checks.invalid_indexes_after) ? checks.invalid_indexes_after.length : (Array.isArray(checks.invalid_indexes) ? checks.invalid_indexes.length : 0);
+        const failedRepairs = Array.isArray(data?.report?.repairs_failed) ? data.report.repairs_failed.length : 0;
+        alert(`Проверка завершена. missing_tables=${miss}, invalid_indexes=${badIdx}, repair_errors=${failedRepairs}`);
+        await loadDatabaseStatus();
+    } catch (err) {
+        console.error('db integrity check error:', err);
+        alert('Не удалось выполнить проверку целостности БД');
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.textContent = 'Проверить целостность БД и восстановить';
+        }
+    }
+}
+
+function updateServicesControlButtons(servicesControl, taskDetails) {
+    const enabled = Boolean(servicesControl?.services_enabled ?? true);
+    const stopBtn = document.getElementById('services-stop-btn');
+    const startBtn = document.getElementById('services-start-btn');
+    if (stopBtn) stopBtn.disabled = !enabled;
+    if (startBtn) startBtn.disabled = enabled;
+
+    const hasRunningTasks = ['sync', 'recheck', 'txt_sync', 'cleanup'].some((k) => Boolean(taskDetails?.[k]?.running));
+    if (!enabled && hasRunningTasks && startBtn) {
+        startBtn.textContent = 'Запустить службы (задачи остановлены)';
+    } else if (startBtn) {
+        startBtn.textContent = 'Запустить службы';
+    }
+}
+
 async function setAdultWeeklySchedule() {
     const btn = document.getElementById('run-adult-schedule-btn');
     const weekdayEl = document.getElementById('adult-sync-weekday');
@@ -303,19 +376,20 @@ function formatTaskProgress(task) {
     return `${percent.toFixed(1)}%`;
 }
 
-function updateAdultButtonsByTaskState(tasks) {
+function updateAdultButtonsByTaskState(tasks, servicesControl) {
     const map = [
         ['sync', 'run-adult-sync-btn', 'Запустить sync'],
         ['recheck', 'run-adult-recheck-btn', 'Перепроверить все'],
         ['txt_sync', 'run-adult-sync-txt-btn', 'TXT → DB'],
         ['cleanup', 'run-adult-cleanup-btn', 'Удалить мусор'],
     ];
+    const enabled = Boolean(servicesControl?.services_enabled ?? true);
     for (const [taskKey, btnId, baseLabel] of map) {
         const btn = document.getElementById(btnId);
         if (!btn) continue;
         const t = tasks?.[taskKey] || {};
         const running = Boolean(t.running);
-        btn.disabled = running;
+        btn.disabled = running || !enabled;
         btn.textContent = running ? `${baseLabel} (${formatTaskProgress(t)})` : baseLabel;
     }
 }
@@ -383,6 +457,7 @@ async function loadDatabaseStatus() {
         const schedule = adult.schedule || {};
         const services = adult.services || {};
         const taskDetails = adult.task_details || {};
+        const servicesControl = d.services_control || {};
         const syncTask = taskDetails.sync || {};
         const recheckTask = taskDetails.recheck || {};
         const txtTask = taskDetails.txt_sync || {};
@@ -395,11 +470,13 @@ async function loadDatabaseStatus() {
             const m = String(Number(schedule.minute)).padStart(2, '0');
             timeInput.value = `${h}:${m}`;
         }
-        updateAdultButtonsByTaskState(taskDetails);
+        updateAdultButtonsByTaskState(taskDetails, servicesControl);
+        updateServicesControlButtons(servicesControl, taskDetails);
         const adultSyncRows = [
             ['Статус', String(adult.status || 'unknown')],
             ['Комментарий', String(adult.status_hint || '-')],
             ['Службы', `scheduler:${services.scheduler || 'unknown'}, recheck:${services.recheck_worker || 'unknown'}, catalog:${services.catalog_sync_lock || 'unknown'}`],
+            ['Service control', `enabled:${servicesControl.services_enabled ? 'yes' : 'no'}, reason:${String(servicesControl.reason || '-')}, updated:${formatDate(servicesControl.updated_at)}`],
             ['Фоновые задачи', `sync:${adult.manual_tasks?.sync ? 'ON' : 'off'}, recheck:${adult.manual_tasks?.recheck ? 'ON' : 'off'}, txt:${adult.manual_tasks?.txt_sync ? 'ON' : 'off'}, cleanup:${adult.manual_tasks?.cleanup ? 'ON' : 'off'}`],
             ['Scheduler loop', formatDate(services.last_loop_at)],
             ['Scheduler error', formatDate(services.last_error_at)],

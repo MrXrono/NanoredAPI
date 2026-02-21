@@ -17,6 +17,7 @@ from app.services.ingest_metrics import (
     record_rsyslog_retried,
 )
 from app.services.remnawave_ingest_processor import process_remnawave_ingest_entries
+from app.services.runtime_control import services_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -194,6 +195,9 @@ async def background_remnawave_ingest_worker(stop_event: asyncio.Event) -> None:
     consumer = settings.REMNAWAVE_INGEST_CONSUMER
 
     while not stop_event.is_set():
+        if not services_enabled():
+            await asyncio.sleep(1.0)
+            continue
         try:
             data = await redis.xreadgroup(
                 groupname=_group(),

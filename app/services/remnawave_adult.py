@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import async_session, engine
 from app.services.schema_bootstrap import ensure_base_schema_ready
 from app.models.remnawave_log import AdultDomainCatalog, AdultDomainExclusion, AdultSyncState, RemnawaveDNSUnique
+from app.services.runtime_control import services_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -1433,6 +1434,11 @@ async def background_remnawave_adult_tasks(stop_event: asyncio.Event) -> None:
     while True:
         if stop_event.is_set():
             break
+        if not services_enabled():
+            _bg_runtime_state["last_loop_at"] = datetime.now(timezone.utc).isoformat()
+            _bg_runtime_state["next_sync_at"] = None
+            await _sleep_with_stop(stop_event, 1)
+            continue
 
         try:
             now = datetime.now(timezone.utc)

@@ -110,6 +110,9 @@
         <!-- DATABASE STATUS -->
         <div id="section-database-status" class="section">
             <h2>Статус базы данных</h2>
+            <div style="display:flex; gap:8px; margin:10px 0 14px 0; flex-wrap:wrap;">
+                <button id="db-integrity-check-btn" class="btn btn-sm" onclick="runDbIntegrityCheckRepair()">Проверить целостность БД и восстановить</button>
+            </div>
             <div class="stats-grid">
                 <div class="stat-card">
                     <div class="label">API nanoredvpn: получено / успешно</div>
@@ -241,6 +244,8 @@
                             <button id="run-adult-recheck-btn" class="btn btn-sm" onclick="runAdultRecheckAllNow()">Перепроверить все</button>
                             <button id="run-adult-sync-txt-btn" class="btn btn-sm" onclick="runAdultTxtSyncNow()">TXT → DB</button>
                             <button id="run-adult-cleanup-btn" class="btn btn-sm" onclick="runAdultCleanupNow()">Удалить мусор</button>
+                            <button id="services-stop-btn" class="btn btn-sm btn-danger" onclick="stopBackgroundServices()">Остановить службы</button>
+                            <button id="services-start-btn" class="btn btn-sm btn-success" onclick="startBackgroundServices()">Запустить службы</button>
                             <select id="adult-sync-weekday" class="btn btn-sm" style="min-width:100px;">
                                 <option value="0">Mon</option>
                                 <option value="1">Tue</option>

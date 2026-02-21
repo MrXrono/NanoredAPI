@@ -44,6 +44,7 @@ from app.services.schema_bootstrap import ensure_base_schema_ready
 from app.services.remnawave_adult import background_remnawave_adult_tasks
 from app.services.remnawave_ingest_queue import background_remnawave_ingest_worker
 from app.services.ingest_metrics import observe_api_timing
+from app.services.runtime_control import services_enabled
 from app.services.telegram_support_forum import telegram_support_forum
 
 setup_logging()
@@ -93,6 +94,8 @@ async def _cleanup_stale_sessions():
     while True:
         try:
             await asyncio.sleep(interval)
+            if not services_enabled():
+                continue
             redis = await get_redis()
             async with async_session() as db:
                 rows = (

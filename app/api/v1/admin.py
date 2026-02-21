@@ -37,6 +37,8 @@ from app.models.remnawave_log import (
 
 from app.services.ingest_metrics import get_ingest_metrics_snapshot
 from app.services.remnawave_ingest_queue import get_remnawave_queue_stats
+from app.services.db_integrity import check_and_repair_database_integrity
+from app.services.runtime_control import get_services_state, set_services_enabled
 from app.services.remnawave_adult import (
     cleanup_adult_catalog_garbage,
     force_recheck_all_dns_unique,
@@ -276,8 +278,34 @@ async def _count_redis_keys(redis, pattern: str) -> int:
     return total
 
 
+def _cancel_background_task(task_ref_name: str, *, task_key: str | None = None, reason: str = "Stopped by user") -> bool:
+    task = globals().get(task_ref_name)
+    if isinstance(task, asyncio.Task) and not task.done():
+        task.cancel()
+        if task_key:
+            _task_set_done(task_key, status="stopped", error=reason)
+        return True
+    return False
+
+
+def _stop_all_manual_tasks(reason: str = "Stopped by user") -> dict[str, object]:
+    cancelled = {
+        "sync": _cancel_background_task("_adult_manual_sync_task", task_key="sync", reason=reason),
+        "recheck": _cancel_background_task("_adult_manual_recheck_task", task_key="recheck", reason=reason),
+        "txt_sync": _cancel_background_task("_adult_manual_txt_sync_task", task_key="txt_sync", reason=reason),
+        "cleanup": _cancel_background_task("_adult_manual_cleanup_task", task_key="cleanup", reason=reason),
+    }
+    _invalidate_database_status_cache()
+    return {
+        "cancelled": cancelled,
+        "cancelled_any": any(cancelled.values()),
+    }
+
+
 def _start_background_task(task_name: str, task_ref_name: str, runner, task_key: str | None = None):
     globals_ref = globals()
+    if not bool(get_services_state().get("services_enabled", True)):
+        return {"ok": False, "started": False, "message": "services are paused"}
     task = globals_ref.get(task_ref_name)
     if isinstance(task, asyncio.Task) and not task.done():
         return {"ok": True, "started": False, "message": f"{task_name} is already running"}
@@ -832,6 +860,7 @@ async def database_status(db: AsyncSession = Depends(get_db)):
         "rsyslog": rsyslog_stats,
         "adult_sync": adult_sync,
         "api_ingest": ingest_metrics,
+        "services_control": get_services_state(),
     }
     _database_status_cache["ts"] = time.time()
     _database_status_cache["data"] = response_data
@@ -923,6 +952,40 @@ async def get_latest_adult_task_run(task_key: str, db: AsyncSession = Depends(ge
             "finished_at": row.finished_at.isoformat() if row.finished_at else None,
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         },
+    }
+
+
+@router.post("/services/stop")
+async def stop_background_services():
+    state = await set_services_enabled(False, reason="manual_stop")
+    stopped = _stop_all_manual_tasks(reason="Stopped by user from admin panel")
+    return {
+        "ok": True,
+        "message": "Background services paused",
+        "services": state,
+        "tasks": stopped,
+    }
+
+
+@router.post("/services/start")
+async def start_background_services():
+    state = await set_services_enabled(True, reason="manual_start")
+    _invalidate_database_status_cache()
+    return {
+        "ok": True,
+        "message": "Background services resumed",
+        "services": state,
+    }
+
+
+@router.post("/database/check-repair")
+async def check_repair_database():
+    report = await check_and_repair_database_integrity()
+    _invalidate_database_status_cache()
+    return {
+        "ok": bool(report.get("ok")),
+        "message": "Database integrity check completed",
+        "report": report,
     }
 
 
