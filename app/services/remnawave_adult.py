@@ -626,6 +626,27 @@ def _match_candidate_domains(value: str | None) -> list[str]:
 
     return candidates
 
+def _canonical_domain_for_match(domain: str | None) -> str | None:
+    if not domain:
+        return None
+    raw = str(domain).strip().lower().strip('.')
+    if not raw:
+        return None
+    if _is_domain_db_safe(raw):
+        return raw
+
+    parts = raw.split('.', 1)
+    if len(parts) != 2:
+        return None
+    first, rest = parts
+    stripped_first = re.sub(r"^\d+-", "", first)
+    if stripped_first and stripped_first != first:
+        candidate = f"{stripped_first}.{rest}"
+        if _is_domain_db_safe(candidate):
+            return candidate
+    return None
+
+
 def _is_domain_db_safe(domain: str) -> bool:
     if not domain:
         return False
@@ -1405,24 +1426,31 @@ async def _process_dns_unique_recheck_batch(db: AsyncSession, limit: int) -> int
         excluded_set: set[str] = set()
 
         if all_candidates:
+            prefixed_candidates = [f"0-{candidate}" for candidate in all_candidates if candidate]
+            lookup_candidates = list(all_candidates) + prefixed_candidates
             catalog_rows = (
                 await db.execute(
                     select(AdultDomainCatalog.domain, AdultDomainCatalog.source_mask, AdultDomainCatalog.list_version)
-                    .where(and_(AdultDomainCatalog.domain.in_(list(all_candidates)), AdultDomainCatalog.is_enabled.is_(True)))
+                    .where(and_(AdultDomainCatalog.domain.in_(lookup_candidates), AdultDomainCatalog.is_enabled.is_(True)))
                 )
             ).all()
-            catalog_map = {
-                domain: (int(mask), list_version)
-                for domain, mask, list_version in catalog_rows
-            }
+            for domain, mask, list_version in catalog_rows:
+                canonical_domain = _canonical_domain_for_match(domain)
+                if not canonical_domain:
+                    continue
+                catalog_map.setdefault(canonical_domain, (int(mask), list_version))
 
             excluded_rows = (
                 await db.execute(
                     select(AdultDomainExclusion.domain)
-                    .where(AdultDomainExclusion.domain.in_(list(all_candidates)))
+                    .where(AdultDomainExclusion.domain.in_(lookup_candidates))
                 )
             ).scalars().all()
-            excluded_set = set(excluded_rows)
+            excluded_set = {
+                canonical
+                for canonical in (_canonical_domain_for_match(d) for d in excluded_rows)
+                if canonical
+            }
 
         now = datetime.now(timezone.utc)
         processed = 0

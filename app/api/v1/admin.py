@@ -818,7 +818,9 @@ async def database_status(db: AsyncSession = Depends(get_db)):
                                 AdultDomainCatalog.is_enabled.is_(True),
                                 or_(
                                     AdultDomainCatalog.domain == RemnawaveDNSUnique.dns_root,
+                                    func.regexp_replace(AdultDomainCatalog.domain, r'^[0-9]+-', '') == RemnawaveDNSUnique.dns_root,
                                     RemnawaveDNSUnique.dns_root.like(func.concat('%.', AdultDomainCatalog.domain)),
+                                    RemnawaveDNSUnique.dns_root.like(func.concat('%.', func.regexp_replace(AdultDomainCatalog.domain, r'^[0-9]+-', ''))),
                                 ),
                             )
                         )
