@@ -9,11 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.logging_buffer import logging_buffer
-from app.core.security import verify_api_key
 from app.models.device import Device
 from app.models.support_message import SupportDirection, SupportMessage, SupportMessageType
 from app.schemas.support_chat import SupportMessageResponse, SupportMessagesResponse, SupportReadRequest
 from app.services.telegram_support_forum import telegram_support_forum
+from app.services.device_auth import get_device_by_api_key
 
 router = APIRouter(prefix="/client/support", tags=["client-support"])
 
@@ -32,30 +32,7 @@ def _build_content_disposition(filename: str) -> str:
 
 
 async def _get_device(api_key: str, db: AsyncSession) -> Device:
-    if not api_key:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing X-API-Key")
-    parts = api_key.split(":", 1)
-    if len(parts) != 2:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key format")
-
-    device_id_str, secret = parts
-    try:
-        device_id = uuid.UUID(device_id_str)
-    except ValueError:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
-
-    result = await db.execute(select(Device).where(Device.id == device_id))
-    device = result.scalar_one_or_none()
-    if not device:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Device not found")
-    if not verify_api_key(secret, device.api_key_hash):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
-    if device.is_blocked:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Device is blocked")
-    if not device.account_id:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Device account_id is not set")
-
-    return device
+    return await get_device_by_api_key(api_key, db, require_account_id=True)
 
 
 def _to_response(msg: SupportMessage) -> SupportMessageResponse:

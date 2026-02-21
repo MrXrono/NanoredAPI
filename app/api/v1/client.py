@@ -12,7 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.config import settings
 from app.core.redis import get_redis
-from app.core.security import verify_api_key
 from app.core.logging_buffer import logging_buffer
 from app.models.device import Device
 from app.models.account import Account
@@ -36,6 +35,7 @@ from app.schemas.telemetry import (
 from app.services.geoip import lookup_ip
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from app.services.remnawave_ingest_processor import process_remnawave_ingest_entries
+from app.services.device_auth import get_device_by_api_key
 from app.services.remnawave_ingest_queue import enqueue_remnawave_entries
 
 import bcrypt
@@ -54,26 +54,7 @@ def _parse_uuid(value: str, field_name: str) -> uuid.UUID:
 
 
 async def _get_device(api_key: str, db: AsyncSession) -> Device:
-    """Validate API key and return device."""
-    if not api_key:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing X-API-Key")
-    parts = api_key.split(":", 1)
-    if len(parts) != 2:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key format")
-    device_id_str, secret = parts
-    try:
-        device_id = uuid.UUID(device_id_str)
-    except ValueError:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
-    result = await db.execute(select(Device).where(Device.id == device_id))
-    device = result.scalar_one_or_none()
-    if not device:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Device not found")
-    if not verify_api_key(secret, device.api_key_hash):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
-    if device.is_blocked:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Device is blocked")
-    return device
+    return await get_device_by_api_key(api_key, db)
 
 
 # ==================== REGISTER ====================
@@ -383,17 +364,20 @@ async def sni_batch(
     device = await _get_device(x_api_key, db)
     session_id = _parse_uuid(req.session_id, "session_id")
     now = datetime.now(timezone.utc)
-    for entry in req.entries:
-        log = SNILog(
-            session_id=session_id,
-            device_id=device.id,
-            domain=entry.domain,
-            hit_count=entry.hit_count,
-            bytes_total=entry.bytes_total,
-            first_seen=now,
-            last_seen=now,
-        )
-        db.add(log)
+    payload = [
+        {
+            "session_id": session_id,
+            "device_id": device.id,
+            "domain": entry.domain,
+            "hit_count": entry.hit_count,
+            "bytes_total": entry.bytes_total,
+            "first_seen": now,
+            "last_seen": now,
+        }
+        for entry in req.entries
+    ]
+    if payload:
+        await db.execute(pg_insert(SNILog), payload)
     logging_buffer.add("processing", f"SNI batch: {len(req.entries)} записей от устройства {device.id}")
     record_nanoredvpn_ingest(len(req.entries), len(req.entries))
     return {"status": "ok", "count": len(req.entries)}
@@ -605,29 +589,32 @@ async def sni_raw(
                 else:
                     unresolved_ip_data[ip]["count"] += 1
 
-    # Save SNI domain entries with real timestamps from xray logs
-    for domain, data in domain_data.items():
-        db.add(SNILog(
-            session_id=session_id,
-            device_id=device.id,
-            domain=domain,
-            hit_count=data["count"],
-            bytes_total=0,
-            first_seen=data["first_ts"] or now,
-            last_seen=data["last_ts"] or now,
-        ))
-
-    # Save unresolved IPs as SNILog too (domain = IP address)
-    for ip, data in unresolved_ip_data.items():
-        db.add(SNILog(
-            session_id=session_id,
-            device_id=device.id,
-            domain=ip,
-            hit_count=data["count"],
-            bytes_total=0,
-            first_seen=data["ts"] or now,
-            last_seen=data["ts"] or now,
-        ))
+    payload = [
+        {
+            "session_id": session_id,
+            "device_id": device.id,
+            "domain": domain,
+            "hit_count": data["count"],
+            "bytes_total": 0,
+            "first_seen": data["first_ts"] or now,
+            "last_seen": data["last_ts"] or now,
+        }
+        for domain, data in domain_data.items()
+    ]
+    payload.extend(
+        {
+            "session_id": session_id,
+            "device_id": device.id,
+            "domain": ip,
+            "hit_count": data["count"],
+            "bytes_total": 0,
+            "first_seen": data["ts"] or now,
+            "last_seen": data["ts"] or now,
+        }
+        for ip, data in unresolved_ip_data.items()
+    )
+    if payload:
+        await db.execute(pg_insert(SNILog), payload)
 
     total = len(domain_data) + len(unresolved_ip_data)
     record_nanoredvpn_ingest(total, total)
@@ -649,16 +636,19 @@ async def dns_batch(
 ):
     device = await _get_device(x_api_key, db)
     session_id = _parse_uuid(req.session_id, "session_id")
-    for entry in req.entries:
-        log = DNSLog(
-            session_id=session_id,
-            device_id=device.id,
-            domain=entry.domain,
-            resolved_ip=entry.resolved_ip,
-            query_type=entry.query_type,
-            hit_count=entry.hit_count,
-        )
-        db.add(log)
+    payload = [
+        {
+            "session_id": session_id,
+            "device_id": device.id,
+            "domain": entry.domain,
+            "resolved_ip": entry.resolved_ip,
+            "query_type": entry.query_type,
+            "hit_count": entry.hit_count,
+        }
+        for entry in req.entries
+    ]
+    if payload:
+        await db.execute(pg_insert(DNSLog), payload)
     logging_buffer.add("processing", f"DNS batch: {len(req.entries)} записей от устройства {device.id}")
     record_nanoredvpn_ingest(len(req.entries), len(req.entries))
     return {"status": "ok", "count": len(req.entries)}
@@ -672,16 +662,19 @@ async def connections_batch(
 ):
     device = await _get_device(x_api_key, db)
     session_id = _parse_uuid(req.session_id, "session_id")
-    for entry in req.entries:
-        log = ConnectionLog(
-            session_id=session_id,
-            device_id=device.id,
-            dest_ip=entry.dest_ip,
-            dest_port=entry.dest_port,
-            protocol=entry.protocol,
-            domain=entry.domain,
-        )
-        db.add(log)
+    payload = [
+        {
+            "session_id": session_id,
+            "device_id": device.id,
+            "dest_ip": entry.dest_ip,
+            "dest_port": entry.dest_port,
+            "protocol": entry.protocol,
+            "domain": entry.domain,
+        }
+        for entry in req.entries
+    ]
+    if payload:
+        await db.execute(pg_insert(ConnectionLog), payload)
     logging_buffer.add("processing", f"Connections batch: {len(req.entries)} записей от устройства {device.id}")
     record_nanoredvpn_ingest(len(req.entries), len(req.entries))
     return {"status": "ok", "count": len(req.entries)}
@@ -718,13 +711,17 @@ async def update_permissions(
     device = await _get_device(x_api_key, db)
     await db.execute(delete(DevicePermission).where(DevicePermission.device_id == device.id))
     now = datetime.now(timezone.utc)
-    for p in req.permissions:
-        db.add(DevicePermission(
-            device_id=device.id,
-            permission_name=p.name,
-            granted=p.granted,
-            updated_at=now,
-        ))
+    payload = [
+        {
+            "device_id": device.id,
+            "permission_name": p.name,
+            "granted": p.granted,
+            "updated_at": now,
+        }
+        for p in req.permissions
+    ]
+    if payload:
+        await db.execute(pg_insert(DevicePermission), payload)
     logging_buffer.add("processing", f"Permissions: {len(req.permissions)} разрешений от устройства {device.id}")
     return {"status": "ok", "count": len(req.permissions)}
 
