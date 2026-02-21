@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "NanoredVPN API"
-    VERSION: str = "1.16.0.6"
+    VERSION: str = "1.16.0.7"
     API_V1_PREFIX: str = "/api/v1"
 
     # Database
@@ -45,6 +45,16 @@ class Settings(BaseSettings):
     REQUEST_LOG_MAX_BODY_BYTES: int = int(os.getenv("REQUEST_LOG_MAX_BODY_BYTES", "4096"))
 
     LOG_BUFFER_MAXLEN: int = max(100, int(os.getenv("LOG_BUFFER_MAXLEN", "1000")))
+
+    LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
+    LOG_DIR: str = os.getenv("LOG_DIR", "/app/data/logs")
+    LOG_FILE_NAME: str = os.getenv("LOG_FILE_NAME", "nanored-api.log")
+    LOG_FILE_ROTATION_WHEN: str = os.getenv("LOG_FILE_ROTATION_WHEN", "midnight")
+    LOG_FILE_ROTATION_INTERVAL: int = max(1, int(os.getenv("LOG_FILE_ROTATION_INTERVAL", "1")))
+    LOG_FILE_RETENTION_DAYS: int = max(1, int(os.getenv("LOG_FILE_RETENTION_DAYS", "7")))
+
+    FUNCTION_CALL_LOGGING_ENABLED: bool = os.getenv("FUNCTION_CALL_LOGGING_ENABLED", "1").strip() in ("1", "true", "yes", "on")
+    FUNCTION_CALL_LOG_EXCLUDE_MODULES: str = os.getenv("FUNCTION_CALL_LOG_EXCLUDE_MODULES", "app.core.logging_setup")
 
 
     # Remnawave logs ingest

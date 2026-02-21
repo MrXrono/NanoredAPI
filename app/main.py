@@ -18,6 +18,7 @@ from app.core.database import engine, async_session
 from app.core.redis import close_redis, get_redis
 from app.core.security import hash_password
 from app.core.logging_buffer import logging_buffer
+from app.core.logging_setup import setup_logging, setup_function_call_logging
 from app.api.v1.router import api_router
 from app.models.admin import Admin
 from app.models.device import Device
@@ -44,6 +45,9 @@ from app.services.remnawave_adult import background_remnawave_adult_tasks
 from app.services.remnawave_ingest_queue import background_remnawave_ingest_worker
 from app.services.ingest_metrics import observe_api_timing
 from app.services.telegram_support_forum import telegram_support_forum
+
+setup_logging()
+setup_function_call_logging()
 
 logger = logging.getLogger(__name__)
 SCHEMA_SETUP_LOCK_ID = 1
