@@ -291,12 +291,7 @@ async function loadDatabaseStatus() {
         const rsDead = Number(rsyslogQueue.dead_len || 0);
         const rsReasonTop = (ingestRsyslog.reject_reasons || []).slice(0, 3).map(x => `${x.reason}:${x.count}`).join(', ');
         const rsBaseText = `${rsReceived} / ${rsProcessed} (valid ${rsValidated}, new ${rsInserted}, dedup ${rsDedup}, rej ${rsRejected}, fail ${rsFailed}, retry ${rsRetried}, lag ${rsLag}, pend ${rsPending}, dead ${rsDead})`;
-        document.getElementById('db-rsyslog-ingest-ok').textContent = rsReasonTop ? `${rsBaseText} [rej_top: ${rsReasonTop}]` : rsBaseText;
-        if (rsReasonTop) {
-            document.getElementById('db-rsyslog-ingest-ok').title = `Top reject reasons: ${rsReasonTop}`;
-        } else {
-            document.getElementById('db-rsyslog-ingest-ok').title = '';
-        }
+        const rsText = rsReasonTop ? `${rsBaseText} [rej_top: ${rsReasonTop}]` : rsBaseText;
 
         const nvReceived = Number(ingestNanoredvpn.received || 0);
         const nvProcessed = Number(ingestNanoredvpn.processed || 0);
@@ -339,6 +334,7 @@ async function loadDatabaseStatus() {
             ['Task recheck', `${String(recheckTask.status || '-')}; ${formatTaskProgress(recheckTask)}; ${String(recheckTask.message || '-')}`],
             ['Task TXT→DB', `${String(txtTask.status || '-')}; ${formatTaskProgress(txtTask)}; ${String(txtTask.message || '-')}`],
             ['Task cleanup', `${String(cleanupTask.status || '-')}; ${formatTaskProgress(cleanupTask)}; ${String(cleanupTask.message || '-')}`],
+            ['API rsyslog: получено / успешно', rsText],
             ['Catalog (enabled / total)', `${adultCatalogEnabled} / ${adultCatalogTotal}`],
             ['Catalog by source', `BLP: ${Number((adult.catalog_sources || {}).blocklistproject || 0)}, OISD: ${Number((adult.catalog_sources || {}).oisd || 0)}, V2Fly: ${Number((adult.catalog_sources || {}).v2fly || 0)}`],
             ['Unique 18+ / total', `${Number(adult.unique_adult_total || 0)} / ${Number(adult.unique_domains_total || 0)}`],

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+import ipaddress
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -13,6 +14,37 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from app.models.remnawave_log import RemnawaveAccount, RemnawaveDNSQuery, RemnawaveDNSUnique
 from app.services.remnawave_adult import ensure_adult_schema_ready, normalize_remnawave_domain
 from app.services.schema_bootstrap import ensure_base_schema_ready
+
+
+def _normalize_dns_or_ip(value: Any) -> str | None:
+    if value is None:
+        return None
+    raw = str(value).strip().lower()
+    if not raw:
+        return None
+
+    host = raw
+    if "://" in host:
+        host = host.split("://", 1)[1]
+    host = host.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0].strip()
+    if not host:
+        return None
+
+    if host.startswith("[") and "]" in host:
+        host = host[1:host.index("]")].strip()
+    elif host.count(":") == 1 and host.rsplit(":", 1)[1].isdigit():
+        host = host.rsplit(":", 1)[0].strip()
+
+    if not host:
+        return None
+
+    try:
+        ipaddress.ip_address(host)
+        return host
+    except Exception:
+        pass
+
+    return normalize_remnawave_domain(host)
 
 
 @dataclass(slots=True)
@@ -68,7 +100,7 @@ async def process_remnawave_ingest_entries(db: AsyncSession, entries: list[dict[
     for entry in entries:
         account_login = str(entry.get("account") or "").strip()
         raw_dns = entry.get("dns")
-        dns_root = normalize_remnawave_domain(raw_dns)
+        dns_root = _normalize_dns_or_ip(raw_dns)
 
         if not account_login:
             reject("empty_account")
