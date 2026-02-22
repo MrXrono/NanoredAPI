@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "NanoredVPN API"
-    VERSION: str = "1.17.0.5"
+    VERSION: str = "1.17.0.6"
     API_V1_PREFIX: str = "/api/v1"
 
     # Database
@@ -55,6 +55,7 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
     LOG_DIR: str = os.getenv("LOG_DIR", "/app/data/logs")
     LOG_FILE_NAME: str = os.getenv("LOG_FILE_NAME", "nanored-api.log")
+    LOG_ERROR_FILE_NAME: str = os.getenv("LOG_ERROR_FILE_NAME", "nanored-api-error.log")
     LOG_FILE_ROTATION_WHEN: str = os.getenv("LOG_FILE_ROTATION_WHEN", "midnight")
     LOG_FILE_ROTATION_INTERVAL: int = max(1, int(os.getenv("LOG_FILE_ROTATION_INTERVAL", "1")))
     LOG_FILE_RETENTION_DAYS: int = max(1, int(os.getenv("LOG_FILE_RETENTION_DAYS", "7")))

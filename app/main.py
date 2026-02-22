@@ -268,6 +268,14 @@ async def logging_middleware(request: Request, call_next):
             "api_key": masked_key,
             "body": body_preview,
         })
+        logger.info(
+            "API request %s %s ip=%s api_key=%s body=%s",
+            method,
+            path,
+            client_ip,
+            masked_key,
+            body_preview if body_preview else "<empty>",
+        )
 
     try:
         response = await call_next(request)
@@ -276,6 +284,13 @@ async def logging_middleware(request: Request, call_next):
         if path.startswith("/api/"):
             observe_api_timing(path, response.status_code, duration)
             logging_buffer.add("processing", f"Ответ {response.status_code} за {duration}ms: {method} {path}")
+            logger.info(
+                "API response %s %s status=%s duration_ms=%s",
+                method,
+                path,
+                response.status_code,
+                duration,
+            )
 
         return response
     except Exception as e:
@@ -285,6 +300,7 @@ async def logging_middleware(request: Request, call_next):
         logging_buffer.add("error", f"Исключение в {method} {path} ({duration}ms): {str(e)}", {
             "traceback": traceback.format_exc(),
         })
+        logger.exception("API exception %s %s duration_ms=%s", method, path, duration)
         return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 

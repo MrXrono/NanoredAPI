@@ -68,7 +68,8 @@ def setup_logging() -> None:
         return
 
     log_level = _get_log_level()
-    root_logger.setLevel(log_level)
+    # Keep ERROR records flowing even if LOG_LEVEL is set above ERROR.
+    root_logger.setLevel(min(log_level, logging.ERROR))
 
     formatter = logging.Formatter(
         fmt="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -97,6 +98,18 @@ def setup_logging() -> None:
         file_handler.setLevel(log_level)
         file_handler.setFormatter(formatter)
         root_logger.addHandler(file_handler)
+
+        error_file_handler = TimedRotatingFileHandler(
+            filename=str(log_dir / settings.LOG_ERROR_FILE_NAME),
+            when=settings.LOG_FILE_ROTATION_WHEN,
+            interval=max(1, settings.LOG_FILE_ROTATION_INTERVAL),
+            backupCount=max(1, settings.LOG_FILE_RETENTION_DAYS),
+            encoding="utf-8",
+            utc=True,
+        )
+        error_file_handler.setLevel(logging.ERROR)
+        error_file_handler.setFormatter(formatter)
+        root_logger.addHandler(error_file_handler)
     except Exception as exc:
         logging.getLogger(__name__).warning("Failed to initialize file logger: %s", exc)
 
