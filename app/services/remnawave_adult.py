@@ -19,7 +19,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import async_session, engine
 from app.services.schema_bootstrap import ensure_base_schema_ready
-from app.models.remnawave_log import AdultDomainCatalog, AdultDomainExclusion, AdultSyncState, RemnawaveDNSUnique
+from app.models.remnawave_log import (
+    AdultDomainBucket09,
+    AdultDomainBucketAD,
+    AdultDomainBucketEH,
+    AdultDomainBucketIL,
+    AdultDomainBucketMP,
+    AdultDomainBucketOld,
+    AdultDomainBucketQT,
+    AdultDomainBucketUX,
+    AdultDomainBucketYZ,
+    AdultDomainCatalog,
+    AdultDomainExclusion,
+    AdultSyncState,
+    RemnawaveDNSUnique,
+)
 from app.services.runtime_control import services_enabled, services_killed
 
 logger = logging.getLogger(__name__)
@@ -98,17 +112,6 @@ _FULL_RECHECK_LOCK = asyncio.Lock()
 _TXT_SYNC_LOCK = asyncio.Lock()
 _MAINTENANCE_LOCK = asyncio.Lock()
 _SCHEMA_READY_LOCK = asyncio.Lock()
-_ADULT_TABLES = {
-    "adult_domain_catalog",
-    "remnawave_dns_unique",
-    "adult_sync_state",
-    "adult_domain_exclusions",
-    *set(ADULT_BUCKET_FILE_TO_TABLE.values()),
-}
-_adult_schema_ready = False
-_adult_table_tuned = False
-_ADULT_STAGING_TABLE = "adult_domain_catalog_staging"
-_ADULT_TXT_STAGING_TABLE = "adult_domain_catalog_txt_staging"
 ADULT_BUCKET_FILE_TO_TABLE = {
     "0-9.txt": "adult_domain_bucket_0_9",
     "a-d.txt": "adult_domain_bucket_a_d",
@@ -120,6 +123,28 @@ ADULT_BUCKET_FILE_TO_TABLE = {
     "y-z.txt": "adult_domain_bucket_y_z",
     "old.txt": "adult_domain_bucket_old",
 }
+_ADULT_BUCKET_TABLE_MODEL_BY_NAME = {
+    "adult_domain_bucket_0_9": AdultDomainBucket09,
+    "adult_domain_bucket_a_d": AdultDomainBucketAD,
+    "adult_domain_bucket_e_h": AdultDomainBucketEH,
+    "adult_domain_bucket_i_l": AdultDomainBucketIL,
+    "adult_domain_bucket_m_p": AdultDomainBucketMP,
+    "adult_domain_bucket_q_t": AdultDomainBucketQT,
+    "adult_domain_bucket_u_x": AdultDomainBucketUX,
+    "adult_domain_bucket_y_z": AdultDomainBucketYZ,
+    "adult_domain_bucket_old": AdultDomainBucketOld,
+}
+_ADULT_TABLES = {
+    "adult_domain_catalog",
+    "remnawave_dns_unique",
+    "adult_sync_state",
+    "adult_domain_exclusions",
+    *set(ADULT_BUCKET_FILE_TO_TABLE.values()),
+}
+_adult_schema_ready = False
+_adult_table_tuned = False
+_ADULT_STAGING_TABLE = "adult_domain_catalog_staging"
+_ADULT_TXT_STAGING_TABLE = "adult_domain_catalog_txt_staging"
 ProgressCallback = Callable[[dict], None | Awaitable[None]]
 _SCHEDULE_LOCK = asyncio.Lock()
 _schedule_cache: dict | None = None
@@ -926,6 +951,39 @@ def _bucket_file_for_domain(domain: str) -> str:
     if "y" <= ch <= "z":
         return "y-z.txt"
     return "old.txt"
+
+
+def _bucket_table_names_for_candidates(candidates: list[str]) -> list[str]:
+    if not candidates:
+        return [ADULT_BUCKET_FILE_TO_TABLE["old.txt"]]
+    names: set[str] = set()
+    for candidate in candidates:
+        bucket_file = _bucket_file_for_domain(candidate)
+        names.add(ADULT_BUCKET_FILE_TO_TABLE.get(bucket_file, ADULT_BUCKET_FILE_TO_TABLE["old.txt"]))
+    names.add(ADULT_BUCKET_FILE_TO_TABLE["old.txt"])
+    ordered = [table for table in ADULT_BUCKET_FILE_TO_TABLE.values() if table in names]
+    return ordered or [ADULT_BUCKET_FILE_TO_TABLE["old.txt"]]
+
+
+async def _find_catalog_match_in_bucket_tables(db: AsyncSession, candidates: list[str]) -> tuple[int, str | None] | None:
+    if not candidates:
+        return None
+    table_names = _bucket_table_names_for_candidates(candidates)
+    for table_name in table_names:
+        model = _ADULT_BUCKET_TABLE_MODEL_BY_NAME.get(table_name)
+        if model is None:
+            continue
+        match = (
+            await db.execute(
+                select(model.list_version)
+                .where(model.domain.in_(candidates))
+                .order_by(desc(model.checked_at), desc(model.list_version))
+                .limit(1)
+            )
+        ).first()
+        if match is not None:
+            return SOURCE_TXT_IMPORT, match[0]
+    return None
 
 
 def _extract_oisd_txt_links(html: str, base_url: str) -> list[str]:
@@ -1792,31 +1850,43 @@ async def _process_dns_unique_recheck_batch(db: AsyncSession, limit: int) -> int
                 processed += 1
                 continue
 
-            catalog_row = (
-                await db.execute(
-                    select(AdultDomainCatalog.source_mask, AdultDomainCatalog.list_version)
-                    .where(
-                        and_(
-                            AdultDomainCatalog.is_enabled.is_(True),
-                            or_(
-                                AdultDomainCatalog.domain.in_(candidates),
-                                canonical_catalog_domain.in_(candidates),
-                            ),
-                        )
-                    )
-                    .order_by(desc(AdultDomainCatalog.checked_at), desc(AdultDomainCatalog.list_version))
-                    .limit(1)
-                )
-            ).first()
-            if catalog_row is None:
-                row.is_adult = False
-                row.mark_source = []
-                row.mark_version = None
-            else:
-                source_mask, list_version = catalog_row
+            bucket_match = await _find_catalog_match_in_bucket_tables(db, candidates)
+            if bucket_match is not None:
+                source_mask, list_version = bucket_match
                 row.is_adult = True
                 row.mark_source = _sources_from_mask(source_mask)
                 row.mark_version = list_version
+            else:
+                catalog_row = (
+                    await db.execute(
+                        select(AdultDomainCatalog.source_mask, AdultDomainCatalog.list_version)
+                        .where(
+                            and_(
+                                AdultDomainCatalog.is_enabled.is_(True),
+                                or_(
+                                    AdultDomainCatalog.domain.in_(candidates),
+                                    canonical_catalog_domain.in_(candidates),
+                                ),
+                            )
+                        )
+                        .order_by(desc(AdultDomainCatalog.checked_at), desc(AdultDomainCatalog.list_version))
+                        .limit(1)
+                    )
+                ).first()
+                if catalog_row is None:
+                    row.is_adult = False
+                    row.mark_source = []
+                    row.mark_version = None
+                else:
+                    source_mask, list_version = catalog_row
+                    row.is_adult = True
+                    row.mark_source = _sources_from_mask(source_mask)
+                    row.mark_version = list_version
+
+            if not row.is_adult:
+                row.is_adult = False
+                row.mark_source = []
+                row.mark_version = None
 
             row.last_marked_at = now
             row.need_recheck = False

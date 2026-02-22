@@ -46,6 +46,15 @@ class RemnawaveTxtPipelineTests(unittest.TestCase):
         self.assertEqual(svc._bucket_file_for_domain('vimeo.com'), 'u-x.txt')
         self.assertEqual(svc._bucket_file_for_domain('zeta.com'), 'y-z.txt')
 
+    def test_bucket_table_resolution_for_candidates(self):
+        tables = svc._bucket_table_names_for_candidates(['alpha.com', 'vimeo.com'])
+        self.assertIn('adult_domain_bucket_a_d', tables)
+        self.assertIn('adult_domain_bucket_u_x', tables)
+        self.assertIn('adult_domain_bucket_old', tables)
+
+        old_only = svc._bucket_table_names_for_candidates([])
+        self.assertEqual(old_only, ['adult_domain_bucket_old'])
+
     def test_extract_domains_and_invalid_tokens(self):
         sample = '''
         example.com
