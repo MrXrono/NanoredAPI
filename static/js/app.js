@@ -658,6 +658,28 @@ function formatTaskProgress(task) {
     return `${percent.toFixed(1)}%`;
 }
 
+function formatWorkerState(service) {
+    if (!service || typeof service !== 'object') return '-';
+    const state = String(service.state || 'unknown');
+    const pending = Number(service.pending || 0);
+    const idleMsRaw = service.idle_ms;
+    const idleMs = (idleMsRaw === null || idleMsRaw === undefined) ? '-' : Number(idleMsRaw || 0);
+    const consumer = String(service.consumer || '-');
+    return `${state} (pending:${pending}, idle_ms:${idleMs}, consumer:${consumer})`;
+}
+
+function formatTaskWithWorker(task, service) {
+    if (!task || typeof task !== 'object') return '-';
+    const status = String(task.status || '-');
+    const progress = formatTaskProgress(task);
+    const message = String(task.message || '-');
+    const result = task.result && typeof task.result === 'object' ? task.result : {};
+    const worker = String(result.worker || '-');
+    const messageId = String(result.message_id || '-');
+    const workerState = formatWorkerState(service);
+    return `${status}; ${progress}; worker:${worker}; msg_id:${messageId}; stream:${workerState}; ${message}`;
+}
+
 function updateAdultButtonsByTaskState(tasks, servicesControl) {
     const map = [
         ['sync', 'run-adult-sync-btn', 'Запустить sync'],
@@ -758,6 +780,8 @@ async function loadDatabaseStatus() {
             ['Статус', String(adult.status || 'unknown')],
             ['Комментарий', String(adult.status_hint || '-')],
             ['Службы', `scheduler:${services.scheduler || 'unknown'}, recheck:${services.recheck_worker || 'unknown'}, catalog:${services.catalog_sync_lock || 'unknown'}`],
+            ['Sync worker stream', formatWorkerState(services.sync_worker)],
+            ['TXT worker stream', formatWorkerState(services.txt_worker)],
             ['Service control', `enabled:${servicesControl.services_enabled ? 'yes' : 'no'}, reason:${String(servicesControl.reason || '-')}, updated:${formatDate(servicesControl.updated_at)}`],
             ['Фоновые задачи', `sync:${adult.manual_tasks?.sync ? 'ON' : 'off'}, recheck:${adult.manual_tasks?.recheck ? 'ON' : 'off'}, txt:${adult.manual_tasks?.txt_sync ? 'ON' : 'off'}, cleanup:${adult.manual_tasks?.cleanup ? 'ON' : 'off'}`],
             ['Scheduler loop', formatDate(services.last_loop_at)],
@@ -767,9 +791,9 @@ async function loadDatabaseStatus() {
             ['Версия листа', String(adult.last_version || '-')],
             ['Обновлено доменов', Number(adult.last_updated_rows || 0)],
             ['Следующий sync (ETA)', formatDate(adult.next_sync_eta)],
-            ['Task sync', `${String(syncTask.status || '-')}; ${formatTaskProgress(syncTask)}; ${String(syncTask.message || '-')}`],
+            ['Task sync', formatTaskWithWorker(syncTask, services.sync_worker)],
             ['Task recheck', `${String(recheckTask.status || '-')}; ${formatTaskProgress(recheckTask)}; ${String(recheckTask.message || '-')}`],
-            ['Task TXT→DB', `${String(txtTask.status || '-')}; ${formatTaskProgress(txtTask)}; ${String(txtTask.message || '-')}`],
+            ['Task TXT→DB', formatTaskWithWorker(txtTask, services.txt_worker)],
             ['Task cleanup', `${String(cleanupTask.status || '-')}; ${formatTaskProgress(cleanupTask)}; ${String(cleanupTask.message || '-')}`],
             ['API rsyslog: получено / успешно', rsText],
             ['Catalog (enabled / total)', `${adultCatalogEnabled} / ${adultCatalogTotal}`],
