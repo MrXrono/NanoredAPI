@@ -2246,6 +2246,7 @@ async def _process_dns_unique_recheck_batch(db: AsyncSession, limit: int) -> int
             await db.execute(
                 update(RemnawaveDNSUnique)
                 .where(RemnawaveDNSUnique.dns_root == bindparam("p_dns_root"))
+                .execution_options(synchronize_session=False)
                 .values(
                     is_adult=bindparam("p_is_adult"),
                     mark_source=bindparam("p_mark_source"),
