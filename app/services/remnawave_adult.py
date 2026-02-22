@@ -291,6 +291,15 @@ async def _ensure_adult_catalog_table_tuning() -> None:
             await conn.execute(
                 text(
                     """
+                    CREATE INDEX IF NOT EXISTS ix_remnawave_dns_unique_recheck_last_seen_dns
+                    ON remnawave_dns_unique (last_seen, dns_root)
+                    WHERE need_recheck IS TRUE
+                    """
+                )
+            )
+            await conn.execute(
+                text(
+                    """
                     CREATE INDEX IF NOT EXISTS ix_remnawave_dns_unique_is_adult_true
                     ON remnawave_dns_unique (dns_root)
                     WHERE is_adult IS TRUE
@@ -2087,7 +2096,7 @@ async def _process_dns_unique_recheck_batch(db: AsyncSession, limit: int) -> int
         try:
             rows = (
                 await db.execute(
-                    select(RemnawaveDNSUnique)
+                    select(RemnawaveDNSUnique.dns_root)
                     .where(RemnawaveDNSUnique.need_recheck.is_(True))
                     .order_by(RemnawaveDNSUnique.last_seen, RemnawaveDNSUnique.dns_root)
                     .limit(limit)
@@ -2120,9 +2129,9 @@ async def _process_dns_unique_recheck_batch(db: AsyncSession, limit: int) -> int
         # Bulk-resolve candidates for this batch to avoid per-row expensive queries.
         row_candidates: dict[str, list[str]] = {}
         all_candidates: set[str] = set()
-        for row in rows:
-            candidates = _match_candidate_domains(row.dns_root)
-            row_candidates[row.dns_root] = candidates
+        for dns_root in rows:
+            candidates = _match_candidate_domains(dns_root)
+            row_candidates[dns_root] = candidates
             all_candidates.update(candidates)
 
         excluded_domains: set[str] = set()
@@ -2191,55 +2200,62 @@ async def _process_dns_unique_recheck_batch(db: AsyncSession, limit: int) -> int
                 for domain, source_mask, list_version, _checked_at in catalog_rows:
                     catalog_hits.setdefault(domain, (int(source_mask or 0), list_version))
 
-        for row in rows:
-            candidates = row_candidates.get(row.dns_root, [])
+        update_rows: list[dict[str, object]] = []
+        for dns_root in rows:
+            candidates = row_candidates.get(dns_root, [])
+            is_adult = False
+            mark_source: list[str] = []
+            mark_version: str | None = None
+
             if not candidates:
-                row.is_adult = False
-                row.mark_source = []
-                row.mark_version = None
-                row.last_marked_at = now
-                row.need_recheck = False
+                pass
                 processed += 1
-                continue
-
-            if any(candidate in excluded_domains for candidate in candidates):
-                row.is_adult = False
-                row.mark_source = ["manual_exclude"]
-                row.mark_version = "manual_exclude"
-                row.last_marked_at = now
-                row.need_recheck = False
-                processed += 1
-                continue
-
-            matched = None
-            for candidate in candidates:
-                matched = bucket_hits.get(candidate)
-                if matched is not None:
-                    break
-            if matched is None:
-                for candidate in candidates:
-                    matched = catalog_hits.get(candidate)
-                    if matched is not None:
-                        break
-
-            if matched is None:
-                row.is_adult = False
-                row.mark_source = []
-                row.mark_version = None
             else:
-                source_mask, list_version = matched
-                row.is_adult = True
-                row.mark_source = _sources_from_mask(source_mask)
-                row.mark_version = list_version
+                if any(candidate in excluded_domains for candidate in candidates):
+                    mark_source = ["manual_exclude"]
+                    mark_version = "manual_exclude"
+                else:
+                    matched = None
+                    for candidate in candidates:
+                        matched = bucket_hits.get(candidate)
+                        if matched is not None:
+                            break
+                    if matched is None:
+                        for candidate in candidates:
+                            matched = catalog_hits.get(candidate)
+                            if matched is not None:
+                                break
+                    if matched is not None:
+                        source_mask, list_version = matched
+                        is_adult = True
+                        mark_source = _sources_from_mask(source_mask)
+                        mark_version = list_version
+                processed += 1
 
-            if not row.is_adult:
-                row.is_adult = False
-                row.mark_source = []
-                row.mark_version = None
+            update_rows.append(
+                {
+                    "p_dns_root": dns_root,
+                    "p_is_adult": bool(is_adult),
+                    "p_mark_source": mark_source,
+                    "p_mark_version": mark_version,
+                    "p_last_marked_at": now,
+                    "p_need_recheck": False,
+                }
+            )
 
-            row.last_marked_at = now
-            row.need_recheck = False
-            processed += 1
+        if update_rows:
+            await db.execute(
+                update(RemnawaveDNSUnique)
+                .where(RemnawaveDNSUnique.dns_root == bindparam("p_dns_root"))
+                .values(
+                    is_adult=bindparam("p_is_adult"),
+                    mark_source=bindparam("p_mark_source"),
+                    mark_version=bindparam("p_mark_version"),
+                    last_marked_at=bindparam("p_last_marked_at"),
+                    need_recheck=bindparam("p_need_recheck"),
+                ),
+                update_rows,
+            )
 
         try:
             await db.commit()

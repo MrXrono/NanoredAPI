@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "NanoredVPN API"
-    VERSION: str = "1.18.0.14"
+    VERSION: str = "1.18.0.15"
     API_V1_PREFIX: str = "/api/v1"
 
     # Database
@@ -110,8 +110,8 @@ class Settings(BaseSettings):
 
     BG_SESSION_CLEANUP_INTERVAL_SECONDS: int = max(30, int(os.getenv("BG_SESSION_CLEANUP_INTERVAL_SECONDS", "300")))
     BG_SESSION_CLEANUP_BATCH_SIZE: int = max(100, int(os.getenv("BG_SESSION_CLEANUP_BATCH_SIZE", "1000")))
-    ADULT_RECHECK_BATCH_LIMIT: int = max(100, int(os.getenv("ADULT_RECHECK_BATCH_LIMIT", "1000")))
-    ADULT_RECHECK_MAX_BATCHES_PER_LOOP: int = max(1, int(os.getenv("ADULT_RECHECK_MAX_BATCHES_PER_LOOP", "2")))
+    ADULT_RECHECK_BATCH_LIMIT: int = max(100, int(os.getenv("ADULT_RECHECK_BATCH_LIMIT", "300")))
+    ADULT_RECHECK_MAX_BATCHES_PER_LOOP: int = max(1, int(os.getenv("ADULT_RECHECK_MAX_BATCHES_PER_LOOP", "1")))
     ADULT_RECHECK_LOOP_SLEEP_SECONDS: int = max(5, int(os.getenv("ADULT_RECHECK_LOOP_SLEEP_SECONDS", "30")))
     ADULT_UNIQUE_STATS_CACHE_TTL_SEC: int = max(10, int(os.getenv("ADULT_UNIQUE_STATS_CACHE_TTL_SEC", "60")))
 
