@@ -110,7 +110,21 @@ fi
 log "Остановка контейнеров..."
 docker compose -f "$COMPOSE_FILE" down 2>/dev/null || docker-compose -f "$COMPOSE_FILE" down 2>/dev/null
 
-# ---------- 6. Handle DB schema changes ----------
+# ---------- 6. Cleanup old logs ----------
+log "Удаление старых логов..."
+if [ -d "$INSTALL_DIR/logs" ]; then
+    find "$INSTALL_DIR/logs" -type f \( -name "*.log" -o -name "*.log.*" \) -delete 2>/dev/null || true
+    log "Логи приложения очищены"
+fi
+
+for c in "$API_CONTAINER" "$NGINX_CONTAINER"; do
+    LOG_PATH=$(docker inspect --format='{{.LogPath}}' "$c" 2>/dev/null || true)
+    if [ -n "$LOG_PATH" ] && [ -f "$LOG_PATH" ]; then
+        : > "$LOG_PATH" 2>/dev/null || true
+    fi
+done
+
+# ---------- 7. Handle DB schema changes ----------
 if [ "$WIPE_DB" = true ]; then
     SCHEMA_CHANGED=true
     warn "Принудительное удаление БД (--db)..."
@@ -131,13 +145,13 @@ if [ "$SCHEMA_CHANGED" = true ]; then
     fi
 fi
 
-# ---------- 7. Rebuild and start ----------
+# ---------- 8. Rebuild and start ----------
 log "Пересборка контейнеров..."
 docker compose -f "$COMPOSE_FILE" build --no-cache 2>/dev/null || docker-compose -f "$COMPOSE_FILE" build --no-cache 2>/dev/null
 log "Запуск контейнеров..."
 docker compose -f "$COMPOSE_FILE" up -d 2>/dev/null || docker-compose -f "$COMPOSE_FILE" up -d 2>/dev/null
 
-# ---------- 8. Wait for API to start ----------
+# ---------- 9. Wait for API to start ----------
 log "Ожидание запуска API..."
 for i in $(seq 1 30); do
     RESP=$(docker exec "$API_CONTAINER" curl -sf "$HEALTH_URL" 2>/dev/null || echo "")
@@ -147,11 +161,11 @@ for i in $(seq 1 30); do
     sleep 2
 done
 
-# ---------- 9. Reload nginx ----------
+# ---------- 10. Reload nginx ----------
 log "Перезагрузка nginx..."
 docker exec "$NGINX_CONTAINER" nginx -s reload 2>/dev/null && log "Nginx перезагружен" || warn "Не удалось перезагрузить nginx ($NGINX_CONTAINER)"
 
-# ---------- 10. Health check ----------
+# ---------- 11. Health check ----------
 log "Проверка доступности..."
 HEALTH_RESP=$(docker exec "$API_CONTAINER" curl -sf "$HEALTH_URL" 2>/dev/null || echo "")
 if echo "$HEALTH_RESP" | grep -q '"status"'; then
