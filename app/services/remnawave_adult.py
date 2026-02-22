@@ -12,7 +12,7 @@ from collections.abc import Awaitable, Callable
 
 import httpx
 from sqlalchemy import inspect
-from sqlalchemy import String, and_, bindparam, delete, desc, exists, func, or_, select, text, update
+from sqlalchemy import String, and_, bindparam, cast, delete, desc, exists, func, or_, select, text, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.dialects.postgresql import ARRAY, insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -529,7 +529,7 @@ async def _merge_staging_into_catalog(db: AsyncSession, version: str) -> int:
                 adult_domain_catalog.is_enabled IS DISTINCT FROM TRUE
                 OR adult_domain_catalog.list_version IS DISTINCT FROM EXCLUDED.list_version
                 OR adult_domain_catalog.source_mask IS DISTINCT FROM (adult_domain_catalog.source_mask | EXCLUDED.source_mask)
-                OR adult_domain_catalog.source_text IS DISTINCT FROM EXCLUDED.source_text
+                OR adult_domain_catalog.source_text::text IS DISTINCT FROM EXCLUDED.source_text::text
                 OR adult_domain_catalog.category IS DISTINCT FROM EXCLUDED.category
             """
         ),
@@ -1523,7 +1523,7 @@ async def force_recheck_all_dns_unique(limit: int = ADULT_RECHECK_BATCH_LIMIT, p
 
 
 async def sync_adult_catalog_from_txt(path: str | None = None, progress_cb: ProgressCallback | None = None) -> dict:
-    """Sync adult catalog from merged TXT list (domain per line)."""
+    """Sync adult catalog from TXT list and refresh bucket tables + catalog."""
     if not await _ensure_adult_schema():
         return {"status": "schema_missing", "inserted": 0, "processed": 0, "path": path or ADULT_SYNC_TXT_PATH}
 
@@ -1550,87 +1550,69 @@ async def sync_adult_catalog_from_txt(path: str | None = None, progress_cb: Prog
             last_watermark=str(started_at),
         )
         await _emit_progress(progress_cb, phase="read", progress_current=0, progress_total=total_bytes, progress_percent=1.0, message="Reading TXT list")
-        domains_buffer: list[str] = []
-        chunk_seen: set[str] = set()
-        rows_total = 0
-        inserted_total = 0
+
+        domain_map: dict[str, int] = {}
+        bucket_map: dict[str, set[str]] = {name: set() for name in ADULT_BUCKET_FILE_TO_TABLE}
         skipped_invalid = 0
         bytes_read = 0
-        checked_at = started_at
-        txt_chunk_size = ADULT_SYNC_TXT_DB_CHUNK_SIZE
-        commit_every = ADULT_SYNC_TXT_DB_COMMIT_EVERY
-        chunks_since_commit = 0
+
+        with txt_path.open("r", encoding="utf-8", errors="replace") as fp:
+            for line in fp:
+                bytes_read += len(line)
+                token = line.strip()
+                if not token:
+                    continue
+                domain = normalize_remnawave_domain(token)
+                if not domain or not _is_domain_db_safe(domain):
+                    skipped_invalid += 1
+                    bucket_map["old.txt"].add(token)
+                    continue
+                domain_map[domain] = int(domain_map.get(domain, 0) | SOURCE_TXT_IMPORT)
+                bucket_map[_bucket_file_for_domain(domain)].add(domain)
+                if total_bytes > 0 and bytes_read % (256 * 1024) == 0:
+                    await _emit_progress(
+                        progress_cb,
+                        phase="read",
+                        progress_current=min(bytes_read, total_bytes),
+                        progress_total=total_bytes,
+                        progress_percent=1.0 + (bytes_read / total_bytes) * 70.0,
+                        message=f"Parsed {len(domain_map)} domains",
+                    )
+
+        bucket_files = _write_bucket_files(bucket_map)
+        processed_domains = len(domain_map)
 
         async with async_session() as db:
             await _prepare_adult_staging_table(db)
-            await _prepare_adult_txt_staging_table(db)
-            with txt_path.open("r", encoding="utf-8", errors="replace") as fp:
-                for line in fp:
-                    bytes_read += len(line)
-                    domain = normalize_remnawave_domain(line)
-                    if not domain:
-                        continue
-                    if not _is_domain_db_safe(domain):
-                        skipped_invalid += 1
-                        continue
-                    if domain in chunk_seen:
-                        continue
-                    chunk_seen.add(domain)
-                    domains_buffer.append(domain)
-                    if len(domains_buffer) >= txt_chunk_size:
-                        await _run_with_db_retry(
-                            lambda: _copy_insert_txt_domains(db, domains_buffer),
-                            db=db,
-                            op_name="txt chunk insert",
-                        )
-                        rows_total += len(domains_buffer)
-                        chunks_since_commit += 1
-                        if total_bytes > 0:
-                            await _emit_progress(
-                                progress_cb,
-                                phase="stage",
-                                progress_current=bytes_read,
-                                progress_total=total_bytes,
-                                progress_percent=5.0 + (bytes_read / total_bytes) * 80.0,
-                                message=f"Staged {rows_total} rows",
-                            )
-                        domains_buffer.clear()
-                        chunk_seen.clear()
-                        if chunks_since_commit >= commit_every:
-                            await db.commit()
-                            chunks_since_commit = 0
+            await _emit_progress(progress_cb, phase="stage", progress_current=processed_domains, progress_total=max(processed_domains, 1), progress_percent=78.0, message="Refreshing bucket tables")
 
-                if domains_buffer:
-                    await _run_with_db_retry(
-                        lambda: _copy_insert_txt_domains(db, domains_buffer),
-                        db=db,
-                        op_name="txt tail insert",
-                    )
-                    rows_total += len(domains_buffer)
-                    chunks_since_commit += 1
-                    if total_bytes > 0:
-                        await _emit_progress(
-                            progress_cb,
-                            phase="stage",
-                            progress_current=min(bytes_read, total_bytes),
-                            progress_total=total_bytes,
-                            progress_percent=85.0,
-                            message=f"Staged {rows_total} rows",
-                        )
-                    domains_buffer.clear()
-                    chunk_seen.clear()
-
-            if chunks_since_commit > 0:
-                await db.commit()
-
-            await _run_with_db_retry(
-                lambda: _merge_txt_staging_into_main_staging(db, version=version, checked_at=checked_at),
-                db=db,
-                op_name="txt staging merge",
+            bucket_table_rows = await _sync_bucket_tables(
+                db,
+                version=version,
+                checked_at=started_at,
+                bucket_files=bucket_files,
             )
-            inserted_total = await _merge_staging_into_catalog(db, version=version)
-            await _emit_progress(progress_cb, phase="merge", progress_current=1, progress_total=1, progress_percent=92.0, message="Merged TXT into catalog")
 
+            items = list(domain_map.items())
+            for start_idx, end_idx in _iter_batch_slices(len(items), ADULT_SYNC_DB_CHUNK_SIZE):
+                chunk = items[start_idx:end_idx]
+                if not chunk:
+                    continue
+                rows = [
+                    {
+                        "domain": domain,
+                        "category": "adult",
+                        "source_mask": int(mask),
+                        "source_text": ["txt_import"],
+                        "list_version": version,
+                        "checked_at": started_at,
+                        "is_enabled": True,
+                    }
+                    for domain, mask in chunk
+                ]
+                await _bulk_insert_staging_rows(db, rows)
+
+            inserted_total = await _merge_staging_into_catalog(db, version=version)
             stale_stmt = (
                 update(AdultDomainCatalog)
                 .where(and_(AdultDomainCatalog.is_enabled.is_(True), AdultDomainCatalog.list_version != version))
@@ -1650,16 +1632,19 @@ async def sync_adult_catalog_from_txt(path: str | None = None, progress_cb: Prog
         stats = {
             "status": "ok",
             "path": str(txt_path),
-            "processed": rows_total,
+            "processed": processed_domains,
             "inserted": inserted_total,
             "skipped_invalid": skipped_invalid,
             "version": version,
+            "bucket_counts": {name: len(values) for name, values in bucket_map.items()},
+            "bucket_table_rows": bucket_table_rows,
+            "bucket_files": bucket_files,
         }
         await _upsert_sync_state(status="ok", stats=stats, version=version, last_watermark=str(started_at))
-        done_msg = f"TXT sync finished ({rows_total} rows)"
+        done_msg = f"TXT sync finished ({processed_domains} domains)"
         if skipped_invalid:
             done_msg += f"; skipped invalid: {skipped_invalid}"
-        await _emit_progress(progress_cb, phase="done", progress_current=rows_total, progress_total=rows_total, progress_percent=100.0, message=done_msg, status="ok")
+        await _emit_progress(progress_cb, phase="done", progress_current=processed_domains, progress_total=max(processed_domains, 1), progress_percent=100.0, message=done_msg, status="ok")
         return stats
 
 
@@ -1683,7 +1668,7 @@ async def _upsert_adult_catalog_rows(db: AsyncSession, rows: list[dict]) -> int:
             AdultDomainCatalog.source_mask.is_distinct_from(
                 AdultDomainCatalog.source_mask.op("|")(stmt.excluded.source_mask)
             ),
-            AdultDomainCatalog.source_text.is_distinct_from(stmt.excluded.source_text),
+            cast(AdultDomainCatalog.source_text, String).is_distinct_from(cast(stmt.excluded.source_text, String)),
             AdultDomainCatalog.category.is_distinct_from(stmt.excluded.category),
         ),
     )
