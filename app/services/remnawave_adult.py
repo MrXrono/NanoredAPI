@@ -2151,23 +2151,23 @@ async def _process_dns_unique_recheck_batch(db: AsyncSession, limit: int) -> int
                     continue
                 table_rows = (
                     await db.execute(
-                        select(model.domain, model.source_mask, model.list_version).where(model.domain.in_(list(domains)))
+                        select(model.domain, model.list_version).where(model.domain.in_(list(domains)))
                     )
                 ).all()
-                for domain, source_mask, list_version in table_rows:
-                    bucket_hits.setdefault(domain, (int(source_mask or 0), list_version))
+                for domain, list_version in table_rows:
+                    bucket_hits.setdefault(domain, (SOURCE_TXT_IMPORT, list_version))
 
             # Fallback bucket for domains that may be stored in old.txt regardless of first character.
             unresolved_after_primary = all_candidates - set(bucket_hits.keys()) - excluded_domains
             if unresolved_after_primary:
                 old_rows = (
                     await db.execute(
-                        select(AdultDomainBucketOld.domain, AdultDomainBucketOld.source_mask, AdultDomainBucketOld.list_version)
+                        select(AdultDomainBucketOld.domain, AdultDomainBucketOld.list_version)
                         .where(AdultDomainBucketOld.domain.in_(list(unresolved_after_primary)))
                     )
                 ).all()
-                for domain, source_mask, list_version in old_rows:
-                    bucket_hits.setdefault(domain, (int(source_mask or 0), list_version))
+                for domain, list_version in old_rows:
+                    bucket_hits.setdefault(domain, (SOURCE_TXT_IMPORT, list_version))
 
             unresolved_for_catalog = all_candidates - set(bucket_hits.keys()) - excluded_domains
             if unresolved_for_catalog:
