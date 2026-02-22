@@ -69,6 +69,8 @@ ADULT_SYNC_TXT_COPY_ENABLED = os.getenv("ADULT_SYNC_TXT_COPY_ENABLED", "1").stri
 ADULT_SYNC_TXT_MERGE_CHUNK_SIZE = max(1000, int(os.getenv("ADULT_SYNC_TXT_MERGE_CHUNK_SIZE", "50000")))
 ADULT_SYNC_DB_RETRY_MAX_ATTEMPTS = max(1, int(os.getenv("ADULT_SYNC_DB_RETRY_MAX_ATTEMPTS", "4")))
 ADULT_SYNC_DB_RETRY_BASE_SLEEP_MS = max(10, int(os.getenv("ADULT_SYNC_DB_RETRY_BASE_SLEEP_MS", "100")))
+ADULT_SYNC_DB_MERGE_CHUNK_SIZE = max(1000, int(os.getenv("ADULT_SYNC_DB_MERGE_CHUNK_SIZE", "25000")))
+ADULT_SYNC_DB_STALE_CHUNK_SIZE = max(1000, int(os.getenv("ADULT_SYNC_DB_STALE_CHUNK_SIZE", "25000")))
 ADULT_SYNC_TXT_PATH = os.getenv("ADULT_SYNC_TXT_PATH", "/app/data/artifacts/adult_domains_merged.txt").strip()
 ADULT_SYNC_SOURCES_DIR = Path(os.getenv("ADULT_SYNC_SOURCES_DIR", "/app/data/artifacts/adult_sources").strip() or "/app/data/artifacts/adult_sources")
 ADULT_SYNC_BUCKETS_DIR = Path(os.getenv("ADULT_SYNC_BUCKETS_DIR", "/app/data/artifacts/adult_buckets").strip() or "/app/data/artifacts/adult_buckets")
@@ -85,6 +87,7 @@ ADULT_RECHECK_BATCH_LIMIT = max(100, int(os.getenv("ADULT_RECHECK_BATCH_LIMIT", 
 ADULT_RECHECK_MAX_BATCHES_PER_LOOP = max(1, int(os.getenv("ADULT_RECHECK_MAX_BATCHES_PER_LOOP", "2")))
 ADULT_RECHECK_LOOP_SLEEP_SECONDS = max(5, int(os.getenv("ADULT_RECHECK_LOOP_SLEEP_SECONDS", "30")))
 ADULT_MARK_RECHECK_CHUNK_SIZE = max(500, int(os.getenv("ADULT_MARK_RECHECK_CHUNK_SIZE", "5000")))
+ADULT_MARK_RECHECK_MAX_ROWS_PER_SYNC = max(1000, int(os.getenv("ADULT_MARK_RECHECK_MAX_ROWS_PER_SYNC", "200000")))
 ADULT_SYNC_CLEANUP_TABLES = (
     "adult_domain_catalog",
     "remnawave_dns_unique",
@@ -182,6 +185,7 @@ def _msg_has_deadlock(err: Exception) -> bool:
 
 def _msg_has_retryable_db_error(err: Exception) -> bool:
     msg = str(err).lower()
+    cls = err.__class__.__name__.lower()
     tokens = (
         "deadlock detected",
         "deadlockdetectederror",
@@ -190,8 +194,12 @@ def _msg_has_retryable_db_error(err: Exception) -> bool:
         "lock timeout",
         "locknotavailable",
         "statement timeout",
+        "querycanceled",
+        "timeouterror",
     )
-    return any(token in msg for token in tokens)
+    if isinstance(err, TimeoutError):
+        return True
+    return any(token in msg for token in tokens) or any(token in cls for token in tokens)
 
 
 async def _run_with_db_retry(
@@ -511,31 +519,129 @@ async def _bulk_insert_staging_domains(
 
 
 async def _merge_staging_into_catalog(db: AsyncSession, version: str) -> int:
-    res = await db.execute(
-        text(
-            f"""
-            INSERT INTO adult_domain_catalog (domain, category, source_mask, source_text, list_version, checked_at, is_enabled)
-            SELECT s.domain, s.category, s.source_mask, s.source_text, :version, s.checked_at, TRUE
-            FROM {_ADULT_STAGING_TABLE} s
-            ON CONFLICT (domain) DO UPDATE
-            SET
-                source_mask = adult_domain_catalog.source_mask | EXCLUDED.source_mask,
-                source_text = EXCLUDED.source_text,
-                list_version = EXCLUDED.list_version,
-                checked_at = EXCLUDED.checked_at,
-                is_enabled = EXCLUDED.is_enabled,
-                category = EXCLUDED.category
-            WHERE
-                adult_domain_catalog.is_enabled IS DISTINCT FROM TRUE
-                OR adult_domain_catalog.list_version IS DISTINCT FROM EXCLUDED.list_version
-                OR adult_domain_catalog.source_mask IS DISTINCT FROM (adult_domain_catalog.source_mask | EXCLUDED.source_mask)
-                OR adult_domain_catalog.source_text::text IS DISTINCT FROM EXCLUDED.source_text::text
-                OR adult_domain_catalog.category IS DISTINCT FROM EXCLUDED.category
-            """
-        ),
-        {"version": version},
-    )
-    return int(res.rowcount or 0)
+    total_merged = 0
+    while True:
+        row = None
+        for attempt in range(1, ADULT_SYNC_DB_RETRY_MAX_ATTEMPTS + 1):
+            try:
+                res = await db.execute(
+                    text(
+                        f"""
+                        WITH picked AS (
+                            SELECT ctid, domain, category, source_mask, source_text, checked_at
+                            FROM {_ADULT_STAGING_TABLE}
+                            ORDER BY domain
+                            LIMIT :chunk_size
+                        ),
+                        ins AS (
+                            INSERT INTO adult_domain_catalog (domain, category, source_mask, source_text, list_version, checked_at, is_enabled)
+                            SELECT p.domain, p.category, p.source_mask, p.source_text, :version, p.checked_at, TRUE
+                            FROM picked p
+                            ON CONFLICT (domain) DO UPDATE
+                            SET
+                                source_mask = adult_domain_catalog.source_mask | EXCLUDED.source_mask,
+                                source_text = EXCLUDED.source_text,
+                                list_version = EXCLUDED.list_version,
+                                checked_at = EXCLUDED.checked_at,
+                                is_enabled = EXCLUDED.is_enabled,
+                                category = EXCLUDED.category
+                            WHERE
+                                adult_domain_catalog.is_enabled IS DISTINCT FROM TRUE
+                                OR adult_domain_catalog.list_version IS DISTINCT FROM EXCLUDED.list_version
+                                OR adult_domain_catalog.source_mask IS DISTINCT FROM (adult_domain_catalog.source_mask | EXCLUDED.source_mask)
+                                OR adult_domain_catalog.source_text::text IS DISTINCT FROM EXCLUDED.source_text::text
+                                OR adult_domain_catalog.category IS DISTINCT FROM EXCLUDED.category
+                            RETURNING 1
+                        ),
+                        del_rows AS (
+                            DELETE FROM {_ADULT_STAGING_TABLE} s
+                            USING picked p
+                            WHERE s.ctid = p.ctid
+                            RETURNING 1
+                        )
+                        SELECT
+                            (SELECT COUNT(*) FROM picked) AS picked_count,
+                            (SELECT COUNT(*) FROM ins) AS merged_count
+                        """
+                    ),
+                    {
+                        "version": version,
+                        "chunk_size": ADULT_SYNC_DB_MERGE_CHUNK_SIZE,
+                    },
+                )
+                row = res.first()
+                await db.commit()
+                break
+            except Exception as exc:
+                await db.rollback()
+                if _msg_has_retryable_db_error(exc) and attempt < ADULT_SYNC_DB_RETRY_MAX_ATTEMPTS:
+                    sleep_sec = (ADULT_SYNC_DB_RETRY_BASE_SLEEP_MS / 1000.0) * attempt
+                    logger.warning("adult merge chunk retry %s/%s: %s", attempt, ADULT_SYNC_DB_RETRY_MAX_ATTEMPTS, exc)
+                    await asyncio.sleep(sleep_sec)
+                    continue
+                raise
+        if row is None:
+            break
+        picked_count = int(row.picked_count or 0)
+        merged_count = int(row.merged_count or 0)
+        if picked_count <= 0:
+            break
+        total_merged += merged_count
+    return total_merged
+
+
+async def _disable_stale_catalog_rows(db: AsyncSession, *, version: str) -> int:
+    total_disabled = 0
+    while True:
+        row = None
+        for attempt in range(1, ADULT_SYNC_DB_RETRY_MAX_ATTEMPTS + 1):
+            try:
+                res = await db.execute(
+                    text(
+                        """
+                        WITH picked AS (
+                            SELECT ctid
+                            FROM adult_domain_catalog
+                            WHERE is_enabled IS TRUE AND list_version <> :version
+                            LIMIT :chunk_size
+                            FOR UPDATE SKIP LOCKED
+                        ),
+                        upd AS (
+                            UPDATE adult_domain_catalog c
+                            SET
+                                is_enabled = FALSE,
+                                source_mask = 0,
+                                source_text = '[]'::jsonb
+                            FROM picked
+                            WHERE c.ctid = picked.ctid
+                            RETURNING 1
+                        )
+                        SELECT (SELECT COUNT(*) FROM upd) AS disabled_count
+                        """
+                    ),
+                    {
+                        "version": version,
+                        "chunk_size": ADULT_SYNC_DB_STALE_CHUNK_SIZE,
+                    },
+                )
+                row = res.first()
+                await db.commit()
+                break
+            except Exception as exc:
+                await db.rollback()
+                if _msg_has_retryable_db_error(exc) and attempt < ADULT_SYNC_DB_RETRY_MAX_ATTEMPTS:
+                    sleep_sec = (ADULT_SYNC_DB_RETRY_BASE_SLEEP_MS / 1000.0) * attempt
+                    logger.warning("adult stale disable chunk retry %s/%s: %s", attempt, ADULT_SYNC_DB_RETRY_MAX_ATTEMPTS, exc)
+                    await asyncio.sleep(sleep_sec)
+                    continue
+                raise
+        if row is None:
+            break
+        disabled = int(row.disabled_count or 0)
+        if disabled <= 0:
+            break
+        total_disabled += disabled
+    return total_disabled
 
 
 async def _replace_bucket_table_domains(
@@ -1498,6 +1604,7 @@ async def _sync_adult_catalog_internal(progress_cb: ProgressCallback | None = No
         await _prepare_adult_staging_table(db)
         total_items = len(items)
         processed_items = 0
+        staged_batches = 0
         for start_idx, end_idx in _iter_batch_slices(len(items), chunk_size):
             chunk = items[start_idx:end_idx]
             if not chunk:
@@ -1516,6 +1623,9 @@ async def _sync_adult_catalog_internal(progress_cb: ProgressCallback | None = No
                     }
                 )
             await _bulk_insert_staging_rows(db, rows)
+            staged_batches += 1
+            if staged_batches % ADULT_SYNC_TXT_DB_COMMIT_EVERY == 0:
+                await db.commit()
             processed_items += len(chunk)
             await _emit_progress(
                 progress_cb,
@@ -1525,35 +1635,33 @@ async def _sync_adult_catalog_internal(progress_cb: ProgressCallback | None = No
                 progress_percent=40.0 + (processed_items / max(total_items, 1)) * 45.0,
                 message=f"Prepared {processed_items}/{total_items}",
             )
+        await db.commit()
 
+        await _emit_progress(progress_cb, phase="bucket_sync", progress_current=0, progress_total=1, progress_percent=86.0, message="Refreshing bucket tables")
         bucket_table_rows = await _sync_bucket_tables(
             db,
             version=version,
             checked_at=start,
             bucket_files=collect_stats.get("bucket_files") or {},
         )
+        await db.commit()
 
-        await _merge_staging_into_catalog(db, version=version)
-        await _emit_progress(progress_cb, phase="merge", progress_current=1, progress_total=1, progress_percent=90.0, message="Merged into catalog")
+        merged_total = await _merge_staging_into_catalog(db, version=version)
+        await _emit_progress(progress_cb, phase="merge", progress_current=merged_total, progress_total=max(merged_total, 1), progress_percent=93.0, message=f"Merged into catalog: {merged_total}")
 
-        stale_stmt = (
-            update(AdultDomainCatalog)
-            .where(and_(AdultDomainCatalog.is_enabled.is_(True), AdultDomainCatalog.list_version != version))
-            .values({
-                "is_enabled": False,
-                "source_mask": 0,
-                "source_text": [],
-            })
-        )
-        await db.execute(stale_stmt)
+        disabled_total = await _disable_stale_catalog_rows(db, version=version)
+        await _emit_progress(progress_cb, phase="cleanup", progress_current=disabled_total, progress_total=max(disabled_total, 1), progress_percent=96.0, message=f"Disabled stale rows: {disabled_total}")
 
         marked_for_recheck = await _mark_matching_domains_for_recheck(db=db, version=version)
         await db.commit()
+        await _emit_progress(progress_cb, phase="recheck_mark", progress_current=marked_for_recheck, progress_total=max(marked_for_recheck, 1), progress_percent=99.0, message=f"Marked for recheck: {marked_for_recheck}")
 
         stats = {
             "version": version,
             "domains": len(domain_map),
             "updated": marked_for_recheck,
+            "merged_total": merged_total,
+            "disabled_stale": disabled_total,
             "status": "ok",
             "bucket_counts": collect_stats.get("bucket_counts") or {},
             "bucket_table_rows": bucket_table_rows,
@@ -1746,20 +1854,10 @@ async def sync_adult_catalog_from_txt(path: str | None = None, progress_cb: Prog
                     for domain, mask in chunk
                 ]
                 await _bulk_insert_staging_rows(db, rows)
+                await db.commit()
 
             inserted_total = await _merge_staging_into_catalog(db, version=version)
-            stale_stmt = (
-                update(AdultDomainCatalog)
-                .where(and_(AdultDomainCatalog.is_enabled.is_(True), AdultDomainCatalog.list_version != version))
-                .values(
-                    {
-                        "is_enabled": False,
-                        "source_mask": 0,
-                        "source_text": [],
-                    }
-                )
-            )
-            await db.execute(stale_stmt)
+            disabled_total = await _disable_stale_catalog_rows(db, version=version)
             await db.commit()
 
             await _mark_matching_domains_for_recheck(db=db, version=version)
@@ -1774,6 +1872,7 @@ async def sync_adult_catalog_from_txt(path: str | None = None, progress_cb: Prog
             "bucket_counts": {name: len(values) for name, values in bucket_map.items()},
             "bucket_table_rows": bucket_table_rows,
             "bucket_files": bucket_files,
+            "disabled_stale": disabled_total,
         }
         await _upsert_sync_state(status="ok", stats=stats, version=version, last_watermark=str(started_at))
         done_msg = f"TXT sync finished ({processed_domains} domains)"
@@ -1818,6 +1917,12 @@ async def _mark_matching_domains_for_recheck(db: AsyncSession, version: str) -> 
     """
     total_marked = 0
     while True:
+        if total_marked >= ADULT_MARK_RECHECK_MAX_ROWS_PER_SYNC:
+            break
+        chunk_size = min(
+            ADULT_MARK_RECHECK_CHUNK_SIZE,
+            max(1, ADULT_MARK_RECHECK_MAX_ROWS_PER_SYNC - total_marked),
+        )
         res = await db.execute(
             text(
                 """
@@ -1830,19 +1935,6 @@ async def _mark_matching_domains_for_recheck(db: AsyncSession, version: str) -> 
                             u.mark_version IS NULL
                             OR u.mark_version <> :version
                             OR COALESCE(u.is_adult, FALSE) = FALSE
-                        )
-                        AND EXISTS (
-                            SELECT 1
-                            FROM adult_domain_catalog AS c
-                            WHERE
-                                c.is_enabled IS TRUE
-                                AND c.list_version = :version
-                                AND (
-                                    c.domain = u.dns_root
-                                    OR regexp_replace(c.domain, '^(?:[0-9]+-)+', '') = u.dns_root
-                                    OR u.dns_root LIKE ('%.' || c.domain)
-                                    OR u.dns_root LIKE ('%.' || regexp_replace(c.domain, '^(?:[0-9]+-)+', ''))
-                                )
                         )
                     ORDER BY u.last_seen NULLS LAST, u.dns_root
                     LIMIT :chunk_size
@@ -1857,7 +1949,7 @@ async def _mark_matching_domains_for_recheck(db: AsyncSession, version: str) -> 
             ),
             {
                 "version": version,
-                "chunk_size": ADULT_MARK_RECHECK_CHUNK_SIZE,
+                "chunk_size": chunk_size,
             },
         )
         marked = len(res.fetchall())
