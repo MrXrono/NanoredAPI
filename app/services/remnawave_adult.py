@@ -61,7 +61,6 @@ BLOCKLIST_URL = "https://blocklistproject.github.io/Lists/alt-version/porn-nl.tx
 OISD_ROOT_URL = "https://oisd.nl/includedlists/nsfw"
 V2FLY_ROOT_URL = "https://raw.githubusercontent.com/v2fly/domain-list-community/refs/heads/master/data/category-porn"
 
-ADULT_SYNC_HTTP_MAX_CONCURRENCY = max(1, int(os.getenv("ADULT_SYNC_HTTP_MAX_CONCURRENCY", "1")))
 ADULT_SYNC_DB_CHUNK_SIZE = max(500, int(os.getenv("ADULT_SYNC_DB_CHUNK_SIZE", "5000")))
 ADULT_SYNC_TXT_DB_CHUNK_SIZE = max(500, min(20000, int(os.getenv("ADULT_SYNC_TXT_DB_CHUNK_SIZE", str(ADULT_SYNC_DB_CHUNK_SIZE)))))
 ADULT_SYNC_TXT_DB_COMMIT_EVERY = max(1, int(os.getenv("ADULT_SYNC_TXT_DB_COMMIT_EVERY", "10")))
@@ -1077,40 +1076,21 @@ def _save_source_manifest(path: Path, manifest: dict) -> None:
     path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
 
 
-def _remote_meta_matches_local(local_path: Path, entry: dict, remote_meta: dict) -> bool:
-    if not local_path.exists():
-        return False
-    try:
-        local_size = int(local_path.stat().st_size or 0)
-    except Exception:
-        return False
-
-    remote_size = remote_meta.get("content_length")
-    if isinstance(remote_size, int) and remote_size >= 0 and remote_size != local_size:
-        return False
-    remote_etag = (remote_meta.get("etag") or "").strip()
-    if remote_etag and remote_etag != str(entry.get("etag") or "").strip():
-        return False
-    remote_last_modified = (remote_meta.get("last_modified") or "").strip()
-    if remote_last_modified and remote_last_modified != str(entry.get("last_modified") or "").strip():
-        return False
-    return bool(remote_size is not None or remote_etag or remote_last_modified)
-
-
 async def _request_with_retry(
     *,
     client: "httpx.AsyncClient",
-    semaphore: asyncio.Semaphore,
     method: str,
     url: str,
     max_retries: int,
+    headers: dict[str, str] | None = None,
+    allowed_statuses: set[int] | None = None,
 ) -> "httpx.Response":
     last_error: Exception | None = None
+    accepted = allowed_statuses or {200}
     for _ in range(max(1, max_retries)):
         try:
-            async with semaphore:
-                resp = await client.request(method, url, follow_redirects=True)
-            if resp.status_code >= 400:
+            resp = await client.request(method, url, follow_redirects=True, headers=headers)
+            if resp.status_code not in accepted:
                 raise RuntimeError(f"{url} -> HTTP {resp.status_code}")
             return resp
         except Exception as exc:  # pragma: no cover
@@ -1122,7 +1102,6 @@ async def _request_with_retry(
 async def _fetch_cached_source_file(
     *,
     client: "httpx.AsyncClient",
-    semaphore: asyncio.Semaphore,
     manifest: dict,
     url: str,
     source_mask: int,
@@ -1134,36 +1113,58 @@ async def _fetch_cached_source_file(
     file_name = str(entry.get("file_name") or _safe_source_filename(url))
     file_path = ADULT_SYNC_SOURCES_DIR / file_name
 
-    remote_meta = {}
-    try:
-        head_resp = await _request_with_retry(
-            client=client,
-            semaphore=semaphore,
-            method="HEAD",
-            url=url,
-            max_retries=max_retries,
-        )
-        content_length = head_resp.headers.get("content-length")
-        remote_meta = {
-            "content_length": int(content_length) if content_length and content_length.isdigit() else None,
-            "etag": head_resp.headers.get("etag"),
-            "last_modified": head_resp.headers.get("last-modified"),
-        }
-    except Exception:
-        remote_meta = {}
+    cached_etag = str(entry.get("etag") or "").strip()
+    cached_last_modified = str(entry.get("last_modified") or "").strip()
+    cond_headers: dict[str, str] = {}
+    if cached_etag:
+        cond_headers["If-None-Match"] = cached_etag
+    if cached_last_modified:
+        cond_headers["If-Modified-Since"] = cached_last_modified
+
+    get_resp = await _request_with_retry(
+        client=client,
+        method="GET",
+        url=url,
+        max_retries=max_retries,
+        headers=cond_headers or None,
+        allowed_statuses={200, 304},
+    )
 
     changed = True
-    if _remote_meta_matches_local(file_path, entry, remote_meta):
+    remote_meta = {
+        "content_length": None,
+        "etag": get_resp.headers.get("etag"),
+        "last_modified": get_resp.headers.get("last-modified"),
+    }
+    content_length = get_resp.headers.get("content-length")
+    if content_length and content_length.isdigit():
+        remote_meta["content_length"] = int(content_length)
+
+    if get_resp.status_code == 304 and file_path.exists():
         payload = file_path.read_bytes()
-        changed = False
+        local_sha = hashlib.sha256(payload).hexdigest()
+        expected_sha = str(entry.get("sha256") or "").strip()
+        if expected_sha and local_sha != expected_sha:
+            logger.warning("adult sync: cached hash mismatch for %s, forcing re-download", url)
+            forced_resp = await _request_with_retry(
+                client=client,
+                method="GET",
+                url=url,
+                max_retries=max_retries,
+                allowed_statuses={200},
+            )
+            payload = forced_resp.content
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_bytes(payload)
+            changed = True
+            remote_meta["etag"] = forced_resp.headers.get("etag") or remote_meta.get("etag")
+            remote_meta["last_modified"] = forced_resp.headers.get("last-modified") or remote_meta.get("last_modified")
+            forced_cl = forced_resp.headers.get("content-length")
+            if forced_cl and forced_cl.isdigit():
+                remote_meta["content_length"] = int(forced_cl)
+        else:
+            changed = False
     else:
-        get_resp = await _request_with_retry(
-            client=client,
-            semaphore=semaphore,
-            method="GET",
-            url=url,
-            max_retries=max_retries,
-        )
         payload = get_resp.content
         file_path.parent.mkdir(parents=True, exist_ok=True)
         file_path.write_bytes(payload)
@@ -1209,23 +1210,33 @@ def _write_bucket_files(bucket_map: dict[str, set[str]]) -> dict[str, str]:
     return written
 
 
-async def collect_adult_domain_map(timeout: int = 25, max_retries: int = 4) -> dict:
+async def collect_adult_domain_map(
+    timeout: int = 25,
+    max_retries: int = 4,
+    progress_cb: ProgressCallback | None = None,
+) -> dict:
     domain_map: dict[str, int] = {}
     bucket_map: dict[str, set[str]] = {name: set() for name in ADULT_BUCKET_FILE_TO_TABLE}
     manifest = _load_source_manifest(ADULT_SYNC_SOURCE_MANIFEST_PATH)
     sources: list[dict] = []
     failed: list[str] = []
     changed_count = 0
+    processed_sources = 0
 
     async with httpx.AsyncClient(timeout=timeout, headers={"User-Agent": "NanoRed/RemnawaveAuditor"}) as client:
-        logger.info("adult sync: http concurrency limit=%s", ADULT_SYNC_HTTP_MAX_CONCURRENCY)
-        fetch_semaphore = asyncio.Semaphore(ADULT_SYNC_HTTP_MAX_CONCURRENCY)
         async def _fetch(url: str, source_mask: int, parse_domains: bool) -> dict | None:
-            nonlocal changed_count
+            nonlocal changed_count, processed_sources
             try:
+                await _emit_progress(
+                    progress_cb,
+                    phase="collect",
+                    progress_current=processed_sources,
+                    progress_total=max(processed_sources + 1, 1),
+                    progress_percent=min(35.0, 2.0 + processed_sources * 0.2),
+                    message=f"Collecting source: {url}",
+                )
                 item = await _fetch_cached_source_file(
                     client=client,
-                    semaphore=fetch_semaphore,
                     manifest=manifest,
                     url=url,
                     source_mask=source_mask,
@@ -1235,10 +1246,34 @@ async def collect_adult_domain_map(timeout: int = 25, max_retries: int = 4) -> d
                 if item.get("changed"):
                     changed_count += 1
                 sources.append(item)
+                processed_sources += 1
+                logger.info(
+                    "adult sync: source processed %s changed=%s size=%s",
+                    url,
+                    bool(item.get("changed")),
+                    int(item.get("size") or 0),
+                )
+                await _emit_progress(
+                    progress_cb,
+                    phase="collect",
+                    progress_current=processed_sources,
+                    progress_total=max(processed_sources, 1),
+                    progress_percent=min(38.0, 3.0 + processed_sources * 0.25),
+                    message=f"Source done: {url}",
+                )
                 return item
             except Exception as exc:
                 failed.append(url)
                 logger.warning("adult sync: source failed %s: %s", url, exc)
+                await _emit_progress(
+                    progress_cb,
+                    phase="collect",
+                    progress_current=processed_sources,
+                    progress_total=max(processed_sources + len(failed), 1),
+                    progress_percent=min(38.0, 3.0 + processed_sources * 0.2),
+                    message=f"Source failed: {url} ({exc})",
+                    status="running",
+                )
                 return None
 
         await _fetch(BLOCKLIST_URL, SOURCE_BLOCKLIST, True)
@@ -1328,7 +1363,7 @@ async def _sync_adult_catalog_internal(progress_cb: ProgressCallback | None = No
     start = datetime.now(timezone.utc)
     version = start.strftime("%Y%m%dT%H%M%SZ")
     await _emit_progress(progress_cb, phase="collect", progress_current=0, progress_total=100, progress_percent=1.0, message="Collecting lists")
-    collect_stats = await collect_adult_domain_map()
+    collect_stats = await collect_adult_domain_map(progress_cb=progress_cb)
     domain_map: dict[str, int] = collect_stats.get("domain_map") or {}
     await _emit_progress(
         progress_cb,
