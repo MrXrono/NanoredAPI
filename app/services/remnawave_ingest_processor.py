@@ -20,6 +20,13 @@ _RNW_SCHEMA_LOCK = asyncio.Lock()
 _RNW_SCHEMA_READY = False
 
 
+def _iter_batch_slices(total_size: int, batch_size: int) -> list[tuple[int, int]]:
+    """Return safe [start:end) slices; tail batch is automatically shortened."""
+    safe_total = max(0, int(total_size or 0))
+    safe_batch = max(1, int(batch_size or 1))
+    return [(start, min(start + safe_batch, safe_total)) for start in range(0, safe_total, safe_batch)]
+
+
 async def _ensure_remnawave_schema_ready(db: AsyncSession) -> None:
     global _RNW_SCHEMA_READY
     if _RNW_SCHEMA_READY:
@@ -246,8 +253,10 @@ async def process_remnawave_ingest_entries(db: AsyncSession, entries: list[dict[
 
     result.accounts_upserted = len(account_last_activity)
 
-    for i in range(0, len(query_rows), 1000):
-        chunk = query_rows[i : i + 1000]
+    for start_idx, end_idx in _iter_batch_slices(len(query_rows), 1000):
+        chunk = query_rows[start_idx:end_idx]
+        if not chunk:
+            continue
         await db.execute(pg_insert(RemnawaveDNSQuery).values(chunk))
     result.inserted_queries = len(query_rows)
 
@@ -266,8 +275,10 @@ async def process_remnawave_ingest_entries(db: AsyncSession, entries: list[dict[
         inserted_new = 0
         updated_existing = 0
 
-        for i in range(0, len(dns_rows), 1000):
-            chunk = dns_rows[i : i + 1000]
+        for start_idx, end_idx in _iter_batch_slices(len(dns_rows), 1000):
+            chunk = dns_rows[start_idx:end_idx]
+            if not chunk:
+                continue
             try:
                 dns_unique_stmt = pg_insert(RemnawaveDNSUnique).values(chunk)
                 dns_unique_stmt = dns_unique_stmt.on_conflict_do_update(

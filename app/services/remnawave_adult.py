@@ -162,6 +162,13 @@ _bg_runtime_state: dict[str, object] = {
 }
 
 
+def _iter_batch_slices(total_size: int, batch_size: int) -> list[tuple[int, int]]:
+    """Return safe [start:end) slices; tail batch is automatically shortened."""
+    safe_total = max(0, int(total_size or 0))
+    safe_batch = max(1, int(batch_size or 1))
+    return [(start, min(start + safe_batch, safe_total)) for start in range(0, safe_total, safe_batch)]
+
+
 def _msg_has_undefined_table(err: Exception) -> bool:
     msg = str(err).lower()
     return "does not exist" in msg or "undefinedtable" in msg or "undefined table" in msg
@@ -551,8 +558,10 @@ async def _replace_bucket_table_domains(
         """
     ).bindparams(bindparam("domains", type_=ARRAY(String())))
 
-    for i in range(0, len(domains), ADULT_SYNC_TXT_DB_CHUNK_SIZE):
-        chunk = domains[i : i + ADULT_SYNC_TXT_DB_CHUNK_SIZE]
+    for start, end in _iter_batch_slices(len(domains), ADULT_SYNC_TXT_DB_CHUNK_SIZE):
+        chunk = domains[start:end]
+        if not chunk:
+            continue
         await db.execute(
             stmt,
             {
@@ -1353,8 +1362,10 @@ async def _sync_adult_catalog_internal(progress_cb: ProgressCallback | None = No
         await _prepare_adult_staging_table(db)
         total_items = len(items)
         processed_items = 0
-        for i in range(0, len(items), chunk_size):
-            chunk = items[i : i + chunk_size]
+        for start_idx, end_idx in _iter_batch_slices(len(items), chunk_size):
+            chunk = items[start_idx:end_idx]
+            if not chunk:
+                continue
             rows = []
             for domain, mask in chunk:
                 rows.append(
