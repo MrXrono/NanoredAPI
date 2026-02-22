@@ -1,0 +1,700 @@
+{
+  "generated_for": "git-preloaded-adult-sources",
+  "sources": {
+    "https://blocklistproject.github.io/Lists/alt-version/porn-nl.txt": {
+      "file_name": "blocklistproject.github.io_Lists_alt-version_porn-nl.txt_3f6c032cc116.txt",
+      "sha256": "46cd39c1f0c340a2176cc6bea4ad6a581489544427ed4056df6c0aff76258f94",
+      "size": 10422604
+    },
+    "https://blocklistproject.github.io/Lists/porn.txt": {
+      "file_name": "blocklistproject.github.io_Lists_porn.txt_1a16d08707ba.txt",
+      "sha256": "efefb66c28f0585cf7f5a57dc588cee329fdfd48e0035fae1e80c0c0b1ff8a46",
+      "size": 14424858
+    },
+    "https://cdn.jsdelivr.net/gh/ultimate-pihole-list/list/blacklist/porn.txt": {
+      "file_name": "cdn.jsdelivr.net_gh_ultimate-pihole-list_list_blacklist_porn.txt_521a030a9dfb.txt",
+      "sha256": "6abb0dcb9f9ece925826ed26823287345974efae6dcda811a47a0bfb276e0315",
+      "size": 77
+    },
+    "https://raw.githubusercontent.com/EdmondN1/MyPiHoleLists/main/PiPornList.txt": {
+      "file_name": "raw.githubusercontent.com_EdmondN1_MyPiHoleLists_main_PiPornList.txt_a26538859eb7.txt",
+      "sha256": "1700aaab2825aef781776e27a21def3a2ecca54bcc4abb9eee9b374bb6de39ab",
+      "size": 206156
+    },
+    "https://raw.githubusercontent.com/alexsannikov/adguardhome-filters/master/porn.txt": {
+      "file_name": "raw.githubusercontent.com_alexsannikov_adguardhome-filters_master_porn.txt_ebd6bc8e9d0c.txt",
+      "sha256": "bc05330ea90fcb7ddb32cd1356cd7e4be7978750ccd4a85867de77fd6329acef",
+      "size": 860417
+    },
+    "https://raw.githubusercontent.com/badmojr/addons_1Hosts/main/kidSaf/domains.txt": {
+      "file_name": "raw.githubusercontent.com_badmojr_addons_1Hosts_main_kidSaf_domains.txt_e94532490b6c.txt",
+      "sha256": "559869063dc05dec793cad344727a5fd41a4477fc3d90334c4caa12522baa6e4",
+      "size": 26338159
+    },
+    "https://raw.githubusercontent.com/deathbybandaid/Universite-Toulouse-Hosts/master/downloaded/adult.txt": {
+      "file_name": "raw.githubusercontent.com_deathbybandaid_Universite-Toulouse-Hosts_master_downloaded_adult.txt_f1b744890751.txt",
+      "sha256": "fd10c6e0d6d79220447d395c940e80931566bf40a9a8664d3287ed1c72025e2b",
+      "size": 47956954
+    },
+    "https://raw.githubusercontent.com/emiliodallatorre/adult-hosts-list/main/list.txt": {
+      "file_name": "raw.githubusercontent.com_emiliodallatorre_adult-hosts-list_main_list.txt_c8b3c98d3d9c.txt",
+      "sha256": "c5c3e62ab7578d0a3b179566ed897a190d798f60a6edd3da3713e0a22a1d8c09",
+      "size": 252170
+    },
+    "https://raw.githubusercontent.com/iam-py-test/my_filters_001/main/Alternative%20list%20formats/porn_domains.txt": {
+      "file_name": "raw.githubusercontent.com_iam-py-test_my_filters_001_main_Alternative_20list_20formats_porn_domains.txt_b8d51774a8db.txt",
+      "sha256": "01d0aa5fe6c8c8af774ee780b5909e8227dc999329b73f5ac19bbdc54ed152ed",
+      "size": 25336
+    },
+    "https://raw.githubusercontent.com/jankais3r/Synology-Safe-Access-domain-list/master/adult.txt": {
+      "file_name": "raw.githubusercontent.com_jankais3r_Synology-Safe-Access-domain-list_master_adult.txt_8244d24ed140.txt",
+      "sha256": "a068fa41711ac3580ffc64c0eb3d012b583b4be1fdeb8c3a0579d919e2002f2c",
+      "size": 19515142
+    },
+    "https://raw.githubusercontent.com/jarelllama/Scam-Blocklist/main/lists/adblock/nsfw.txt": {
+      "file_name": "raw.githubusercontent.com_jarelllama_Scam-Blocklist_main_lists_adblock_nsfw.txt_23124d5ab00a.txt",
+      "sha256": "0dc0d351d116e8e3e410665a0a26ae02842ab33f669a8b8c09123d1b0141ccd1",
+      "size": 118247
+    },
+    "https://raw.githubusercontent.com/mhxion/pornaway/master/hosts/porn_ads.txt": {
+      "file_name": "raw.githubusercontent.com_mhxion_pornaway_master_hosts_porn_ads.txt_51d4601c6f6f.txt",
+      "sha256": "2e94f10293f0cebbf2c45d2c53bd69ab5c35ca9a2a61876b3ff28ef8659b0794",
+      "size": 31834
+    },
+    "https://raw.githubusercontent.com/mhxion/pornaway/master/hosts/porn_sites.txt": {
+      "file_name": "raw.githubusercontent.com_mhxion_pornaway_master_hosts_porn_sites.txt_cea81207a2af.txt",
+      "sha256": "d808a07518886be95d968413ca52280298c67cdd8dcc261a38906a228a9f6547",
+      "size": 1095153
+    },
+    "https://raw.githubusercontent.com/moose84/list/master/listaPI.txt": {
+      "file_name": "raw.githubusercontent.com_moose84_list_master_listaPI.txt_53771f4dbc82.txt",
+      "sha256": "2c81a86e93cffcae6264fca5c2443f8d53c9503c58dd384caebdc80fec00ef7a",
+      "size": 207805
+    },
+    "https://raw.githubusercontent.com/mrvivacious/PorNo-_Porn_Blocker/master/lists/Urls/0.txt": {
+      "file_name": "raw.githubusercontent.com_mrvivacious_PorNo-_Porn_Blocker_master_lists_Urls_0.txt_74a1d6ccfcad.txt",
+      "sha256": "3bf31a2f0282de9c23503ae53d3d9fe245d96924efa5d9fc04f05aea10840677",
+      "size": 119
+    },
+    "https://raw.githubusercontent.com/mrvivacious/PorNo-_Porn_Blocker/master/lists/Urls/1.txt": {
+      "file_name": "raw.githubusercontent.com_mrvivacious_PorNo-_Porn_Blocker_master_lists_Urls_1.txt_bddb6a0f002e.txt",
+      "sha256": "9742697ad5315fc0a634bbacaa1d4832f16612fa569786cbdec1380b58517281",
+      "size": 2766
+    },
+    "https://raw.githubusercontent.com/mrvivacious/PorNo-_Porn_Blocker/master/lists/Urls/2.txt": {
+      "file_name": "raw.githubusercontent.com_mrvivacious_PorNo-_Porn_Blocker_master_lists_Urls_2.txt_0c92bd6e1472.txt",
+      "sha256": "bb3183fbc96168f960830504ef4711961a9d9748d16ef21a6dbf46a4340ca453",
+      "size": 1023
+    },
+    "https://raw.githubusercontent.com/mrvivacious/PorNo-_Porn_Blocker/master/lists/Urls/3.txt": {
+      "file_name": "raw.githubusercontent.com_mrvivacious_PorNo-_Porn_Blocker_master_lists_Urls_3.txt_47795e7410af.txt",
+      "sha256": "f21ee129c739609b78d93a19d0f354e3f37e1cfcc36d51ee0d1cbdab4af667f4",
+      "size": 1417
+    },
+    "https://raw.githubusercontent.com/mrvivacious/PorNo-_Porn_Blocker/master/lists/Urls/4.txt": {
+      "file_name": "raw.githubusercontent.com_mrvivacious_PorNo-_Porn_Blocker_master_lists_Urls_4.txt_60c7262a1521.txt",
+      "sha256": "5121566ce695c16c916f1090af55bf40422c6a61b21da986e6842dec49a7ec45",
+      "size": 621
+    },
+    "https://raw.githubusercontent.com/mrvivacious/PorNo-_Porn_Blocker/master/lists/Urls/5.txt": {
+      "file_name": "raw.githubusercontent.com_mrvivacious_PorNo-_Porn_Blocker_master_lists_Urls_5.txt_c6e9a0f33bf3.txt",
+      "sha256": "0f9d608d00c52b5628147d5f86436ee0ec1cbc4c5a887489b2ef5c143fce8d7f",
+      "size": 148
+    },
+    "https://raw.githubusercontent.com/mrvivacious/PorNo-_Porn_Blocker/master/lists/Urls/6.txt": {
+      "file_name": "raw.githubusercontent.com_mrvivacious_PorNo-_Porn_Blocker_master_lists_Urls_6.txt_2b414b2bbb77.txt",
+      "sha256": "aff4b05cb7fc5bda514c907cc7efa554178b8f40505124efaf68f60382ce4c16",
+      "size": 550
+    },
+    "https://raw.githubusercontent.com/mrvivacious/PorNo-_Porn_Blocker/master/lists/Urls/7.txt": {
+      "file_name": "raw.githubusercontent.com_mrvivacious_PorNo-_Porn_Blocker_master_lists_Urls_7.txt_cc261dacaeda.txt",
+      "sha256": "d1d1285d68b07fc284f7b954410bfebb503d4c99ec158a61dfbef50492f7f1bf",
+      "size": 356
+    },
+    "https://raw.githubusercontent.com/mrvivacious/PorNo-_Porn_Blocker/master/lists/Urls/8.txt": {
+      "file_name": "raw.githubusercontent.com_mrvivacious_PorNo-_Porn_Blocker_master_lists_Urls_8.txt_57b5c6dc29fb.txt",
+      "sha256": "cab30c2e587cb8c11660ab1420e40c6d92c5995433bd6706b7c08467c9b540c1",
+      "size": 394
+    },
+    "https://raw.githubusercontent.com/mrvivacious/PorNo-_Porn_Blocker/master/lists/Urls/9.txt": {
+      "file_name": "raw.githubusercontent.com_mrvivacious_PorNo-_Porn_Blocker_master_lists_Urls_9.txt_3640cd6df868.txt",
+      "sha256": "dccdd20cd26f9b38975def7471aa78071b2bc3ade1ca9f2cd8a115233dfad227",
+      "size": 214
+    },
+    "https://raw.githubusercontent.com/mrvivacious/PorNo-_Porn_Blocker/master/lists/Urls/a.txt": {
+      "file_name": "raw.githubusercontent.com_mrvivacious_PorNo-_Porn_Blocker_master_lists_Urls_a.txt_a6a0add172fc.txt",
+      "sha256": "3daac9cfac3047dfeffb35c19f3cf9b0bb3bffc51d3447f90809f43941531aea",
+      "size": 28807
+    },
+    "https://raw.githubusercontent.com/mrvivacious/PorNo-_Porn_Blocker/master/lists/Urls/b.txt": {
+      "file_name": "raw.githubusercontent.com_mrvivacious_PorNo-_Porn_Blocker_master_lists_Urls_b.txt_e456d275d382.txt",
+      "sha256": "6ce9dbb8e467d1f16ce39c4893c25cecbdf6945ef9c33aaa474e9f413a056dce",
+      "size": 24638
+    },
+    "https://raw.githubusercontent.com/mrvivacious/PorNo-_Porn_Blocker/master/lists/Urls/c.txt": {
+      "file_name": "raw.githubusercontent.com_mrvivacious_PorNo-_Porn_Blocker_master_lists_Urls_c.txt_54e4725aa15f.txt",
+      "sha256": "97a74e59ed7035d3412a5858f6bc5903343df9a73649b7af758e729acc242ad1",
+      "size": 19434
+    },
+    "https://raw.githubusercontent.com/mrvivacious/PorNo-_Porn_Blocker/master/lists/Urls/d.txt": {
+      "file_name": "raw.githubusercontent.com_mrvivacious_PorNo-_Porn_Blocker_master_lists_Urls_d.txt_ad17d78238b1.txt",
+      "sha256": "671e0ee03fadf13d4120f33591bf055508a880a123fb3fab61431d6a96f646c4",
+      "size": 11777
+    },
+    "https://raw.githubusercontent.com/mrvivacious/PorNo-_Porn_Blocker/master/lists/Urls/e.txt": {
+      "file_name": "raw.githubusercontent.com_mrvivacious_PorNo-_Porn_Blocker_master_lists_Urls_e.txt_798b57bfcca3.txt",
+      "sha256": "5f8648c1a0080bde10507ae8a59f028799b47b16d0b1ee8aafcb9fa180288697",
+      "size": 11547
+    },
+    "https://raw.githubusercontent.com/mrvivacious/PorNo-_Porn_Blocker/master/lists/Urls/f.txt": {
+      "file_name": "raw.githubusercontent.com_mrvivacious_PorNo-_Porn_Blocker_master_lists_Urls_f.txt_df0f27936001.txt",
+      "sha256": "517f25cdef0a246f21b97f0ff2bfb097627ec06de38127a0210ca119d2bb1d54",
+      "size": 23409
+    },
+    "https://raw.githubusercontent.com/mrvivacious/PorNo-_Porn_Blocker/master/lists/Urls/g.txt": {
+      "file_name": "raw.githubusercontent.com_mrvivacious_PorNo-_Porn_Blocker_master_lists_Urls_g.txt_1979bdf9e21e.txt",
+      "sha256": "2035fbdc679b58a62b5d0ddbcb4f60a50b504916a866986f7cc88463b00203f1",
+      "size": 15248
+    },
+    "https://raw.githubusercontent.com/mrvivacious/PorNo-_Porn_Blocker/master/lists/Urls/h.txt": {
+      "file_name": "raw.githubusercontent.com_mrvivacious_PorNo-_Porn_Blocker_master_lists_Urls_h.txt_b8223e2b10f9.txt",
+      "sha256": "19a8e2d243a595da0713861e0415e50e89123cad3658e7d0ed52124402154398",
+      "size": 22085
+    },
+    "https://raw.githubusercontent.com/mrvivacious/PorNo-_Porn_Blocker/master/lists/Urls/i.txt": {
+      "file_name": "raw.githubusercontent.com_mrvivacious_PorNo-_Porn_Blocker_master_lists_Urls_i.txt_8cf4cda1ea81.txt",
+      "sha256": "19f1a9f3a1b97860a39f1ad1286134626bd17560f915419d9afda5045a358ba6",
+      "size": 7340
+    },
+    "https://raw.githubusercontent.com/mrvivacious/PorNo-_Porn_Blocker/master/lists/Urls/j.txt": {
+      "file_name": "raw.githubusercontent.com_mrvivacious_PorNo-_Porn_Blocker_master_lists_Urls_j.txt_b8692eb0a7b3.txt",
+      "sha256": "6e8d4b0f6ec7bb5bfee17c02b0ab6244287844a6f01d5184a5168dafea8dd29a",
+      "size": 7261
+    },
+    "https://raw.githubusercontent.com/mrvivacious/PorNo-_Porn_Blocker/master/lists/Urls/k.txt": {
+      "file_name": "raw.githubusercontent.com_mrvivacious_PorNo-_Porn_Blocker_master_lists_Urls_k.txt_f8c67be12407.txt",
+      "sha256": "afb10f56d6c41df82dc5136689b314a8b4a74a3522c8c5d5a7501dc6e25f2ac4",
+      "size": 3845
+    },
+    "https://raw.githubusercontent.com/mrvivacious/PorNo-_Porn_Blocker/master/lists/Urls/l.txt": {
+      "file_name": "raw.githubusercontent.com_mrvivacious_PorNo-_Porn_Blocker_master_lists_Urls_l.txt_a476eefae486.txt",
+      "sha256": "2c69cd1860129e4e6d8627d89d5171c9779da5cfd655290ac6dbef816de08469",
+      "size": 12441
+    },
+    "https://raw.githubusercontent.com/mrvivacious/PorNo-_Porn_Blocker/master/lists/Urls/m.txt": {
+      "file_name": "raw.githubusercontent.com_mrvivacious_PorNo-_Porn_Blocker_master_lists_Urls_m.txt_344d0bd7caf3.txt",
+      "sha256": "4867f3b93a5fea7fce32e9a678f4119aea40746359af8b944795947a86dad46a",
+      "size": 26676
+    },
+    "https://raw.githubusercontent.com/mrvivacious/PorNo-_Porn_Blocker/master/lists/Urls/n.txt": {
+      "file_name": "raw.githubusercontent.com_mrvivacious_PorNo-_Porn_Blocker_master_lists_Urls_n.txt_4c232972f17f.txt",
+      "sha256": "c422ea2c89c72ed367eaa4b4dd2189f5a783c2961d5f08bc59bb51ca49c89fd3",
+      "size": 14227
+    },
+    "https://raw.githubusercontent.com/mrvivacious/PorNo-_Porn_Blocker/master/lists/Urls/o.txt": {
+      "file_name": "raw.githubusercontent.com_mrvivacious_PorNo-_Porn_Blocker_master_lists_Urls_o.txt_b84257b8aa8c.txt",
+      "sha256": "629df577ca00a19c720a2ea4808106e20bdd9a0e85bd5aaaa1d117f00b0a180c",
+      "size": 6771
+    },
+    "https://raw.githubusercontent.com/mrvivacious/PorNo-_Porn_Blocker/master/lists/Urls/p.txt": {
+      "file_name": "raw.githubusercontent.com_mrvivacious_PorNo-_Porn_Blocker_master_lists_Urls_p.txt_86d45a673b07.txt",
+      "sha256": "cdba24d7cf3e5d1a9642bca1deb4e8e05057b9961ff5e88227f2e40d2f16253c",
+      "size": 30986
+    },
+    "https://raw.githubusercontent.com/mrvivacious/PorNo-_Porn_Blocker/master/lists/Urls/q.txt": {
+      "file_name": "raw.githubusercontent.com_mrvivacious_PorNo-_Porn_Blocker_master_lists_Urls_q.txt_e2c030626716.txt",
+      "sha256": "40ca8ad03cd9ce580b551cede9c3f644336963ebaab3b0ab79f9edbc79a58fa7",
+      "size": 791
+    },
+    "https://raw.githubusercontent.com/mrvivacious/PorNo-_Porn_Blocker/master/lists/Urls/r.txt": {
+      "file_name": "raw.githubusercontent.com_mrvivacious_PorNo-_Porn_Blocker_master_lists_Urls_r.txt_03e1434e48c0.txt",
+      "sha256": "f6eaf586ed7bd5baa13d0d7cbeb8819be321a4603652948db9a85e811fd26602",
+      "size": 117853
+    },
+    "https://raw.githubusercontent.com/mrvivacious/PorNo-_Porn_Blocker/master/lists/Urls/s.txt": {
+      "file_name": "raw.githubusercontent.com_mrvivacious_PorNo-_Porn_Blocker_master_lists_Urls_s.txt_97d0209a8bcb.txt",
+      "sha256": "48edb0a8eee1c987cd33baa6077c837a821433404abc30563b2a15b8de66506a",
+      "size": 33852
+    },
+    "https://raw.githubusercontent.com/mrvivacious/PorNo-_Porn_Blocker/master/lists/Urls/t.txt": {
+      "file_name": "raw.githubusercontent.com_mrvivacious_PorNo-_Porn_Blocker_master_lists_Urls_t.txt_db38f80c2808.txt",
+      "sha256": "b42577b17cec2b9e9e1bbb5085dc8d92031678dcde7a3b033a0b8bcdf1cb84c9",
+      "size": 30341
+    },
+    "https://raw.githubusercontent.com/mrvivacious/PorNo-_Porn_Blocker/master/lists/Urls/u.txt": {
+      "file_name": "raw.githubusercontent.com_mrvivacious_PorNo-_Porn_Blocker_master_lists_Urls_u.txt_18cef9146cef.txt",
+      "sha256": "74626a64d34c58691713c3f1d1351dd300f560591451a318ea315159ff5e9a3d",
+      "size": 3082
+    },
+    "https://raw.githubusercontent.com/mrvivacious/PorNo-_Porn_Blocker/master/lists/Urls/v.txt": {
+      "file_name": "raw.githubusercontent.com_mrvivacious_PorNo-_Porn_Blocker_master_lists_Urls_v.txt_23e2c352c665.txt",
+      "sha256": "370a8ea62b050a3091a23ca848438e94e3bd3d42cd6ed69e634c351524694b17",
+      "size": 9806
+    },
+    "https://raw.githubusercontent.com/mrvivacious/PorNo-_Porn_Blocker/master/lists/Urls/w.txt": {
+      "file_name": "raw.githubusercontent.com_mrvivacious_PorNo-_Porn_Blocker_master_lists_Urls_w.txt_27b3adde7b01.txt",
+      "sha256": "652677c1566db304feb1ebe83688175ca0bfa9ce5876e0cb743d9024c90e9570",
+      "size": 7722
+    },
+    "https://raw.githubusercontent.com/mrvivacious/PorNo-_Porn_Blocker/master/lists/Urls/x.txt": {
+      "file_name": "raw.githubusercontent.com_mrvivacious_PorNo-_Porn_Blocker_master_lists_Urls_x.txt_e953dc0b043b.txt",
+      "sha256": "34df3401d45782f912afa94a1832db1a216e44e96ad6e04584dce22801bed59a",
+      "size": 11230
+    },
+    "https://raw.githubusercontent.com/mrvivacious/PorNo-_Porn_Blocker/master/lists/Urls/y.txt": {
+      "file_name": "raw.githubusercontent.com_mrvivacious_PorNo-_Porn_Blocker_master_lists_Urls_y.txt_a9b89acb5e0e.txt",
+      "sha256": "16055b1dcd452867bb9783dff9cc2f5e378783a8f362d773ed960a8b8cde6218",
+      "size": 6104
+    },
+    "https://raw.githubusercontent.com/mrvivacious/PorNo-_Porn_Blocker/master/lists/Urls/z.txt": {
+      "file_name": "raw.githubusercontent.com_mrvivacious_PorNo-_Porn_Blocker_master_lists_Urls_z.txt_964895078de3.txt",
+      "sha256": "b9f95d841fac5c975eba861b384d1651dea91d3717ca7976cdee70dbcc8cf0af",
+      "size": 2098
+    },
+    "https://raw.githubusercontent.com/nizekun/adguardhome-blocklist/main/alexsannikov-pornlist.txt": {
+      "file_name": "raw.githubusercontent.com_nizekun_adguardhome-blocklist_main_alexsannikov-pornlist.txt_4d2b53ed1845.txt",
+      "sha256": "e3517f9d8ebb6fb15b6e9dc142c14ae664d936d3e69fa107bfda1c869d410fe1",
+      "size": 296127
+    },
+    "https://raw.githubusercontent.com/nizekun/adguardhome-blocklist/main/chadmayfieldporn_all1.txt": {
+      "file_name": "raw.githubusercontent.com_nizekun_adguardhome-blocklist_main_chadmayfieldporn_all1.txt_e624d902d2cf.txt",
+      "sha256": "6ede87d605dad678415c4cbac2d60fdc902b4e2e7f389b682be02e4322cd6b37",
+      "size": 17858070
+    },
+    "https://raw.githubusercontent.com/nizekun/adguardhome-blocklist/main/chadmayfieldporn_all2.txt": {
+      "file_name": "raw.githubusercontent.com_nizekun_adguardhome-blocklist_main_chadmayfieldporn_all2.txt_441201202333.txt",
+      "sha256": "47f682c05592a2667888bbb8355de5af373231c26a2c5fe9195b72f595410eea",
+      "size": 17699698
+    },
+    "https://raw.githubusercontent.com/nizekun/adguardhome-blocklist/main/chadmayfieldporn_all3.txt": {
+      "file_name": "raw.githubusercontent.com_nizekun_adguardhome-blocklist_main_chadmayfieldporn_all3.txt_964080a2a718.txt",
+      "sha256": "10a397be0ff3bd63211bbe6d753cbb1ab79b4505c631ae8d86cb698507db5d0c",
+      "size": 22469863
+    },
+    "https://raw.githubusercontent.com/nizekun/adguardhome-blocklist/main/chadmayfieldtop1mlist.txt": {
+      "file_name": "raw.githubusercontent.com_nizekun_adguardhome-blocklist_main_chadmayfieldtop1mlist.txt_8b2236a202c0.txt",
+      "sha256": "1993826dc2ff9865d27d2bae9e56493bb71682aefbd8e1a5a9a34895e5f63d5a",
+      "size": 241642
+    },
+    "https://raw.githubusercontent.com/nizekun/adguardhome-blocklist/main/mhhakimpornlist.txt": {
+      "file_name": "raw.githubusercontent.com_nizekun_adguardhome-blocklist_main_mhhakimpornlist.txt_cddfcaaa9913.txt",
+      "sha256": "d3ac71d4b92812cfe5e910e6b5bd46f7e35474e54d835d2b20ee665fb8949db0",
+      "size": 530756
+    },
+    "https://raw.githubusercontent.com/nizekun/adguardhome-blocklist/main/porn-list.txt": {
+      "file_name": "raw.githubusercontent.com_nizekun_adguardhome-blocklist_main_porn-list.txt_984f4169fab3.txt",
+      "sha256": "249a68b8ee3eeba1e1aacf8b629b8fa3937edc31eb3978c028aeb2878db3d6cb",
+      "size": 9056
+    },
+    "https://raw.githubusercontent.com/outapzaza/blocklist/master/serverblocklist.txt": {
+      "file_name": "raw.githubusercontent.com_outapzaza_blocklist_master_serverblocklist.txt_2a4bdac57f59.txt",
+      "sha256": "8f56d9e181c3955fcd36f4e1b5e0b481f78ddd9e2b296d422c8cc6804ef7590c",
+      "size": 245828
+    },
+    "https://raw.githubusercontent.com/pq6p41fgt6k/potential-octo-parakeet/master/porn.txt": {
+      "file_name": "raw.githubusercontent.com_pq6p41fgt6k_potential-octo-parakeet_master_porn.txt_3017eb804445.txt",
+      "sha256": "7b4c6f8fedef74a6808a414bf1fd214bb6a6a7e8b16e11b72639a6a360a07a36",
+      "size": 295369
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/18comic": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_18comic_4361b467ac81.txt",
+      "sha256": "91e86d906a97da0846fb398f96466b856178c482210d632ee1476e6fe8d397ed",
+      "size": 735
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/54647": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_54647_61de3f128ff8.txt",
+      "sha256": "a1ae5f1c5edb8e4926386f4b58d144ba382ca8a53c2d524290fc2dd4e58887c2",
+      "size": 45
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/anon-v": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_anon-v_d684e30f66e6.txt",
+      "sha256": "f9e4abdd828fa6bbc2496e567a2bc38374ef7644ad3d62296ab4fda1248f2a87",
+      "size": 22
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/avmoo": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_avmoo_ce9959fed827.txt",
+      "sha256": "e00642fda33775a2996558762f6bf3d83ad70b2389df6d9d87ecc442216eeefc",
+      "size": 32
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/bdsmhub": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_bdsmhub_38d30ca9f314.txt",
+      "sha256": "57b15517fe43ab21bc819f0a75f8d9a0359ea4d8ecc32db59fee9ad0a21b9fd0",
+      "size": 26
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/bilibili2": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_bilibili2_ff106abacbc5.txt",
+      "sha256": "714404f6002ef63d79059406e151eef1bbca84a5690cd683e3745ee2da6bd66a",
+      "size": 154
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/boboporn": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_boboporn_2e5201090a3c.txt",
+      "sha256": "179934369b359314316725c70b339e2c0fd16d1f268917fe7197f7ec5be5fc3d",
+      "size": 47
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/bongacams": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_bongacams_42c43d8af6fb.txt",
+      "sha256": "a88ae234e569cf51500dfb94df37f097e38df8c299a02033c0e52e6c4efab67a",
+      "size": 59
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/boylove": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_boylove_e895346db101.txt",
+      "sha256": "ec696cd7c89255b600f7e5566dd1e99b504dc69937e3095ca5d6b28922b6a3e0",
+      "size": 61
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/brazzers": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_brazzers_9a50812c8904.txt",
+      "sha256": "4bd3ca4571dffc1cf12b75675bf243b6368611d77facbeb12e5d2b9ad3cfcaeb",
+      "size": 77
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/bttzyw": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_bttzyw_bb5f34bf5ff6.txt",
+      "sha256": "63cb0f2d925864f96e7fb11efc0d98a1fbc06466e798273193d81bdb159bffe4",
+      "size": 44
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/camwhores": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_camwhores_33ddda5fc3e5.txt",
+      "sha256": "8055580fda64f4f3a500d5814f08b2b4f46b49383d6110bba346da8672573430",
+      "size": 29
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/cavporn": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_cavporn_7ee5bcf5f3a1.txt",
+      "sha256": "c6efa23f78f45221f159e1fc851fa7a3ea3612f3ff35911fe4a358ee6e1617d7",
+      "size": 70
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/chatwhores": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_chatwhores_7d235a833768.txt",
+      "sha256": "c89854875abe5e62745eb66448268a9d07f095b547b164a2fcf572c107515c2b",
+      "size": 74
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/clips4sale": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_clips4sale_ed5adca7cd1b.txt",
+      "sha256": "730a453a4f6fb1d3cddf3e838923cd81569b8a68219eb22b212e1aeb2f7fb329",
+      "size": 43
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/coomer": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_coomer_64b4081d5b71.txt",
+      "sha256": "b28c2c69d9d5299ec488ad7ac9b9b9cad6afe905c3ab034ec5d68be4ea3a0a19",
+      "size": 33
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/cuinc": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_cuinc_3ac7ffb042e2.txt",
+      "sha256": "ffc8bc9229b27eac297c26915819a378905d1d1009a7ee05bbab21e6b1fffdba",
+      "size": 22
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/digitalplayground": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_digitalplayground_256c02a1854a.txt",
+      "sha256": "4377349dbc91204b68db750e3db901a7510819905cd733e503929797403debd2",
+      "size": 51
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/dlsite": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_dlsite_a04685296100.txt",
+      "sha256": "0d76b4a0fa0eb767172ccf38ba409560fa4b0a7b1a3307b4568cd4d9f4ac8427",
+      "size": 106
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/dmm-porn": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_dmm-porn_d843085cc9eb.txt",
+      "sha256": "8ff1aa0142fe9e4cc63f03a1c59a1f4a6dd37dbb3b271fe3511277509bfd43ff",
+      "size": 21
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/ehentai": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_ehentai_8aeec97fe31d.txt",
+      "sha256": "e662f5137041b52538abfc590d9a42dd688571f890aa0d055de41dcc8cdd5dd2",
+      "size": 106
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/erolabs": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_erolabs_d104c53d70d9.txt",
+      "sha256": "93591cff14ff009ba7681f7e39def685b43978c4a635e1881d66b0380c827531",
+      "size": 179
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/fans66": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_fans66_f5cf1e39d01f.txt",
+      "sha256": "f22cb7a68e27e40f29ac4ca47a7c3fbe51241c2fe3b5e5ff76933bc59587e32b",
+      "size": 22
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/fansta": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_fansta_32aebc524532.txt",
+      "sha256": "d14c868cfe93674dc268afaa8d533a84968eea072c55c3fded28822d0f1aa649",
+      "size": 124
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/haitang": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_haitang_de134fafb75e.txt",
+      "sha256": "2025a71880a898f90424f6675d6fafd5e888eb023ed77552b71f83679378ce56",
+      "size": 277
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/hentaichen": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_hentaichen_5ffbdd7901f8.txt",
+      "sha256": "9aa8ca5010d76217e96f8657945b7edfd8555b341c5f75b78bee0f6ae2fab26a",
+      "size": 86
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/hentaivn": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_hentaivn_9df078512b08.txt",
+      "sha256": "7ad11059cb714b9d194ab6de9a5b77ec03119e64017bed195af2112845a0576e",
+      "size": 49
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/heyzo": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_heyzo_0bb42ef8e27e.txt",
+      "sha256": "ee8138666b1735ea67f3521c10d1071c5a1b2071fdccac4c10c3b75a7d1a0cf5",
+      "size": 22
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/hooligapps": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_hooligapps_178daf760091.txt",
+      "sha256": "e04f6c3ca4d164724a4c2c187a39df941080523df097735ab73aab38afdd96e6",
+      "size": 118
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/illusion": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_illusion_368a2494b644.txt",
+      "sha256": "cfad0321021f7cae5ce5480ad4715b0e6584db920ddf6e337ca47141915ab514",
+      "size": 27
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/illusion-nonofficial": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_illusion-nonofficial_9e0982bba528.txt",
+      "sha256": "1caa3cd8a1624bcdcd2d3b6fd015bde2b60ae8e88830cf8603e7b305cea905b9",
+      "size": 390
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/jable": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_jable_16b9e5d29066.txt",
+      "sha256": "9368b141ab8c627846605d809e0dcac3370d2e27a37f3f42a5684a81961604ac",
+      "size": 39
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/japonx": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_japonx_7bd4533e4991.txt",
+      "sha256": "c77970909fbbf99d4c159aa1281a47c60790b98d02c6459cde44a136ff7de990",
+      "size": 34
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/javbus": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_javbus_26dd91dc5013.txt",
+      "sha256": "a561a626b1f69b20381735796bc3a1787348afccea8e56fd5fded7e43aff010f",
+      "size": 34
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/javcc": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_javcc_af217253e0b3.txt",
+      "sha256": "37fa34ff68629c09efd995a76e61430fc7e44298a0630d83130f101e0845de9e",
+      "size": 19
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/javdb": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_javdb_d75b276c7e68.txt",
+      "sha256": "2b0093a4e06deffba56f742126b290e1827881ffa787917645909df1f50f00af",
+      "size": 67
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/javwide": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_javwide_ef7f8fc4ed9a.txt",
+      "sha256": "1f7da990250ee698bffddaa5b3990957a64126fbe347189e485a94ea32173c20",
+      "size": 23
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/jkf": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_jkf_884300b8caf9.txt",
+      "sha256": "ce9c90db3e623f73c1f3954df2927d63d11f37af7aff3176d5656e865ceb3e0b",
+      "size": 50
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/johren": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_johren_50d80e1ec29f.txt",
+      "sha256": "18704836a072ab2b7f8b6eb0581d6687a38c8a832bbaf3145d8a0fd528b778bd",
+      "size": 24
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/justav": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_justav_a750d362021f.txt",
+      "sha256": "c2c52ef55098932cf4fec892f089e95a64ef245e2d420553880c5e059a50229a",
+      "size": 33
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/kemono": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_kemono_5fed3620d861.txt",
+      "sha256": "f5529bdcf21258c30e70b2fdf2f1eb348a4107bd1d3c7e7b24947bcf62d7c2de",
+      "size": 33
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/konachan": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_konachan_99f2e5e558bf.txt",
+      "sha256": "72cf8dc643860dc1ce3d7246329bc004e3b725c135e7597358bf8b3ea95fa26f",
+      "size": 26
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/kubakuba": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_kubakuba_a20a487c3b62.txt",
+      "sha256": "d52074b65f9643fb29fa983ff240bd8c75b1177ef6fb884bedbb365e743184bf",
+      "size": 33
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/lethalhardcore": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_lethalhardcore_64189c94ac87.txt",
+      "sha256": "05ebc53077116b1750854079850d5013a1f5d85c1bc9236c94a8b7dd4bcec627",
+      "size": 40
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/lisiku": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_lisiku_ddefeacbd72a.txt",
+      "sha256": "5fa18bff58499d0416c5502cbbe97da72e47c332a869632b4259a05d2639232f",
+      "size": 23
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/metart": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_metart_dd428441a26a.txt",
+      "sha256": "02fb289b4f63072ae83cdeb96c61a6dc0531a9bba93a88d64b9cdf2d2228d725",
+      "size": 68
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/mindgeek-porn": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_mindgeek-porn_89028356ff69.txt",
+      "sha256": "722e52a9a91e0d384c779d66841fa0389c4a0907db99f777f4a4338556ec4f5c",
+      "size": 267
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/missav": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_missav_4a00da0385b1.txt",
+      "sha256": "946bce3a16dac20af0aff1f20a57dd865017ab7ecda7152eb22ecf0f254e7254",
+      "size": 79
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/moxing": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_moxing_6ce426790f3b.txt",
+      "sha256": "f8b947c03827b65d06a641b03bc4327d0439300ea7e7d8dc1aa9737f9e8cf7c5",
+      "size": 24
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/mydirtyhobby": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_mydirtyhobby_b577850f8a56.txt",
+      "sha256": "fbd0623d7133b5b6fbb3f897df28d7881d55367014ed770e610d26563b3a2d43",
+      "size": 35
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/netflav": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_netflav_7195f89747c8.txt",
+      "sha256": "6929d93b0d4bb9b82fde3460ab49a454a72b63b681614ec54e5247e804e6d340",
+      "size": 37
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/nudevista": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_nudevista_8b06e6851ba5.txt",
+      "sha256": "f0c22b6a20d04abe072c482c5fc612eb0427dfe43caa3b40c0fe3489b66075bf",
+      "size": 55
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/nutaku": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_nutaku_a774f824732b.txt",
+      "sha256": "bf8a83077ab484aaf6379df241dab409bd38d652b8db329a1331ff33679099d2",
+      "size": 22
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/picacg": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_picacg_b3c07c2effeb.txt",
+      "sha256": "bc5aeb8c20b925c942c82e931a5f5747046b513b642e76164b09bbe85a5fa1bc",
+      "size": 332
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/playboy": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_playboy_ab50cc3a7d1d.txt",
+      "sha256": "342a22285e1b774c77f00990ce8fce2a10774f31c585b73c0404d05872e71693",
+      "size": 27
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/pornhub": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_pornhub_30d1ee80a2e8.txt",
+      "sha256": "2fc9e05935457d9e08e1d8d8cda16adfcb82645c661d9a3233ffcb5ede0a206e",
+      "size": 129
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/pornpros": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_pornpros_b34d504a35b8.txt",
+      "sha256": "56402a5411efe8608d59411651c0a65a49b41944ee90b82876f31bd88479fa92",
+      "size": 33
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/projectpoi": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_projectpoi_9ef7ecf6831b.txt",
+      "sha256": "667f52b0b32f260a060de1d24303ffe1846749f2314b579fa4de7be097b699b3",
+      "size": 44
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/realitykings": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_realitykings_c20c931eb09f.txt",
+      "sha256": "2ea4e2fef486757e190cee4d81d960336963d0e3964e5caa55fe1e49914de615",
+      "size": 24
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/redtube": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_redtube_5bea57272837.txt",
+      "sha256": "d624e78c4d13a5820b8d921b235c0deb5816a7725eb553e8db55c94d86470bdf",
+      "size": 79
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/sehuatang": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_sehuatang_828b576e75f5.txt",
+      "sha256": "8b780b5bf602b7eed3139bdf637ab7a77b88c666f4998c10f50f559324d1ddb2",
+      "size": 28
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/shireyishunjian": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_shireyishunjian_c4a82363438c.txt",
+      "sha256": "af3395494ea41f3eae769f9d8d53b03d231e027a010ed0140e646dad0b58206f",
+      "size": 35
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/smtiaojiaoshi": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_smtiaojiaoshi_25f7f065a4bf.txt",
+      "sha256": "542decd2b6e82bf8fd83b53be3f88aeb48e1c066a3a26999226a4e5ed5eb0557",
+      "size": 27
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/spankbang": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_spankbang_f057c74db6f1.txt",
+      "sha256": "3bbec47f11980ef1b02f19dc2501f35ac3c34815e561cf2866672463dca43049",
+      "size": 47
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/swag": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_swag_41dead381e12.txt",
+      "sha256": "f26164985bd06091fb9c4b18215bb5f039cc74bdf74b35363a0318cf2a7b8e72",
+      "size": 29
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/theporndude": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_theporndude_808acf8b9b4e.txt",
+      "sha256": "f71c9ebb7f9136c8cfa0a84e8d81561b36508cf177f6ae931aef934db8426a10",
+      "size": 114
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/thescoregroup": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_thescoregroup_a1be2d718d21.txt",
+      "sha256": "859cb0c6c180c667b7e8aa5c8fe0598f1d31fc5856535ad54f5639f3a01b5c7c",
+      "size": 1958
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/tokyo-toshokan": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_tokyo-toshokan_4bf0cf2edf68.txt",
+      "sha256": "33ddcb2bcbfb7e7a589e535ed95f41e796b1de29310e6c5e0d7172632bdb5227",
+      "size": 46
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/truyen-hentai": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_truyen-hentai_50d8da3afc09.txt",
+      "sha256": "e9722ffc72e120693a084c7b82f334764597ff20cf62e2e383f1ad3986c1c61b",
+      "size": 52
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/tube8": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_tube8_b384bcb1baf4.txt",
+      "sha256": "d6a16640931a3fa459dbae15bcc14c8534f7d10b7c34b55fad593e099e32a2a7",
+      "size": 19
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/uu-chat": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_uu-chat_9fc18a596b7f.txt",
+      "sha256": "07a439d5354c39db74717250d0460c6ed64c070e542d17027e809a9849cfd233",
+      "size": 220
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/xhamster": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_xhamster_555cd887fe72.txt",
+      "sha256": "611c68d257c0fca3eff6045017d1dd40b8d978dd042b1974c77337d526877759",
+      "size": 223
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/xingkongwuxianmedia": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_xingkongwuxianmedia_273f04c6659e.txt",
+      "sha256": "549d976427a4c397f7fe9c998a1ad9844048ac2107259a8454604d034be5f5b6",
+      "size": 231
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/xnxx": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_xnxx_31e311a183eb.txt",
+      "sha256": "7dee7ba5d17e97cb46420a1fa69d745dfca4a9dc695921b263f3528d6d3f4a0d",
+      "size": 49
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/xvideos": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_xvideos_b8c370537fc0.txt",
+      "sha256": "cb33a352b459aa462c1e7cd5f60b17474ff5beec973c312019af33d3d4057040",
+      "size": 71
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/youjizz": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_youjizz_d9754b93784a.txt",
+      "sha256": "f32ddfce5516dc67b727f9f43b827d71d4c616699e4ee940406759d77a5a7854",
+      "size": 34
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/youporn": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_youporn_78dbdddb3674.txt",
+      "sha256": "683d0054d4d8b93cf8986c1fd11c81d5877831e7eb4119e94be1a1480fb125ae",
+      "size": 124
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/yunlaopo": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_yunlaopo_286884655302.txt",
+      "sha256": "b14dfa20d833b4404813bdfa6c64a037a913616e727a1d31a8e4bdc935df9709",
+      "size": 70
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/zhimeishe": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_master_data_zhimeishe_64f249ca7901.txt",
+      "sha256": "a1287b471fa710b4ae5cedaea6076f60783fab9e756cfcfb19b67053bb427f5b",
+      "size": 66
+    },
+    "https://raw.githubusercontent.com/v2fly/domain-list-community/refs/heads/master/data/category-porn": {
+      "file_name": "raw.githubusercontent.com_v2fly_domain-list-community_refs_heads_master_data_category-porn_b909ba19cf1a.txt",
+      "sha256": "c20dc58e7ef2bfd55f848f96feaa656c610df6a694ba740c010c616d7a42ca2a",
+      "size": 92564
+    }
+  }
+}
