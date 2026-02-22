@@ -222,6 +222,18 @@ async def _process_sync_message(msg_id: str, fields: dict[str, Any]) -> None:
             finished=True,
         )
         logger.info("Manual adult sync task completed, message_id=%s result=%s", msg_id, result)
+    except asyncio.CancelledError as exc:
+        await _update_task_run(
+            run_id,
+            status="cancelled",
+            running=False,
+            phase="cancelled",
+            message="Cancelled",
+            error_short=exc.__class__.__name__,
+            finished=True,
+        )
+        logger.warning("Manual adult sync task cancelled, message_id=%s", msg_id)
+        raise
     except Exception as exc:
         err_text = str(exc).strip() or exc.__class__.__name__
         tb = traceback.format_exc(limit=20)
@@ -288,6 +300,18 @@ async def _process_txt_message(msg_id: str, fields: dict[str, Any]) -> None:
             finished=True,
         )
         logger.info("Manual adult txt->db task completed, message_id=%s result=%s", msg_id, result)
+    except asyncio.CancelledError as exc:
+        await _update_task_run(
+            run_id,
+            status="cancelled",
+            running=False,
+            phase="cancelled",
+            message="Cancelled",
+            error_short=exc.__class__.__name__,
+            finished=True,
+        )
+        logger.warning("Manual adult txt->db task cancelled, message_id=%s", msg_id)
+        raise
     except Exception as exc:
         err_text = str(exc).strip() or exc.__class__.__name__
         tb = traceback.format_exc(limit=20)

@@ -310,14 +310,17 @@ async def _stream_worker_status(stream: str, group: str, expected_consumer: str)
     }
     try:
         summary = await redis.xpending(stream, group)
-        if isinstance(summary, (list, tuple)) and summary:
+        if isinstance(summary, dict):
+            status["pending"] = int(summary.get("pending", summary.get("count", 0)) or 0)
+        elif isinstance(summary, (list, tuple)) and summary:
             status["pending"] = int(summary[0] or 0)
     except Exception:
         pass
 
     try:
         consumers = await redis.xinfo_consumers(stream, group)
-        for c in consumers or []:
+        consumers = consumers or []
+        for c in consumers:
             cname = c.get("name")
             if isinstance(cname, bytes):
                 cname = cname.decode("utf-8", "ignore")
@@ -335,7 +338,12 @@ async def _stream_worker_status(stream: str, group: str, expected_consumer: str)
                 status["state"] = "idle"
             break
         else:
-            status["state"] = "disconnected"
+            if consumers:
+                status["state"] = "disconnected"
+            elif status["pending"] > 0:
+                status["state"] = "pending"
+            else:
+                status["state"] = "unknown"
     except Exception:
         if status["pending"] > 0:
             status["state"] = "pending"
