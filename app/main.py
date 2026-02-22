@@ -64,6 +64,20 @@ def _join_url(base: str, path: str) -> str:
     return b + p
 
 
+def _is_mobile_browser(request: Request) -> bool:
+    ua = (request.headers.get("user-agent") or "").lower()
+    if not ua:
+        return False
+    mobile_tokens = (
+        "android", "iphone", "ipod", "windows phone", "mobile",
+        "blackberry", "opera mini", "iemobile", "webos"
+    )
+    tablet_tokens = ("ipad", "tablet")
+    if any(token in ua for token in tablet_tokens):
+        return False
+    return any(token in ua for token in mobile_tokens)
+
+
 async def _ensure_telegram_webhook() -> None:
     # Optional: auto-configure webhook on startup, if TELEGRAM_WEBHOOK_URL is set.
     if not telegram_support_forum.enabled:
@@ -320,9 +334,17 @@ app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 
 @app.get("/")
 async def admin_panel(request: Request):
+    view = (request.query_params.get("view") or "").strip().lower()
+    if view == "mobile":
+        mobile_mode = True
+    elif view == "desktop":
+        mobile_mode = False
+    else:
+        mobile_mode = _is_mobile_browser(request)
+
     return templates.TemplateResponse(
         "index.html",
-        {"request": request, "app_version": settings.VERSION},
+        {"request": request, "app_version": settings.VERSION, "mobile_mode": mobile_mode},
     )
 
 

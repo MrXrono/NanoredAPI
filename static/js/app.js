@@ -9,6 +9,32 @@ let remnawaveAccountsSearchTimer = null;
 let remnawaveRecentState = { filterKey: null, cursor: null, prevStack: [], nextCursor: null };
 let sqlBrowserState = { tableName: '', offset: 0, limit: 25, atStart: true, atEnd: false, search: '', mode: 'page', primaryKeys: [], rows: [] };
 
+const mobileMode = document.body.classList.contains('mobile-mode');
+
+function toggleMobileSidebar(forceOpen = null) {
+    if (!mobileMode) return;
+    const sidebar = document.getElementById('app-sidebar');
+    const backdrop = document.getElementById('mobile-sidebar-backdrop');
+    if (!sidebar || !backdrop) return;
+    const shouldOpen = forceOpen === null ? !sidebar.classList.contains('mobile-open') : !!forceOpen;
+    sidebar.classList.toggle('mobile-open', shouldOpen);
+    backdrop.style.display = shouldOpen ? 'block' : 'none';
+}
+
+function initMobileUi() {
+    if (!mobileMode) return;
+    const toggleBtn = document.getElementById('mobile-menu-toggle');
+    const backdrop = document.getElementById('mobile-sidebar-backdrop');
+    if (toggleBtn && !toggleBtn.dataset.bound) {
+        toggleBtn.addEventListener('click', () => toggleMobileSidebar());
+        toggleBtn.dataset.bound = '1';
+    }
+    if (backdrop && !backdrop.dataset.bound) {
+        backdrop.addEventListener('click', () => toggleMobileSidebar(false));
+        backdrop.dataset.bound = '1';
+    }
+}
+
 // ========== AUTH ==========
 async function api(path, opts = {}) {
     const headers = { 'Content-Type': 'application/json', ...opts.headers };
@@ -95,6 +121,10 @@ document.querySelectorAll('.nav-link').forEach(link => {
         }
         else if (section === 'remnawave-audit') {
             loadRemnawaveAudit(1);
+        }
+
+        if (mobileMode) {
+            toggleMobileSidebar(false);
         }
     });
 });
@@ -1673,6 +1703,7 @@ document.addEventListener('keydown', (e) => {
 });
 
 // ========== INIT ==========
+initMobileUi();
 if (token) {
     api('/admin/dashboard').then(r => {
         if (r.ok) showApp(); else logout();

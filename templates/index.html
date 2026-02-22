@@ -5,9 +5,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>NanoredVPN Admin</title>
     <link rel="stylesheet" href="/static/css/style.css">
+    {% if mobile_mode %}<link rel="stylesheet" href="/static/css/mobile.css?v={{ app_version }}">{% endif %}
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 </head>
-<body>
+<body class="{% if mobile_mode %}mobile-mode{% endif %}">
+
+{% if mobile_mode %}
+<div class="mobile-topbar">
+    <button id="mobile-menu-toggle" class="mobile-menu-toggle" aria-label="Открыть меню">☰</button>
+    <div class="mobile-topbar-title">NanoredVPN <span>v{{ app_version }}</span></div>
+    <a href="/?view=desktop" class="mobile-view-switch">Desktop</a>
+</div>
+<div id="mobile-sidebar-backdrop" class="mobile-sidebar-backdrop"></div>
+{% endif %}
 
 <!-- LOGIN -->
 <div id="login-page" class="login-container" style="display:none;">
@@ -24,7 +34,7 @@
 
 <!-- APP -->
 <div id="app" style="display:none;">
-    <nav class="sidebar">
+    <nav id="app-sidebar" class="sidebar">
         <div class="logo">NanoredVPN <span style="font-size:11px;color:var(--text-secondary);">v{{ app_version }}</span></div>
         <a href="#" class="nav-link" data-section="database-status">Статус базы данных</a>
         <a href="#" class="nav-link" data-section="sql-browser">Просмотр sql базы</a>
