@@ -58,7 +58,6 @@ SOURCE_LABELS = {
 }
 
 BLOCKLIST_URL = "https://blocklistproject.github.io/Lists/alt-version/porn-nl.txt"
-OISD_ROOT_URL = "https://oisd.nl/includedlists/nsfw"
 V2FLY_ROOT_URL = "https://raw.githubusercontent.com/v2fly/domain-list-community/refs/heads/master/data/category-porn"
 
 ADULT_SYNC_DB_CHUNK_SIZE = max(500, int(os.getenv("ADULT_SYNC_DB_CHUNK_SIZE", "5000")))
@@ -1520,10 +1519,6 @@ async def collect_adult_domain_map(
                     seen.add(inc)
                     queue.append(inc)
 
-        oisd_root = await _fetch(OISD_ROOT_URL, SOURCE_OISD, False)
-        if oisd_root:
-            for u in _extract_oisd_txt_links(oisd_root.get("text") or "", OISD_ROOT_URL):
-                await _fetch(u, SOURCE_OISD, True)
 
     _save_source_manifest(ADULT_SYNC_SOURCE_MANIFEST_PATH, manifest)
 
