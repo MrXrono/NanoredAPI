@@ -55,6 +55,10 @@ from app.services.remnawave_adult import (
     sync_adult_catalog,
     sync_adult_catalog_from_txt,
 )
+from app.services.remnawave_adult_task_queue import (
+    enqueue_manual_adult_sync,
+    enqueue_manual_adult_txt_sync,
+)
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(get_current_admin)])
 
@@ -999,10 +1003,11 @@ async def database_status(db: AsyncSession = Depends(get_db)):
 
 @router.post("/adult-sync/run")
 async def run_adult_sync_now():
-    async def _runner():
-        return await sync_adult_catalog(progress_cb=_task_progress_cb("sync"))
-
-    return _start_background_task("sync", "_adult_manual_sync_task", _runner, task_key="sync")
+    msg_id = await enqueue_manual_adult_sync()
+    _task_set_started("sync")
+    _task_set_done("sync", status="queued", result={"message_id": msg_id})
+    _invalidate_database_status_cache()
+    return {"ok": True, "started": True, "queued": True, "message": "sync task queued", "message_id": msg_id}
 
 
 @router.post("/adult-sync/recheck-all")
@@ -1015,10 +1020,11 @@ async def run_adult_recheck_all_now():
 
 @router.post("/adult-sync/sync-from-txt")
 async def run_adult_sync_from_txt_now(path: str | None = Body(default=None, embed=True)):
-    async def _runner():
-        return await sync_adult_catalog_from_txt(path=path, progress_cb=_task_progress_cb("txt_sync"))
-
-    return _start_background_task("txt sync", "_adult_manual_txt_sync_task", _runner, task_key="txt_sync")
+    msg_id = await enqueue_manual_adult_txt_sync(path=path)
+    _task_set_started("txt_sync")
+    _task_set_done("txt_sync", status="queued", result={"message_id": msg_id, "path": path})
+    _invalidate_database_status_cache()
+    return {"ok": True, "started": True, "queued": True, "message": "txt sync task queued", "message_id": msg_id}
 
 
 @router.post("/adult-sync/cleanup-garbage")

@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "NanoredVPN API"
-    VERSION: str = "1.18.0.1"
+    VERSION: str = "1.18.0.2"
     API_V1_PREFIX: str = "/api/v1"
 
     # Database
@@ -85,6 +85,14 @@ class Settings(BaseSettings):
     REMNAWAVE_INGEST_DEAD_MAXLEN: int = int(os.getenv("REMNAWAVE_INGEST_DEAD_MAXLEN", "10000"))
     REMNAWAVE_LOGS_SUMMARY_DAYS: int = max(1, int(os.getenv("REMNAWAVE_LOGS_SUMMARY_DAYS", "7")))
     REMNAWAVE_INGEST_COPY_ENABLED: bool = os.getenv("REMNAWAVE_INGEST_COPY_ENABLED", "1").strip() in ("1", "true", "yes", "on")
+    ADULT_MANUAL_SYNC_STREAM: str = os.getenv("ADULT_MANUAL_SYNC_STREAM", "stream:adult:manual:sync")
+    ADULT_MANUAL_SYNC_GROUP: str = os.getenv("ADULT_MANUAL_SYNC_GROUP", "adult_manual_sync")
+    ADULT_MANUAL_SYNC_CONSUMER: str = os.getenv("ADULT_MANUAL_SYNC_CONSUMER", "worker-sync-1")
+    ADULT_MANUAL_TXT_STREAM: str = os.getenv("ADULT_MANUAL_TXT_STREAM", "stream:adult:manual:txt")
+    ADULT_MANUAL_TXT_GROUP: str = os.getenv("ADULT_MANUAL_TXT_GROUP", "adult_manual_txt")
+    ADULT_MANUAL_TXT_CONSUMER: str = os.getenv("ADULT_MANUAL_TXT_CONSUMER", "worker-txtdb-1")
+    ADULT_MANUAL_TASK_READ_COUNT: int = max(1, int(os.getenv("ADULT_MANUAL_TASK_READ_COUNT", "5")))
+    ADULT_MANUAL_TASK_STREAM_MAXLEN: int = max(100, int(os.getenv("ADULT_MANUAL_TASK_STREAM_MAXLEN", "1000")))
 
     # GeoIP
     GEOIP_DB_PATH: str = "/app/data/GeoLite2-City.mmdb"

@@ -11,6 +11,10 @@ from app.core.database import engine
 from app.core.logging_setup import setup_logging, setup_function_call_logging
 from app.services.db_maintenance import background_db_maintenance, setup_postgres_performance_objects
 from app.services.remnawave_adult import background_remnawave_adult_tasks
+from app.services.remnawave_adult_task_queue import (
+    background_manual_adult_sync_worker,
+    background_manual_adult_txt_worker,
+)
 from app.services.remnawave_ingest_queue import background_remnawave_ingest_worker
 from app.services.schema_bootstrap import ensure_base_schema_ready
 
@@ -35,11 +39,17 @@ async def _bootstrap_schema() -> None:
 async def _run_worker(role: str, stop_event: asyncio.Event) -> None:
     if role == "adult_sync":
         logger.info("Starting worker role=adult_sync")
-        await background_remnawave_adult_tasks(stop_event)
+        await asyncio.gather(
+            background_remnawave_adult_tasks(stop_event),
+            background_manual_adult_sync_worker(stop_event),
+        )
         return
     if role == "txt_db":
         logger.info("Starting worker role=txt_db")
-        await background_remnawave_ingest_worker(stop_event)
+        await asyncio.gather(
+            background_remnawave_ingest_worker(stop_event),
+            background_manual_adult_txt_worker(stop_event),
+        )
         return
     if role == "db_maintenance":
         logger.info("Starting worker role=db_maintenance")
