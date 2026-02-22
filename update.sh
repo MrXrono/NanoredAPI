@@ -93,7 +93,52 @@ fi
 NEW_VER=$(grep -oP 'VERSION.*?=.*?"(\K[^"]+)' app/core/config.py 2>/dev/null || echo "unknown")
 log "Новая версия: $NEW_VER"
 
-# ---------- 4. Check DB schema changes ----------
+# ---------- 4. Sync .env with .env.example ----------
+log "Синхронизация .env с .env.example..."
+if [ -f "$INSTALL_DIR/.env.example" ]; then
+    if [ ! -f "$INSTALL_DIR/.env" ]; then
+        cp "$INSTALL_DIR/.env.example" "$INSTALL_DIR/.env"
+        log ".env отсутствовал, создан из .env.example"
+    else
+        python3 - "$INSTALL_DIR/.env" "$INSTALL_DIR/.env.example" <<'PYENV'
+import re
+import sys
+from pathlib import Path
+
+env_path = Path(sys.argv[1])
+example_path = Path(sys.argv[2])
+assign_re = re.compile(r'^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$')
+
+example_lines = example_path.read_text(encoding='utf-8').splitlines()
+env_lines = env_path.read_text(encoding='utf-8').splitlines()
+
+current_values = {}
+for line in env_lines:
+    m = assign_re.match(line)
+    if m:
+        current_values[m.group(1)] = m.group(2)
+
+out_lines = []
+for line in example_lines:
+    m = assign_re.match(line)
+    if not m:
+        out_lines.append(line)
+        continue
+    key = m.group(1)
+    if key in current_values:
+        out_lines.append(f"{key}={current_values[key]}")
+    else:
+        out_lines.append(line)
+
+env_path.write_text("\n".join(out_lines) + "\n", encoding='utf-8')
+PYENV
+        log ".env синхронизирован по шаблону .env.example (значения сохранены)"
+    fi
+else
+    warn "Файл .env.example не найден, синхронизация .env пропущена"
+fi
+
+# ---------- 5. Check DB schema changes ----------
 MODELS_HASH_AFTER=""
 if [ -d "app/models" ]; then
     MODELS_HASH_AFTER=$(find app/models -name "*.py" -exec md5sum {} \; | sort | md5sum | cut -d' ' -f1)
@@ -106,11 +151,11 @@ if [ "$MODELS_HASH_BEFORE" != "$MODELS_HASH_AFTER" ]; then
     warn "Модели изменились: $MODELS_HASH_BEFORE -> $MODELS_HASH_AFTER"
 fi
 
-# ---------- 5. Stop containers ----------
+# ---------- 6. Stop containers ----------
 log "Остановка контейнеров..."
 docker compose -f "$COMPOSE_FILE" down 2>/dev/null || docker-compose -f "$COMPOSE_FILE" down 2>/dev/null
 
-# ---------- 6. Cleanup old logs ----------
+# ---------- 7. Cleanup old logs ----------
 log "Удаление старых логов..."
 if [ -d "$INSTALL_DIR/logs" ]; then
     find "$INSTALL_DIR/logs" -type f \( -name "*.log" -o -name "*.log.*" \) -delete 2>/dev/null || true
@@ -124,7 +169,7 @@ for c in "$API_CONTAINER" "$NGINX_CONTAINER"; do
     fi
 done
 
-# ---------- 7. Handle DB schema changes ----------
+# ---------- 8. Handle DB schema changes ----------
 if [ "$WIPE_DB" = true ]; then
     SCHEMA_CHANGED=true
     warn "Принудительное удаление БД (--db)..."
@@ -145,13 +190,13 @@ if [ "$SCHEMA_CHANGED" = true ]; then
     fi
 fi
 
-# ---------- 8. Rebuild and start ----------
+# ---------- 9. Rebuild and start ----------
 log "Пересборка контейнеров..."
 docker compose -f "$COMPOSE_FILE" build --no-cache 2>/dev/null || docker-compose -f "$COMPOSE_FILE" build --no-cache 2>/dev/null
 log "Запуск контейнеров..."
 docker compose -f "$COMPOSE_FILE" up -d 2>/dev/null || docker-compose -f "$COMPOSE_FILE" up -d 2>/dev/null
 
-# ---------- 9. Wait for API to start ----------
+# ---------- 10. Wait for API to start ----------
 log "Ожидание запуска API..."
 for i in $(seq 1 30); do
     RESP=$(docker exec "$API_CONTAINER" curl -sf "$HEALTH_URL" 2>/dev/null || echo "")
@@ -161,11 +206,11 @@ for i in $(seq 1 30); do
     sleep 2
 done
 
-# ---------- 10. Reload nginx ----------
+# ---------- 11. Reload nginx ----------
 log "Перезагрузка nginx..."
 docker exec "$NGINX_CONTAINER" nginx -s reload 2>/dev/null && log "Nginx перезагружен" || warn "Не удалось перезагрузить nginx ($NGINX_CONTAINER)"
 
-# ---------- 11. Health check ----------
+# ---------- 12. Health check ----------
 log "Проверка доступности..."
 HEALTH_RESP=$(docker exec "$API_CONTAINER" curl -sf "$HEALTH_URL" 2>/dev/null || echo "")
 if echo "$HEALTH_RESP" | grep -q '"status"'; then
