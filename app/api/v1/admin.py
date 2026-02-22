@@ -297,6 +297,50 @@ async def _count_redis_keys(redis, pattern: str) -> int:
     return total
 
 
+async def _stream_worker_status(stream: str, group: str, expected_consumer: str) -> dict:
+    redis = await get_redis()
+    status = {
+        "stream": stream,
+        "group": group,
+        "consumer": expected_consumer,
+        "state": "unknown",
+        "pending": 0,
+        "idle_ms": None,
+    }
+    try:
+        summary = await redis.xpending(stream, group)
+        if isinstance(summary, (list, tuple)) and summary:
+            status["pending"] = int(summary[0] or 0)
+    except Exception:
+        pass
+
+    try:
+        consumers = await redis.xinfo_consumers(stream, group)
+        for c in consumers or []:
+            cname = c.get("name")
+            if isinstance(cname, bytes):
+                cname = cname.decode("utf-8", "ignore")
+            if str(cname) != str(expected_consumer):
+                continue
+            pending = c.get("pending", 0)
+            idle = c.get("idle", None)
+            status["pending"] = int(pending or 0)
+            status["idle_ms"] = int(idle or 0) if idle is not None else None
+            if status["idle_ms"] is not None and status["idle_ms"] <= 60000:
+                status["state"] = "running"
+            elif status["pending"] > 0:
+                status["state"] = "stalled"
+            else:
+                status["state"] = "idle"
+            break
+        else:
+            status["state"] = "disconnected"
+    except Exception:
+        if status["pending"] > 0:
+            status["state"] = "pending"
+    return status
+
+
 def _cancel_background_task(task_ref_name: str, *, task_key: str | None = None, reason: str = "Stopped by user") -> bool:
     task = globals().get(task_ref_name)
     if isinstance(task, asyncio.Task) and not task.done():
@@ -766,6 +810,20 @@ async def database_status(db: AsyncSession = Depends(get_db)):
         }
         if runtime.get("next_sync_at"):
             adult_sync["next_sync_eta"] = runtime.get("next_sync_at")
+    except Exception:
+        pass
+
+    try:
+        adult_sync["services"]["sync_worker"] = await _stream_worker_status(
+            settings.ADULT_MANUAL_SYNC_STREAM,
+            settings.ADULT_MANUAL_SYNC_GROUP,
+            settings.ADULT_MANUAL_SYNC_CONSUMER,
+        )
+        adult_sync["services"]["txt_worker"] = await _stream_worker_status(
+            settings.ADULT_MANUAL_TXT_STREAM,
+            settings.ADULT_MANUAL_TXT_GROUP,
+            settings.ADULT_MANUAL_TXT_CONSUMER,
+        )
     except Exception:
         pass
 
