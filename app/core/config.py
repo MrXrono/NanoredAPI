@@ -97,10 +97,10 @@ class Settings(BaseSettings):
     # GeoIP
     GEOIP_DB_PATH: str = "/app/data/GeoLite2-City.mmdb"
 
-    RUN_SESSION_CLEANUP_WORKER: bool = os.getenv("RUN_SESSION_CLEANUP_WORKER", "1").strip() in ("1", "true", "yes", "on")
-    RUN_ADULT_SYNC_WORKER: bool = os.getenv("RUN_ADULT_SYNC_WORKER", "1").strip() in ("1", "true", "yes", "on")
-    RUN_TXT_DB_WORKER: bool = os.getenv("RUN_TXT_DB_WORKER", "1").strip() in ("1", "true", "yes", "on")
-    RUN_DB_MAINTENANCE_WORKER: bool = os.getenv("RUN_DB_MAINTENANCE_WORKER", "1").strip() in ("1", "true", "yes", "on")
+    RUN_SESSION_CLEANUP_WORKER: bool = os.getenv("RUN_SESSION_CLEANUP_WORKER", "0").strip() in ("1", "true", "yes", "on")
+    RUN_ADULT_SYNC_WORKER: bool = os.getenv("RUN_ADULT_SYNC_WORKER", "0").strip() in ("1", "true", "yes", "on")
+    RUN_TXT_DB_WORKER: bool = os.getenv("RUN_TXT_DB_WORKER", "0").strip() in ("1", "true", "yes", "on")
+    RUN_DB_MAINTENANCE_WORKER: bool = os.getenv("RUN_DB_MAINTENANCE_WORKER", "0").strip() in ("1", "true", "yes", "on")
 
     WORKER_ROLE: str = os.getenv("WORKER_ROLE", "")
 

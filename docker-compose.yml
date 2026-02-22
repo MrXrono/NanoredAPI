@@ -62,6 +62,8 @@ services:
       - FUNCTION_CALL_LOG_EXCLUDE_MODULES=${FUNCTION_CALL_LOG_EXCLUDE_MODULES:-app.core.logging_setup}
       - RUN_ADULT_SYNC_WORKER=${RUN_ADULT_SYNC_WORKER:-0}
       - RUN_TXT_DB_WORKER=${RUN_TXT_DB_WORKER:-0}
+      - RUN_SESSION_CLEANUP_WORKER=${RUN_SESSION_CLEANUP_WORKER:-0}
+      - RUN_DB_MAINTENANCE_WORKER=${RUN_DB_MAINTENANCE_WORKER:-0}
     volumes:
       - ./data:/app/data
     depends_on:
@@ -82,6 +84,10 @@ services:
     command: ["python", "-m", "app.worker_runner"]
     environment:
       - WORKER_ROLE=adult_sync
+      - RUN_ADULT_SYNC_WORKER=1
+      - RUN_TXT_DB_WORKER=0
+      - RUN_SESSION_CLEANUP_WORKER=0
+      - RUN_DB_MAINTENANCE_WORKER=0
       - DATABASE_URL=postgresql+asyncpg://nanored:nanored_secret@nanored-db:5432/nanored_api
       - REDIS_URL=redis://nanored-redis:6379/0
       - SECRET_KEY=${SECRET_KEY:-change-me-in-production-nanored-secret-key-2026}
@@ -145,6 +151,10 @@ services:
     command: ["python", "-m", "app.worker_runner"]
     environment:
       - WORKER_ROLE=txt_db
+      - RUN_ADULT_SYNC_WORKER=0
+      - RUN_TXT_DB_WORKER=1
+      - RUN_SESSION_CLEANUP_WORKER=0
+      - RUN_DB_MAINTENANCE_WORKER=0
       - DATABASE_URL=postgresql+asyncpg://nanored:nanored_secret@nanored-db:5432/nanored_api
       - REDIS_URL=redis://nanored-redis:6379/0
       - SECRET_KEY=${SECRET_KEY:-change-me-in-production-nanored-secret-key-2026}
