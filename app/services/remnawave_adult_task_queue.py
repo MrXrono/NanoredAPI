@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -18,6 +17,10 @@ def _decode(raw: Any) -> str:
     if isinstance(raw, bytes):
         return raw.decode("utf-8", "ignore")
     return str(raw or "")
+
+
+def _normalize_msg_id(raw: Any) -> str:
+    return _decode(raw).strip()
 
 
 async def enqueue_manual_adult_sync() -> str:
@@ -60,6 +63,38 @@ async def _ensure_group(stream: str, group: str) -> None:
             raise
 
 
+async def _claim_stale_messages(
+    *,
+    stream: str,
+    group: str,
+    consumer: str,
+    min_idle_ms: int,
+    count: int,
+) -> list[tuple[str, dict[str, Any]]]:
+    redis = await get_redis()
+    try:
+        claimed_raw = await redis.xautoclaim(
+            stream,
+            group,
+            consumer,
+            min_idle_time=min_idle_ms,
+            start_id="0-0",
+            count=count,
+        )
+    except Exception:
+        return []
+
+    messages: list[tuple[str, dict[str, Any]]] = []
+    if isinstance(claimed_raw, (list, tuple)) and len(claimed_raw) >= 2:
+        raw_messages = claimed_raw[1] or []
+        for msg_id, fields in raw_messages:
+            normalized_id = _normalize_msg_id(msg_id)
+            if not normalized_id:
+                continue
+            messages.append((normalized_id, fields or {}))
+    return messages
+
+
 async def _process_sync_message(msg_id: str, fields: dict[str, Any]) -> None:
     redis = await get_redis()
     try:
@@ -98,6 +133,18 @@ async def background_manual_adult_sync_worker(stop_event: asyncio.Event) -> None
             await asyncio.sleep(1.0)
             continue
         try:
+            reclaimed = await _claim_stale_messages(
+                stream=settings.ADULT_MANUAL_SYNC_STREAM,
+                group=settings.ADULT_MANUAL_SYNC_GROUP,
+                consumer=settings.ADULT_MANUAL_SYNC_CONSUMER,
+                min_idle_ms=settings.ADULT_MANUAL_TASK_RECLAIM_IDLE_MS,
+                count=settings.ADULT_MANUAL_TASK_RECLAIM_COUNT,
+            )
+            if reclaimed:
+                for msg_id, fields in reclaimed:
+                    await _process_sync_message(msg_id, fields)
+                continue
+
             data = await redis.xreadgroup(
                 groupname=settings.ADULT_MANUAL_SYNC_GROUP,
                 consumername=settings.ADULT_MANUAL_SYNC_CONSUMER,
@@ -109,7 +156,7 @@ async def background_manual_adult_sync_worker(stop_event: asyncio.Event) -> None
                 continue
             for _, messages in data:
                 for msg_id, fields in messages:
-                    await _process_sync_message(str(msg_id), fields or {})
+                    await _process_sync_message(_normalize_msg_id(msg_id), fields or {})
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -128,6 +175,18 @@ async def background_manual_adult_txt_worker(stop_event: asyncio.Event) -> None:
             await asyncio.sleep(1.0)
             continue
         try:
+            reclaimed = await _claim_stale_messages(
+                stream=settings.ADULT_MANUAL_TXT_STREAM,
+                group=settings.ADULT_MANUAL_TXT_GROUP,
+                consumer=settings.ADULT_MANUAL_TXT_CONSUMER,
+                min_idle_ms=settings.ADULT_MANUAL_TASK_RECLAIM_IDLE_MS,
+                count=settings.ADULT_MANUAL_TASK_RECLAIM_COUNT,
+            )
+            if reclaimed:
+                for msg_id, fields in reclaimed:
+                    await _process_txt_message(msg_id, fields)
+                continue
+
             data = await redis.xreadgroup(
                 groupname=settings.ADULT_MANUAL_TXT_GROUP,
                 consumername=settings.ADULT_MANUAL_TXT_CONSUMER,
@@ -139,7 +198,7 @@ async def background_manual_adult_txt_worker(stop_event: asyncio.Event) -> None:
                 continue
             for _, messages in data:
                 for msg_id, fields in messages:
-                    await _process_txt_message(str(msg_id), fields or {})
+                    await _process_txt_message(_normalize_msg_id(msg_id), fields or {})
         except asyncio.CancelledError:
             raise
         except Exception as exc:

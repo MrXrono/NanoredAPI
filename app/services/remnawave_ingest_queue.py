@@ -34,6 +34,12 @@ def _dead_stream() -> str:
     return settings.REMNAWAVE_INGEST_DEAD_STREAM
 
 
+def _normalize_msg_id(raw: Any) -> str:
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8", "ignore")
+    return str(raw or "")
+
+
 async def enqueue_remnawave_entries(entries: list[dict[str, Any]]) -> str:
     redis = await get_redis()
     payload = json.dumps(entries, ensure_ascii=False)
@@ -58,6 +64,31 @@ async def _ensure_group() -> None:
     except Exception as exc:
         if "BUSYGROUP" not in str(exc):
             raise
+
+
+async def _claim_stale_messages(consumer: str) -> list[tuple[str, dict[str, Any]]]:
+    redis = await get_redis()
+    try:
+        claimed_raw = await redis.xautoclaim(
+            _stream(),
+            _group(),
+            consumer,
+            min_idle_time=settings.REMNAWAVE_INGEST_RECLAIM_IDLE_MS,
+            start_id="0-0",
+            count=settings.REMNAWAVE_INGEST_RECLAIM_COUNT,
+        )
+    except Exception:
+        return []
+
+    messages: list[tuple[str, dict[str, Any]]] = []
+    if isinstance(claimed_raw, (list, tuple)) and len(claimed_raw) >= 2:
+        raw_messages = claimed_raw[1] or []
+        for msg_id, fields in raw_messages:
+            normalized_id = _normalize_msg_id(msg_id)
+            if not normalized_id:
+                continue
+            messages.append((normalized_id, fields or {}))
+    return messages
 
 
 async def get_remnawave_queue_stats() -> dict[str, int]:
@@ -201,6 +232,12 @@ async def background_remnawave_ingest_worker(stop_event: asyncio.Event) -> None:
             await asyncio.sleep(1.0)
             continue
         try:
+            reclaimed = await _claim_stale_messages(consumer)
+            if reclaimed:
+                for msg_id, fields in reclaimed:
+                    await _handle_message(msg_id, fields)
+                continue
+
             data = await redis.xreadgroup(
                 groupname=_group(),
                 consumername=consumer,
@@ -212,7 +249,7 @@ async def background_remnawave_ingest_worker(stop_event: asyncio.Event) -> None:
                 continue
             for _, messages in data:
                 for msg_id, fields in messages:
-                    await _handle_message(str(msg_id), fields)
+                    await _handle_message(_normalize_msg_id(msg_id), fields)
         except asyncio.CancelledError:
             raise
         except Exception as exc:

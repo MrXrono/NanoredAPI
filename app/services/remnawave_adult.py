@@ -84,6 +84,7 @@ ADULT_SYNC_USE_TLDEXTRACT = os.getenv("ADULT_SYNC_USE_TLDEXTRACT", "0").strip().
 ADULT_RECHECK_BATCH_LIMIT = max(100, int(os.getenv("ADULT_RECHECK_BATCH_LIMIT", "1000")))
 ADULT_RECHECK_MAX_BATCHES_PER_LOOP = max(1, int(os.getenv("ADULT_RECHECK_MAX_BATCHES_PER_LOOP", "2")))
 ADULT_RECHECK_LOOP_SLEEP_SECONDS = max(5, int(os.getenv("ADULT_RECHECK_LOOP_SLEEP_SECONDS", "30")))
+ADULT_MARK_RECHECK_CHUNK_SIZE = max(500, int(os.getenv("ADULT_MARK_RECHECK_CHUNK_SIZE", "5000")))
 ADULT_SYNC_CLEANUP_TABLES = (
     "adult_domain_catalog",
     "remnawave_dns_unique",
@@ -1411,31 +1412,13 @@ async def _sync_adult_catalog_internal(progress_cb: ProgressCallback | None = No
         )
         await db.execute(stale_stmt)
 
-        recheck_stmt = (
-            update(RemnawaveDNSUnique)
-            .where(
-                exists(
-                    select(1)
-                    .select_from(AdultDomainCatalog)
-                    .where(
-                        and_(
-                            AdultDomainCatalog.domain == RemnawaveDNSUnique.dns_root,
-                            AdultDomainCatalog.is_enabled.is_(True),
-                            AdultDomainCatalog.list_version == version,
-                        )
-                    )
-                ),
-                RemnawaveDNSUnique.mark_version != version,
-            )
-            .values(need_recheck=True)
-        )
-        res = await db.execute(recheck_stmt)
+        marked_for_recheck = await _mark_matching_domains_for_recheck(db=db, version=version)
         await db.commit()
 
         stats = {
             "version": version,
             "domains": len(domain_map),
-            "updated": res.rowcount or 0,
+            "updated": marked_for_recheck,
             "status": "ok",
             "bucket_counts": collect_stats.get("bucket_counts") or {},
             "bucket_table_rows": bucket_table_rows,
@@ -1709,37 +1692,62 @@ async def _upsert_adult_catalog_rows(db: AsyncSession, rows: list[dict]) -> int:
 
 
 async def _mark_matching_domains_for_recheck(db: AsyncSession, version: str) -> int:
-    canonical_catalog_domain = func.regexp_replace(AdultDomainCatalog.domain, r"^(?:[0-9]+-)+", "")
-    recheck_stmt = (
-        update(RemnawaveDNSUnique)
-        .where(
-            exists(
-                select(1)
-                .select_from(AdultDomainCatalog)
-                .where(
-                    and_(
-                        AdultDomainCatalog.is_enabled.is_(True),
-                        AdultDomainCatalog.list_version == version,
-                        or_(
-                            AdultDomainCatalog.domain == RemnawaveDNSUnique.dns_root,
-                            canonical_catalog_domain == RemnawaveDNSUnique.dns_root,
-                            RemnawaveDNSUnique.dns_root.like(func.concat('%.', AdultDomainCatalog.domain)),
-                            RemnawaveDNSUnique.dns_root.like(func.concat('%.', canonical_catalog_domain)),
-                        ),
-                    )
+    """Mark matching dns_unique rows in bounded SKIP LOCKED batches.
+
+    This avoids long-running updates that block ingest upserts and cause lock timeout.
+    """
+    total_marked = 0
+    while True:
+        res = await db.execute(
+            text(
+                """
+                WITH picked AS (
+                    SELECT u.dns_root
+                    FROM remnawave_dns_unique AS u
+                    WHERE
+                        COALESCE(u.need_recheck, FALSE) = FALSE
+                        AND (
+                            u.mark_version IS NULL
+                            OR u.mark_version <> :version
+                            OR COALESCE(u.is_adult, FALSE) = FALSE
+                        )
+                        AND EXISTS (
+                            SELECT 1
+                            FROM adult_domain_catalog AS c
+                            WHERE
+                                c.is_enabled IS TRUE
+                                AND c.list_version = :version
+                                AND (
+                                    c.domain = u.dns_root
+                                    OR regexp_replace(c.domain, '^(?:[0-9]+-)+', '') = u.dns_root
+                                    OR u.dns_root LIKE ('%.' || c.domain)
+                                    OR u.dns_root LIKE ('%.' || regexp_replace(c.domain, '^(?:[0-9]+-)+', ''))
+                                )
+                        )
+                    ORDER BY u.last_seen NULLS LAST, u.dns_root
+                    LIMIT :chunk_size
+                    FOR UPDATE SKIP LOCKED
                 )
+                UPDATE remnawave_dns_unique AS u
+                SET need_recheck = TRUE
+                FROM picked
+                WHERE u.dns_root = picked.dns_root
+                RETURNING u.dns_root
+                """
             ),
-            or_(
-                RemnawaveDNSUnique.mark_version.is_(None),
-                RemnawaveDNSUnique.mark_version != version,
-                RemnawaveDNSUnique.is_adult.is_(False),
-            ),
+            {
+                "version": version,
+                "chunk_size": ADULT_MARK_RECHECK_CHUNK_SIZE,
+            },
         )
-        .values(need_recheck=True)
-    )
-    res = await db.execute(recheck_stmt)
-    await db.commit()
-    return int(res.rowcount or 0)
+        marked = len(res.fetchall())
+        if marked <= 0:
+            await db.commit()
+            break
+        total_marked += marked
+        await db.commit()
+
+    return total_marked
 
 
 async def cleanup_adult_catalog_garbage(progress_cb: ProgressCallback | None = None) -> dict:

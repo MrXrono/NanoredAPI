@@ -6,8 +6,9 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
+from collections.abc import Awaitable, Callable
 
-from sqlalchemy import func, text
+from sqlalchemy import func, or_, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,6 +27,42 @@ def _iter_batch_slices(total_size: int, batch_size: int) -> list[tuple[int, int]
     safe_total = max(0, int(total_size or 0))
     safe_batch = max(1, int(batch_size or 1))
     return [(start, min(start + safe_batch, safe_total)) for start in range(0, safe_total, safe_batch)]
+
+
+def _msg_has_undefined_table(err: Exception) -> bool:
+    msg = str(err).lower()
+    return any(token in msg for token in ("does not exist", "undefinedtable", "undefined table", "undefinedcolumn", "undefined column"))
+
+
+def _msg_has_retryable_db_error(err: Exception) -> bool:
+    msg = str(err).lower()
+    tokens = (
+        "deadlock detected",
+        "deadlockdetectederror",
+        "could not serialize access",
+        "serializationfailure",
+        "lock timeout",
+        "locknotavailable",
+        "statement timeout",
+    )
+    return any(token in msg for token in tokens)
+
+
+async def _run_with_db_retry_result(
+    op: Callable[[], Awaitable[Any]],
+    *,
+    db: AsyncSession,
+    op_name: str,
+    max_attempts: int = 4,
+) -> Any:
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return await op()
+        except Exception:
+            await db.rollback()
+            if attempt >= max_attempts:
+                raise
+            await asyncio.sleep(0.05 * attempt)
 
 
 async def _copy_insert_dns_queries(db: AsyncSession, rows: list[dict[str, Any]]) -> bool:
@@ -232,16 +269,21 @@ async def process_remnawave_ingest_entries(db: AsyncSession, entries: list[dict[
         return result
 
     async def _upsert_accounts_once() -> None:
-        for account_login in sorted(account_last_activity):
-            ts = account_last_activity[account_login]
-            req_count = int(account_request_counts.get(account_login, 0))
-            account_stmt = pg_insert(RemnawaveAccount).values(
-                account_login=account_login,
-                last_activity_at=ts,
-                total_requests=req_count,
-                created_at=now,
-                updated_at=now,
-            )
+        rows = [
+            {
+                "account_login": account_login,
+                "last_activity_at": account_last_activity[account_login],
+                "total_requests": int(account_request_counts.get(account_login, 0)),
+                "created_at": now,
+                "updated_at": now,
+            }
+            for account_login in sorted(account_last_activity)
+        ]
+        for start_idx, end_idx in _iter_batch_slices(len(rows), 500):
+            chunk = rows[start_idx:end_idx]
+            if not chunk:
+                continue
+            account_stmt = pg_insert(RemnawaveAccount).values(chunk)
             account_stmt = account_stmt.on_conflict_do_update(
                 index_elements=[RemnawaveAccount.account_login],
                 set_={
@@ -253,15 +295,20 @@ async def process_remnawave_ingest_entries(db: AsyncSession, entries: list[dict[
             await db.execute(account_stmt)
 
     async def _upsert_nodes_once() -> None:
-        for node_name in sorted(node_last_seen):
-            last_seen = node_last_seen[node_name]
-            first_seen = node_first_seen.get(node_name, last_seen)
-            node_stmt = pg_insert(RemnawaveNode).values(
-                node_name=node_name,
-                first_seen_at=first_seen,
-                last_seen_at=last_seen,
-                updated_at=now,
-            )
+        rows = [
+            {
+                "node_name": node_name,
+                "first_seen_at": node_first_seen.get(node_name, node_last_seen[node_name]),
+                "last_seen_at": node_last_seen[node_name],
+                "updated_at": now,
+            }
+            for node_name in sorted(node_last_seen)
+        ]
+        for start_idx, end_idx in _iter_batch_slices(len(rows), 500):
+            chunk = rows[start_idx:end_idx]
+            if not chunk:
+                continue
+            node_stmt = pg_insert(RemnawaveNode).values(chunk)
             node_stmt = node_stmt.on_conflict_do_update(
                 index_elements=[RemnawaveNode.node_name],
                 set_={
@@ -274,17 +321,17 @@ async def process_remnawave_ingest_entries(db: AsyncSession, entries: list[dict[
 
     try:
         await _ensure_remnawave_schema_ready(db)
-        await _upsert_accounts_once()
+        await _run_with_db_retry_result(_upsert_accounts_once, db=db, op_name="upsert_accounts")
         if node_last_seen:
-            await _upsert_nodes_once()
+            await _run_with_db_retry_result(_upsert_nodes_once, db=db, op_name="upsert_nodes")
     except Exception as exc:
-        if any(tag in str(exc).lower() for tag in ("does not exist", "undefinedtable", "undefined table", "undefinedcolumn", "undefined column")):
+        if _msg_has_undefined_table(exc):
             if not await ensure_base_schema_ready(force=True):
                 raise
             await _ensure_remnawave_schema_ready(db)
-            await _upsert_accounts_once()
+            await _run_with_db_retry_result(_upsert_accounts_once, db=db, op_name="upsert_accounts_after_bootstrap")
             if node_last_seen:
-                await _upsert_nodes_once()
+                await _run_with_db_retry_result(_upsert_nodes_once, db=db, op_name="upsert_nodes_after_bootstrap")
         else:
             raise
 
@@ -296,7 +343,11 @@ async def process_remnawave_ingest_entries(db: AsyncSession, entries: list[dict[
             chunk = query_rows[start_idx:end_idx]
             if not chunk:
                 continue
-            await db.execute(pg_insert(RemnawaveDNSQuery).values(chunk))
+            await _run_with_db_retry_result(
+                lambda chunk=chunk: db.execute(pg_insert(RemnawaveDNSQuery).values(chunk)),
+                db=db,
+                op_name="insert_dns_queries_chunk",
+            )
     result.inserted_queries = len(query_rows)
 
     if await ensure_adult_schema_ready():
@@ -314,30 +365,46 @@ async def process_remnawave_ingest_entries(db: AsyncSession, entries: list[dict[
         inserted_new = 0
         updated_existing = 0
 
+        async def _execute_dns_chunk(chunk_rows: list[dict[str, Any]]) -> tuple[int, int]:
+            dns_unique_stmt = pg_insert(RemnawaveDNSUnique).values(chunk_rows)
+            dns_unique_stmt = dns_unique_stmt.on_conflict_do_update(
+                index_elements=[RemnawaveDNSUnique.dns_root],
+                set_={
+                    "first_seen": func.least(RemnawaveDNSUnique.first_seen, dns_unique_stmt.excluded.first_seen),
+                    "last_seen": func.greatest(RemnawaveDNSUnique.last_seen, dns_unique_stmt.excluded.last_seen),
+                    "need_recheck": True,
+                },
+                where=or_(
+                    RemnawaveDNSUnique.first_seen.is_distinct_from(func.least(RemnawaveDNSUnique.first_seen, dns_unique_stmt.excluded.first_seen)),
+                    RemnawaveDNSUnique.last_seen.is_distinct_from(func.greatest(RemnawaveDNSUnique.last_seen, dns_unique_stmt.excluded.last_seen)),
+                    RemnawaveDNSUnique.need_recheck.is_(False),
+                ),
+            ).returning(text("xmax = 0 AS inserted"))
+
+            ret = await db.execute(dns_unique_stmt)
+            rows = ret.fetchall()
+            inserted_chunk = sum(1 for row in rows if bool(row[0]))
+            updated_chunk = max(0, len(rows) - inserted_chunk)
+            return inserted_chunk, updated_chunk
+
         for start_idx, end_idx in _iter_batch_slices(len(dns_rows), 1000):
             chunk = dns_rows[start_idx:end_idx]
             if not chunk:
                 continue
             try:
-                dns_unique_stmt = pg_insert(RemnawaveDNSUnique).values(chunk)
-                dns_unique_stmt = dns_unique_stmt.on_conflict_do_update(
-                    index_elements=[RemnawaveDNSUnique.dns_root],
-                    set_={
-                        "first_seen": func.least(RemnawaveDNSUnique.first_seen, dns_unique_stmt.excluded.first_seen),
-                        "last_seen": func.greatest(RemnawaveDNSUnique.last_seen, dns_unique_stmt.excluded.last_seen),
-                        "need_recheck": True,
-                    },
-                ).returning(text("xmax = 0 AS inserted"))
-
-                ret = await db.execute(dns_unique_stmt)
-                rows = ret.fetchall()
-                inserted_chunk = sum(1 for row in rows if bool(row[0]))
-                inserted_new += inserted_chunk
-                updated_existing += max(0, len(rows) - inserted_chunk)
+                inserted_chunk, updated_chunk = await _run_with_db_retry_result(
+                    lambda chunk=chunk: _execute_dns_chunk(chunk),
+                    db=db,
+                    op_name="upsert_dns_unique_chunk",
+                )
+                inserted_new += int(inserted_chunk)
+                updated_existing += int(updated_chunk)
             except SQLAlchemyError as exc:
-                msg = str(exc).lower()
-                if "does not exist" in msg or "undefinedtable" in msg:
+                if _msg_has_undefined_table(exc):
                     break
+                if _msg_has_retryable_db_error(exc):
+                    await db.rollback()
+                    continue
                 raise
 
         result.unique_inserted = inserted_new
