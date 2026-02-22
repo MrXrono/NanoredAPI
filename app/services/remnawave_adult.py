@@ -1088,6 +1088,11 @@ def _bucket_file_for_domain(domain: str) -> str:
     return "old.txt"
 
 
+def _bucket_table_name_for_domain(domain: str) -> str:
+    bucket_file = _bucket_file_for_domain(domain)
+    return ADULT_BUCKET_FILE_TO_TABLE.get(bucket_file, ADULT_BUCKET_FILE_TO_TABLE["old.txt"])
+
+
 def _bucket_table_names_for_candidates(candidates: list[str]) -> list[str]:
     if not candidates:
         return [ADULT_BUCKET_FILE_TO_TABLE["old.txt"]]
