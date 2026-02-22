@@ -86,6 +86,7 @@ ADULT_SYNC_USE_TLDEXTRACT = os.getenv("ADULT_SYNC_USE_TLDEXTRACT", "0").strip().
 ADULT_RECHECK_BATCH_LIMIT = max(100, int(os.getenv("ADULT_RECHECK_BATCH_LIMIT", "1000")))
 ADULT_RECHECK_MAX_BATCHES_PER_LOOP = max(1, int(os.getenv("ADULT_RECHECK_MAX_BATCHES_PER_LOOP", "2")))
 ADULT_RECHECK_LOOP_SLEEP_SECONDS = max(5, int(os.getenv("ADULT_RECHECK_LOOP_SLEEP_SECONDS", "30")))
+ADULT_UNIQUE_STATS_CACHE_TTL_SEC = max(10, int(os.getenv("ADULT_UNIQUE_STATS_CACHE_TTL_SEC", "60")))
 ADULT_MARK_RECHECK_CHUNK_SIZE = max(500, int(os.getenv("ADULT_MARK_RECHECK_CHUNK_SIZE", "5000")))
 ADULT_MARK_RECHECK_MAX_ROWS_PER_SYNC = max(1000, int(os.getenv("ADULT_MARK_RECHECK_MAX_ROWS_PER_SYNC", "200000")))
 ADULT_SYNC_CLEANUP_TABLES = (
@@ -284,6 +285,24 @@ async def _ensure_adult_catalog_table_tuning() -> None:
                     CREATE INDEX IF NOT EXISTS ix_remnawave_dns_unique_recheck_last_seen
                     ON remnawave_dns_unique (last_seen)
                     WHERE need_recheck IS TRUE
+                    """
+                )
+            )
+            await conn.execute(
+                text(
+                    """
+                    CREATE INDEX IF NOT EXISTS ix_remnawave_dns_unique_is_adult_true
+                    ON remnawave_dns_unique (dns_root)
+                    WHERE is_adult IS TRUE
+                    """
+                )
+            )
+            await conn.execute(
+                text(
+                    """
+                    CREATE INDEX IF NOT EXISTS ix_remnawave_dns_unique_adult_last_seen
+                    ON remnawave_dns_unique (last_seen DESC)
+                    WHERE is_adult IS TRUE
                     """
                 )
             )
@@ -1960,6 +1979,49 @@ async def _mark_matching_domains_for_recheck(db: AsyncSession, version: str) -> 
         await db.commit()
 
     return total_marked
+
+
+async def get_dns_unique_stats_cached(db: AsyncSession, *, force_refresh: bool = False) -> dict[str, int]:
+    """Return cached dns_unique counters to avoid heavy COUNT queries on each UI request."""
+    now = datetime.now(timezone.utc)
+    cached: AdultSyncState | None = None
+    try:
+        cached = await db.get(AdultSyncState, 'dns_unique_stats')
+    except Exception:
+        cached = None
+
+    if not force_refresh and cached and cached.last_run_at and cached.stats_json:
+        age = (now - cached.last_run_at).total_seconds()
+        if age < ADULT_UNIQUE_STATS_CACHE_TTL_SEC:
+            stats = cached.stats_json or {}
+            return {
+                'unique_total': int(stats.get('unique_total', 0) or 0),
+                'adult_total': int(stats.get('adult_total', 0) or 0),
+                'need_recheck': int(stats.get('need_recheck', 0) or 0),
+            }
+
+    row = await db.execute(
+        select(
+            func.count(RemnawaveDNSUnique.dns_root).label('unique_total'),
+            func.count(RemnawaveDNSUnique.dns_root).filter(RemnawaveDNSUnique.is_adult.is_(True)).label('adult_total'),
+            func.count(RemnawaveDNSUnique.dns_root).filter(RemnawaveDNSUnique.need_recheck.is_(True)).label('need_recheck'),
+        )
+    )
+    data = row.mappings().first() or {}
+    stats = {
+        'unique_total': int(data.get('unique_total', 0) or 0),
+        'adult_total': int(data.get('adult_total', 0) or 0),
+        'need_recheck': int(data.get('need_recheck', 0) or 0),
+    }
+
+    if cached is None:
+        cached = AdultSyncState(job_name='dns_unique_stats')
+        db.add(cached)
+    cached.last_run_at = now
+    cached.status = 'ok'
+    cached.stats_json = stats
+    await db.commit()
+    return stats
 
 
 async def cleanup_adult_catalog_garbage(progress_cb: ProgressCallback | None = None) -> dict:

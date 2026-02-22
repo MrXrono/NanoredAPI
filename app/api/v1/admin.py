@@ -49,6 +49,7 @@ from app.services.remnawave_adult import (
     cleanup_adult_catalog_garbage,
     force_recheck_all_dns_unique,
     get_adult_sync_runtime_state,
+    get_dns_unique_stats_cached,
     get_adult_sync_schedule,
     normalize_remnawave_domain,
     set_adult_sync_schedule,
@@ -871,67 +872,10 @@ async def database_status(db: AsyncSession = Depends(get_db)):
         pass
 
     try:
-        row = await db.execute(
-            select(
-                func.count(RemnawaveDNSUnique.dns_root).label("unique_total"),
-                func.count(RemnawaveDNSUnique.dns_root).filter(RemnawaveDNSUnique.is_adult.is_(True)).label("adult_total"),
-                func.count(RemnawaveDNSUnique.dns_root).filter(RemnawaveDNSUnique.need_recheck.is_(True)).label("need_recheck"),
-            )
-        )
-        data = row.mappings().first() or {}
-        unique_total = int(data.get("unique_total", 0) or 0)
-        unique_adult = int(data.get("adult_total", 0) or 0)
-        unique_need_recheck = int(data.get("need_recheck", 0) or 0)
-
-        # Fallback live detection: if stored flags are stale, derive adult uniques from current catalog/exclusions.
-        if unique_total > 0 and unique_adult == 0 and adult_sync.get("catalog_domains_enabled", 0) > 0:
-            canonical_unique_domain = func.regexp_replace(RemnawaveDNSUnique.dns_root, r"^(?:[0-9]+-)+", "")
-            canonical_catalog_domain = func.regexp_replace(AdultDomainCatalog.domain, r"^(?:[0-9]+-)+", "")
-            canonical_exclusion_domain = func.regexp_replace(AdultDomainExclusion.domain, r"^(?:[0-9]+-)+", "")
-
-            catalog_match_exists = exists(
-                select(1)
-                .select_from(AdultDomainCatalog)
-                .where(
-                    and_(
-                        AdultDomainCatalog.is_enabled.is_(True),
-                        or_(
-                            AdultDomainCatalog.domain == RemnawaveDNSUnique.dns_root,
-                            canonical_catalog_domain == RemnawaveDNSUnique.dns_root,
-                            AdultDomainCatalog.domain == canonical_unique_domain,
-                            canonical_catalog_domain == canonical_unique_domain,
-                            RemnawaveDNSUnique.dns_root.like(func.concat('%.', AdultDomainCatalog.domain)),
-                            RemnawaveDNSUnique.dns_root.like(func.concat('%.', canonical_catalog_domain)),
-                            canonical_unique_domain.like(func.concat('%.', AdultDomainCatalog.domain)),
-                            canonical_unique_domain.like(func.concat('%.', canonical_catalog_domain)),
-                        ),
-                    )
-                )
-            )
-            exclusion_match_exists = exists(
-                select(1)
-                .select_from(AdultDomainExclusion)
-                .where(
-                    or_(
-                        AdultDomainExclusion.domain == RemnawaveDNSUnique.dns_root,
-                        canonical_exclusion_domain == RemnawaveDNSUnique.dns_root,
-                        AdultDomainExclusion.domain == canonical_unique_domain,
-                        canonical_exclusion_domain == canonical_unique_domain,
-                    )
-                )
-            )
-            live_row = await db.execute(
-                select(
-                    func.count(RemnawaveDNSUnique.dns_root).filter(
-                        and_(
-                            catalog_match_exists,
-                            ~exclusion_match_exists,
-                        )
-                    ).label("adult_total_live")
-                )
-            )
-            live_data = live_row.mappings().first() or {}
-            unique_adult = max(unique_adult, int(live_data.get("adult_total_live", 0) or 0))
+        unique_stats = await get_dns_unique_stats_cached(db)
+        unique_total = int(unique_stats.get("unique_total", 0) or 0)
+        unique_adult = int(unique_stats.get("adult_total", 0) or 0)
+        unique_need_recheck = int(unique_stats.get("need_recheck", 0) or 0)
 
         unique_matched = max(0, unique_total - unique_need_recheck)
         adult_sync["unique_domains_total"] = unique_total

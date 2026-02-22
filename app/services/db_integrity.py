@@ -34,6 +34,16 @@ _RECOMMENDED_INDEX_SQL: dict[str, str] = {
         ON adult_domain_catalog (domain)
         WHERE is_enabled IS TRUE
     """,
+    "ix_rnw_unique_is_adult_true": """
+        CREATE INDEX IF NOT EXISTS ix_rnw_unique_is_adult_true
+        ON remnawave_dns_unique (dns_root)
+        WHERE is_adult IS TRUE
+    """,
+    "ix_rnw_unique_adult_last_seen": """
+        CREATE INDEX IF NOT EXISTS ix_rnw_unique_adult_last_seen
+        ON remnawave_dns_unique (last_seen DESC)
+        WHERE is_adult IS TRUE
+    """,
 }
 
 
