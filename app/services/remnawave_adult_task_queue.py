@@ -223,14 +223,15 @@ async def _process_sync_message(msg_id: str, fields: dict[str, Any]) -> None:
         )
         logger.info("Manual adult sync task completed, message_id=%s result=%s", msg_id, result)
     except Exception as exc:
+        err_text = str(exc).strip() or exc.__class__.__name__
         tb = traceback.format_exc(limit=20)
         await _update_task_run(
             run_id,
             status="failed",
             running=False,
             phase="error",
-            message=f"Failed: {exc}",
-            error_short=f"{exc.__class__.__name__}: {exc}",
+            message=f"Failed: {err_text}",
+            error_short=f"{exc.__class__.__name__}: {err_text}",
             error_full=tb,
             finished=True,
         )
@@ -288,14 +289,15 @@ async def _process_txt_message(msg_id: str, fields: dict[str, Any]) -> None:
         )
         logger.info("Manual adult txt->db task completed, message_id=%s result=%s", msg_id, result)
     except Exception as exc:
+        err_text = str(exc).strip() or exc.__class__.__name__
         tb = traceback.format_exc(limit=20)
         await _update_task_run(
             run_id,
             status="failed",
             running=False,
             phase="error",
-            message=f"Failed: {exc}",
-            error_short=f"{exc.__class__.__name__}: {exc}",
+            message=f"Failed: {err_text}",
+            error_short=f"{exc.__class__.__name__}: {err_text}",
             error_full=tb,
             finished=True,
         )

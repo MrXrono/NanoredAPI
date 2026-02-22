@@ -62,6 +62,7 @@ OISD_ROOT_URL = "https://oisd.nl/includedlists/nsfw"
 V2FLY_ROOT_URL = "https://raw.githubusercontent.com/v2fly/domain-list-community/refs/heads/master/data/category-porn"
 
 ADULT_SYNC_DB_CHUNK_SIZE = max(500, int(os.getenv("ADULT_SYNC_DB_CHUNK_SIZE", "5000")))
+ADULT_SYNC_PARSE_LINE_CHUNK_SIZE = max(500, int(os.getenv("ADULT_SYNC_PARSE_LINE_CHUNK_SIZE", "5000")))
 ADULT_SYNC_TXT_DB_CHUNK_SIZE = max(500, min(20000, int(os.getenv("ADULT_SYNC_TXT_DB_CHUNK_SIZE", str(ADULT_SYNC_DB_CHUNK_SIZE)))))
 ADULT_SYNC_TXT_DB_COMMIT_EVERY = max(1, int(os.getenv("ADULT_SYNC_TXT_DB_COMMIT_EVERY", "10")))
 ADULT_SYNC_TXT_COPY_ENABLED = os.getenv("ADULT_SYNC_TXT_COPY_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
@@ -1210,6 +1211,83 @@ def _write_bucket_files(bucket_map: dict[str, set[str]]) -> dict[str, str]:
     return written
 
 
+async def _parse_source_file_sequential(
+    *,
+    source_path: str,
+    source_url: str,
+    source_mask: int,
+    source_index: int,
+    source_total: int,
+    domain_map: dict[str, int],
+    bucket_map: dict[str, set[str]],
+    progress_cb: ProgressCallback | None = None,
+) -> tuple[int, int, int]:
+    parsed_lines = 0
+    parsed_chunks = 0
+    invalid_tokens = 0
+    path = Path(source_path)
+    if not path.exists():
+        return parsed_lines, parsed_chunks, invalid_tokens
+
+    lines_buffer: list[str] = []
+
+    def _process_lines(lines: list[str]) -> tuple[int, int, int]:
+        nonlocal parsed_lines, parsed_chunks, invalid_tokens
+        if not lines:
+            return 0, 0, 0
+        valid_domains, invalid = _extract_domains_and_invalid_tokens("".join(lines))
+        for domain in valid_domains:
+            domain_map[domain] = domain_map.get(domain, 0) | int(source_mask)
+            bucket_map[_bucket_file_for_domain(domain)].add(domain)
+        for token in invalid:
+            bucket_map["old.txt"].add(token)
+        parsed_lines += len(lines)
+        parsed_chunks += 1
+        invalid_tokens += len(invalid)
+        return len(valid_domains), len(invalid), len(lines)
+
+    with path.open("r", encoding="utf-8", errors="replace") as fp:
+        for line in fp:
+            lines_buffer.append(line)
+            if len(lines_buffer) >= ADULT_SYNC_PARSE_LINE_CHUNK_SIZE:
+                valid_count, invalid_count, line_count = _process_lines(lines_buffer)
+                lines_buffer = []
+                await _emit_progress(
+                    progress_cb,
+                    phase="parse",
+                    progress_current=max(0, source_index - 1),
+                    progress_total=max(source_total, 1),
+                    progress_percent=38.0 + (max(0, source_index - 1) / max(source_total, 1)) * 22.0,
+                    message=(
+                        f"Parsing [{source_index}/{source_total}] {source_url} | "
+                        f"chunk={parsed_chunks} lines+={line_count} domains+={valid_count} invalid+={invalid_count}"
+                    ),
+                )
+    if lines_buffer:
+        valid_count, invalid_count, line_count = _process_lines(lines_buffer)
+        await _emit_progress(
+            progress_cb,
+            phase="parse",
+            progress_current=max(0, source_index - 1),
+            progress_total=max(source_total, 1),
+            progress_percent=38.0 + (max(0, source_index - 1) / max(source_total, 1)) * 22.0,
+            message=(
+                f"Parsing [{source_index}/{source_total}] {source_url} | "
+                f"chunk={parsed_chunks} lines+={line_count} domains+={valid_count} invalid+={invalid_count}"
+            ),
+        )
+
+    await _emit_progress(
+        progress_cb,
+        phase="parse",
+        progress_current=source_index,
+        progress_total=max(source_total, 1),
+        progress_percent=38.0 + (source_index / max(source_total, 1)) * 22.0,
+        message=f"Parsed source [{source_index}/{source_total}] {source_url}",
+    )
+    return parsed_lines, parsed_chunks, invalid_tokens
+
+
 async def collect_adult_domain_map(
     timeout: int = 25,
     max_retries: int = 4,
@@ -1245,7 +1323,16 @@ async def collect_adult_domain_map(
                 )
                 if item.get("changed"):
                     changed_count += 1
-                sources.append(item)
+                sources.append(
+                    {
+                        "url": item.get("url"),
+                        "path": item.get("path"),
+                        "source_mask": int(item.get("source_mask") or 0),
+                        "parse_domains": bool(item.get("parse_domains")),
+                        "changed": bool(item.get("changed")),
+                        "size": int(item.get("size") or 0),
+                    }
+                )
                 processed_sources += 1
                 logger.info(
                     "adult sync: source processed %s changed=%s size=%s",
@@ -1297,17 +1384,26 @@ async def collect_adult_domain_map(
 
     _save_source_manifest(ADULT_SYNC_SOURCE_MANIFEST_PATH, manifest)
 
-    for item in sources:
-        if not item.get("parse_domains"):
-            continue
-        raw_text = item.get("text") or ""
-        valid_domains, invalid_tokens = _extract_domains_and_invalid_tokens(raw_text)
-        source_mask = int(item.get("source_mask") or 0)
-        for domain in valid_domains:
-            domain_map[domain] = domain_map.get(domain, 0) | source_mask
-            bucket_map[_bucket_file_for_domain(domain)].add(domain)
-        for token in invalid_tokens:
-            bucket_map["old.txt"].add(token)
+    parse_sources = [s for s in sources if bool(s.get("parse_domains"))]
+    total_parse_sources = len(parse_sources)
+    parsed_lines_total = 0
+    parsed_chunks_total = 0
+    invalid_tokens_total = 0
+
+    for idx, item in enumerate(parse_sources, start=1):
+        parsed_lines, parsed_chunks, invalid_tokens = await _parse_source_file_sequential(
+            source_path=str(item.get("path") or ""),
+            source_url=str(item.get("url") or ""),
+            source_mask=int(item.get("source_mask") or 0),
+            source_index=idx,
+            source_total=total_parse_sources,
+            domain_map=domain_map,
+            bucket_map=bucket_map,
+            progress_cb=progress_cb,
+        )
+        parsed_lines_total += parsed_lines
+        parsed_chunks_total += parsed_chunks
+        invalid_tokens_total += invalid_tokens
 
     bucket_files = _write_bucket_files(bucket_map)
     bucket_counts = {name: len(values) for name, values in bucket_map.items()}
@@ -1320,6 +1416,10 @@ async def collect_adult_domain_map(
         "source_files_changed": changed_count,
         "source_files_unchanged": max(0, len(sources) - changed_count),
         "source_files_failed": failed,
+        "parse_sources_total": total_parse_sources,
+        "parse_lines_total": parsed_lines_total,
+        "parse_chunks_total": parsed_chunks_total,
+        "parse_invalid_total": invalid_tokens_total,
         "manifest_path": str(ADULT_SYNC_SOURCE_MANIFEST_PATH),
     }
 
@@ -1842,10 +1942,13 @@ async def _process_dns_unique_recheck_batch(db: AsyncSession, limit: int) -> int
                 logger.warning("adult recheck skipped: remnawave_dns_unique table not ready yet")
                 _adult_schema_ready = False  # force refresh on next attempt
                 return 0
-            if _msg_has_deadlock(exc) and attempt < max_attempts:
-                logger.warning("adult recheck select deadlock: retry %s/%s", attempt, max_attempts)
+            if _msg_has_retryable_db_error(exc) and attempt < max_attempts:
+                logger.warning("adult recheck select retryable db error: retry %s/%s", attempt, max_attempts)
                 await asyncio.sleep(0.1 * attempt)
                 continue
+            if _msg_has_retryable_db_error(exc):
+                logger.warning("adult recheck select skipped due to retryable db error: %s", exc)
+                return 0
             logger.exception("adult recheck query failed")
             return 0
 
@@ -1936,10 +2039,13 @@ async def _process_dns_unique_recheck_batch(db: AsyncSession, limit: int) -> int
             return processed
         except SQLAlchemyError as exc:
             await db.rollback()
-            if _msg_has_deadlock(exc) and attempt < max_attempts:
-                logger.warning("adult recheck commit deadlock: retry %s/%s", attempt, max_attempts)
+            if _msg_has_retryable_db_error(exc) and attempt < max_attempts:
+                logger.warning("adult recheck commit retryable db error: retry %s/%s", attempt, max_attempts)
                 await asyncio.sleep(0.1 * attempt)
                 continue
+            if _msg_has_retryable_db_error(exc):
+                logger.warning("adult recheck commit skipped due to retryable db error: %s", exc)
+                return 0
             logger.exception("adult recheck commit failed")
             return 0
 
@@ -2012,6 +2118,10 @@ async def background_remnawave_adult_tasks(stop_event: asyncio.Event) -> None:
                         minute=int(schedule["minute"]),
                     )
                     _bg_runtime_state["next_sync_at"] = next_sync.isoformat()
+
+            if _CATALOG_SYNC_LOCK.locked() or _TXT_SYNC_LOCK.locked():
+                await _sleep_with_stop(stop_event, 1)
+                continue
 
             for _ in range(ADULT_RECHECK_MAX_BATCHES_PER_LOOP):
                 if stop_event.is_set():
