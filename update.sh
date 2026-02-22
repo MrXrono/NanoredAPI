@@ -14,6 +14,14 @@ API_CONTAINER="nanored-api"
 WORKER_SYNC_CONTAINER="nanored-worker-sync"
 WORKER_TXTDB_CONTAINER="nanored-worker-txtdb"
 
+# Paths to keep during legacy cleanup (server-local data)
+PRESERVE_CLEAN_PATTERNS=(
+    ".env"
+    "data/"
+    "logs/"
+)
+
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -79,18 +87,23 @@ if [ -d "app/models" ]; then
     MODELS_HASH_BEFORE=$(find app/models -name "*.py" -exec md5sum {} \; | sort | md5sum | cut -d' ' -f1)
 fi
 
-# ---------- 3. Pull updates ----------
-log "Загрузка обновлений..."
-if [ "$FORCE" = true ]; then
-    BRANCH=$(git remote show origin 2>/dev/null | grep 'HEAD branch' | awk '{print $NF}')
-    BRANCH=${BRANCH:-main}
-    git reset --hard "origin/$BRANCH" 2>/dev/null
-    git clean -fd 2>/dev/null || true
-else
-    git stash --quiet 2>/dev/null || true
-    git pull origin main --quiet 2>/dev/null || git pull origin master --quiet 2>/dev/null
-    git stash pop --quiet 2>/dev/null || true
-fi
+# ---------- 3. Pull updates + clean legacy files ----------
+log "Загрузка обновлений и очистка legacy-кода..."
+BRANCH=$(git remote show origin 2>/dev/null | grep 'HEAD branch' | awk '{print $NF}')
+BRANCH=${BRANCH:-main}
+
+# Strict sync with GitHub state
+# - removes local legacy code that is not present in repository
+# - preserves server-local runtime files (.env, data/, logs/)
+git reset --hard "origin/$BRANCH" 2>/dev/null
+
+CLEAN_ARGS=( -fd )
+for keep in "${PRESERVE_CLEAN_PATTERNS[@]}"; do
+    CLEAN_ARGS+=( -e "$keep" )
+done
+
+git clean "${CLEAN_ARGS[@]}" 2>/dev/null || true
+log "Legacy-файлы, отсутствующие в GitHub, удалены (с сохранением .env/data/logs)"
 
 NEW_VER=$(grep -oP 'VERSION.*?=.*?"(\K[^"]+)' app/core/config.py 2>/dev/null || echo "unknown")
 log "Новая версия: $NEW_VER"
