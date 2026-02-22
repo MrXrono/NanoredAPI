@@ -788,7 +788,12 @@ def normalize_remnawave_domain(value: str | None) -> str | None:
     if not value:
         return None
 
-    raw = _sanitize_token(value)
+    raw_input = str(value).strip()
+    parsed = urlparse(raw_input)
+    if parsed.hostname:
+        raw = parsed.hostname
+    else:
+        raw = _sanitize_token(raw_input)
     if not raw:
         return None
 
@@ -950,7 +955,6 @@ def _chunk_normalized_domains(lines: list[str], chunk_size: int) -> tuple[list[l
         if len(current) >= size:
             chunks.append(current)
             current = []
-            seen = set()
 
     if current:
         chunks.append(current)
