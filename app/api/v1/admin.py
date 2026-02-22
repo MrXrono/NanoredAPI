@@ -130,9 +130,14 @@ def _trim_text(value: str | None, max_chars: int) -> str | None:
     if value is None:
         return None
     text_value = str(value)
+    if max_chars <= 0:
+        return ""
     if len(text_value) <= max_chars:
         return text_value
-    return text_value[:max_chars] + "...[truncated]"
+    suffix = "...[truncated]"
+    if max_chars <= len(suffix):
+        return text_value[:max_chars]
+    return text_value[: max_chars - len(suffix)] + suffix
 
 
 def _task_payload(item: dict, task_key: str) -> dict:
@@ -330,10 +335,15 @@ async def _stream_worker_status(stream: str, group: str, expected_consumer: str)
             idle = c.get("idle", None)
             status["pending"] = int(pending or 0)
             status["idle_ms"] = int(idle or 0) if idle is not None else None
-            if status["idle_ms"] is not None and status["idle_ms"] <= 60000:
+            # Long tasks can keep a message pending for minutes while actively processing.
+            # Treat pending+recent consumer activity as running; stalled only on prolonged idle.
+            if status["pending"] > 0:
+                if status["idle_ms"] is None or status["idle_ms"] <= 900000:
+                    status["state"] = "running"
+                else:
+                    status["state"] = "stalled"
+            elif status["idle_ms"] is not None and status["idle_ms"] <= 60000:
                 status["state"] = "running"
-            elif status["pending"] > 0:
-                status["state"] = "stalled"
             else:
                 status["state"] = "idle"
             break

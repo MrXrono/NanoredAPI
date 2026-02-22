@@ -1739,7 +1739,7 @@ async def force_recheck_all_dns_unique(limit: int = ADULT_RECHECK_BATCH_LIMIT, p
             )
 
             mark_stmt = (
-                update(RemnawaveDNSUnique)
+                update(RemnawaveDNSUnique.__table__)
                 .where(RemnawaveDNSUnique.need_recheck.is_(False))
                 .values(need_recheck=True)
             )
@@ -2244,7 +2244,7 @@ async def _process_dns_unique_recheck_batch(db: AsyncSession, limit: int) -> int
 
         if update_rows:
             await db.execute(
-                update(RemnawaveDNSUnique)
+                update(RemnawaveDNSUnique.__table__)
                 .where(RemnawaveDNSUnique.dns_root == bindparam("p_dns_root"))
                 .execution_options(synchronize_session=False)
                 .values(
