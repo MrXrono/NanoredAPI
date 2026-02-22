@@ -199,32 +199,47 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Admin creation skipped: {e}")
 
-    cleanup_task = asyncio.create_task(_cleanup_stale_sessions())
-    adult_stop_event = asyncio.Event()
-    adult_task = asyncio.create_task(background_remnawave_adult_tasks(adult_stop_event))
-    remnawave_ingest_stop_event = asyncio.Event()
-    remnawave_ingest_task = asyncio.create_task(background_remnawave_ingest_worker(remnawave_ingest_stop_event))
-    db_maintenance_stop_event = asyncio.Event()
-    db_maintenance_task = asyncio.create_task(background_db_maintenance(db_maintenance_stop_event))
+    stop_events: list[asyncio.Event] = []
+    bg_tasks: list[asyncio.Task] = []
+
+    if settings.RUN_SESSION_CLEANUP_WORKER:
+        cleanup_task = asyncio.create_task(_cleanup_stale_sessions())
+        bg_tasks.append(cleanup_task)
+    else:
+        logger.info("session cleanup worker disabled via RUN_SESSION_CLEANUP_WORKER")
+
+    if settings.RUN_ADULT_SYNC_WORKER:
+        adult_stop_event = asyncio.Event()
+        stop_events.append(adult_stop_event)
+        bg_tasks.append(asyncio.create_task(background_remnawave_adult_tasks(adult_stop_event)))
+    else:
+        logger.info("adult sync worker disabled via RUN_ADULT_SYNC_WORKER")
+
+    if settings.RUN_TXT_DB_WORKER:
+        remnawave_ingest_stop_event = asyncio.Event()
+        stop_events.append(remnawave_ingest_stop_event)
+        bg_tasks.append(asyncio.create_task(background_remnawave_ingest_worker(remnawave_ingest_stop_event)))
+    else:
+        logger.info("txt->db worker disabled via RUN_TXT_DB_WORKER")
+
+    if settings.RUN_DB_MAINTENANCE_WORKER:
+        db_maintenance_stop_event = asyncio.Event()
+        stop_events.append(db_maintenance_stop_event)
+        bg_tasks.append(asyncio.create_task(background_db_maintenance(db_maintenance_stop_event)))
+    else:
+        logger.info("db maintenance worker disabled via RUN_DB_MAINTENANCE_WORKER")
+
     await _ensure_telegram_webhook()
 
     yield
 
-    cleanup_task.cancel()
-    adult_stop_event.set()
-    remnawave_ingest_stop_event.set()
-    db_maintenance_stop_event.set()
-    adult_task.cancel()
-    remnawave_ingest_task.cancel()
-    db_maintenance_task.cancel()
-    with suppress(asyncio.CancelledError):
-        await remnawave_ingest_task
-    with suppress(asyncio.CancelledError):
-        await db_maintenance_task
-    with suppress(asyncio.CancelledError):
-        await adult_task
-    with suppress(asyncio.CancelledError):
-        await cleanup_task
+    for ev in stop_events:
+        ev.set()
+    for task in bg_tasks:
+        task.cancel()
+    for task in bg_tasks:
+        with suppress(asyncio.CancelledError):
+            await task
     await telegram_support_forum.close()
     await close_redis()
     await engine.dispose()

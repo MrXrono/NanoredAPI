@@ -11,6 +11,8 @@ COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
 NGINX_CONTAINER="remnawave-nginx"
 HEALTH_URL="http://localhost:8000/health"
 API_CONTAINER="nanored-api"
+WORKER_SYNC_CONTAINER="nanored-worker-sync"
+WORKER_TXTDB_CONTAINER="nanored-worker-txtdb"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -162,7 +164,7 @@ if [ -d "$INSTALL_DIR/logs" ]; then
     log "Логи приложения очищены"
 fi
 
-for c in "$API_CONTAINER" "$NGINX_CONTAINER"; do
+for c in "$API_CONTAINER" "$WORKER_SYNC_CONTAINER" "$WORKER_TXTDB_CONTAINER" "$NGINX_CONTAINER"; do
     LOG_PATH=$(docker inspect --format='{{.LogPath}}' "$c" 2>/dev/null || true)
     if [ -n "$LOG_PATH" ] && [ -f "$LOG_PATH" ]; then
         : > "$LOG_PATH" 2>/dev/null || true

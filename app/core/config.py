@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "NanoredVPN API"
-    VERSION: str = "1.18.0.0"
+    VERSION: str = "1.18.0.1"
     API_V1_PREFIX: str = "/api/v1"
 
     # Database
@@ -88,6 +88,13 @@ class Settings(BaseSettings):
 
     # GeoIP
     GEOIP_DB_PATH: str = "/app/data/GeoLite2-City.mmdb"
+
+    RUN_SESSION_CLEANUP_WORKER: bool = os.getenv("RUN_SESSION_CLEANUP_WORKER", "1").strip() in ("1", "true", "yes", "on")
+    RUN_ADULT_SYNC_WORKER: bool = os.getenv("RUN_ADULT_SYNC_WORKER", "1").strip() in ("1", "true", "yes", "on")
+    RUN_TXT_DB_WORKER: bool = os.getenv("RUN_TXT_DB_WORKER", "1").strip() in ("1", "true", "yes", "on")
+    RUN_DB_MAINTENANCE_WORKER: bool = os.getenv("RUN_DB_MAINTENANCE_WORKER", "1").strip() in ("1", "true", "yes", "on")
+
+    WORKER_ROLE: str = os.getenv("WORKER_ROLE", "")
 
     BG_SESSION_CLEANUP_INTERVAL_SECONDS: int = max(30, int(os.getenv("BG_SESSION_CLEANUP_INTERVAL_SECONDS", "300")))
     BG_SESSION_CLEANUP_BATCH_SIZE: int = max(100, int(os.getenv("BG_SESSION_CLEANUP_BATCH_SIZE", "1000")))
