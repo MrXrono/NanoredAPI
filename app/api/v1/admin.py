@@ -1,4 +1,6 @@
 import uuid
+import base64
+import json
 import ipaddress
 import asyncio
 import socket
@@ -80,6 +82,9 @@ _adult_manual_txt_sync_task: asyncio.Task | None = None
 _adult_manual_cleanup_task: asyncio.Task | None = None
 _DATABASE_STATUS_CACHE_TTL_SEC = 20
 _database_status_cache: dict[str, object] = {"ts": 0.0, "data": None}
+_RNW_QUERIES_TOTAL_CACHE_TTL_SEC = 60
+_rnw_queries_total_cache: dict[str, tuple[float, int]] = {}
+_rnw_queries_total_tasks: dict[str, asyncio.Task] = {}
 _TASK_PERSIST_INTERVAL_SEC = 2.0
 _TASK_MESSAGE_MAX_CHARS = 16000
 _TASK_ERROR_MAX_CHARS = 200000
@@ -2221,6 +2226,107 @@ async def _estimate_pg_table_rows(db: AsyncSession, table_regclass: str) -> int 
     except Exception:
         return None
 
+
+
+def _encode_remnawave_query_cursor(*, requested_at: datetime, row_id: uuid.UUID) -> str:
+    payload = {
+        "requested_at": requested_at.isoformat(),
+        "id": str(row_id),
+    }
+    raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _decode_remnawave_query_cursor(cursor: str | None) -> tuple[datetime, uuid.UUID] | None:
+    if not cursor:
+        return None
+    value = cursor.strip()
+    if not value:
+        return None
+    try:
+        padded = value + "=" * (-len(value) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+        ts_raw = str(payload.get("requested_at") or "").strip()
+        row_id_raw = str(payload.get("id") or "").strip()
+        if not ts_raw or not row_id_raw:
+            return None
+        if ts_raw.endswith("Z"):
+            ts_raw = ts_raw[:-1] + "+00:00"
+        ts = datetime.fromisoformat(ts_raw)
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return ts, uuid.UUID(row_id_raw)
+    except Exception:
+        return None
+
+
+def _remnawave_query_count_cache_key(
+    *,
+    account_login: str,
+    from_ts: datetime | None,
+    to_ts: datetime | None,
+    q: str | None,
+) -> str:
+    return "|".join(
+        [
+            account_login.strip().lower(),
+            from_ts.isoformat() if from_ts else "",
+            to_ts.isoformat() if to_ts else "",
+            (q or "").strip().lower(),
+        ]
+    )
+
+
+async def _count_remnawave_recent_queries(
+    *,
+    account_login: str,
+    from_ts: datetime | None,
+    to_ts: datetime | None,
+    q: str | None,
+) -> int:
+    async with async_session() as count_db:
+        count_query = select(func.count()).select_from(RemnawaveDNSQuery).where(
+            RemnawaveDNSQuery.account_login == account_login,
+        )
+        if from_ts:
+            count_query = count_query.where(RemnawaveDNSQuery.requested_at >= from_ts)
+        if to_ts:
+            count_query = count_query.where(RemnawaveDNSQuery.requested_at <= to_ts)
+        q_clean = (q or "").strip()
+        if q_clean:
+            count_query = count_query.where(RemnawaveDNSQuery.dns.ilike(f"%{q_clean}%"))
+        total = (await count_db.execute(count_query)).scalar() or 0
+        return int(total)
+
+
+async def _spawn_remnawave_query_count(
+    *,
+    cache_key: str,
+    account_login: str,
+    from_ts: datetime | None,
+    to_ts: datetime | None,
+    q: str | None,
+) -> None:
+    if cache_key in _rnw_queries_total_tasks:
+        task = _rnw_queries_total_tasks[cache_key]
+        if not task.done():
+            return
+
+    async def _runner() -> None:
+        try:
+            total = await _count_remnawave_recent_queries(
+                account_login=account_login,
+                from_ts=from_ts,
+                to_ts=to_ts,
+                q=q,
+            )
+            _rnw_queries_total_cache[cache_key] = (time.time(), int(total))
+        finally:
+            _rnw_queries_total_tasks.pop(cache_key, None)
+
+    _rnw_queries_total_tasks[cache_key] = asyncio.create_task(_runner())
+
+
 @router.get('/remnawave-logs/accounts')
 async def remnawave_accounts_summary(
     page: int = Query(1, ge=1),
@@ -2466,13 +2572,27 @@ async def remnawave_recent_queries(
     to_ts: datetime | None = None,
     q: str | None = None,
     selected: bool = Query(False),
+    cursor: str | None = Query(default=None),
+    use_keyset: bool = Query(True),
+    include_total: bool = Query(False),
     db: AsyncSession = Depends(get_db),
 ):
+    empty_payload = {
+        'total': 0,
+        'total_is_estimate': False,
+        'page': page,
+        'per_page': per_page,
+        'items': [],
+        'next_cursor': None,
+        'has_more': False,
+        'mode': 'keyset' if use_keyset else 'offset',
+    }
+
     if not selected:
-        return {'total': 0, 'page': page, 'per_page': per_page, 'items': []}
+        return empty_payload
     account_login = account_login.strip()
     if not account_login:
-        return {'total': 0, 'page': page, 'per_page': per_page, 'items': []}
+        return empty_payload
     account_exists = (
         await db.execute(
             select(RemnawaveAccount.account_login)
@@ -2481,39 +2601,98 @@ async def remnawave_recent_queries(
         )
     ).first()
     if account_exists is None:
-        return {'total': 0, 'page': page, 'per_page': per_page, 'items': []}
+        return empty_payload
 
-    query = (
-        select(RemnawaveDNSQuery)
-        .join(
-            RemnawaveAccount,
-            RemnawaveAccount.account_login == RemnawaveDNSQuery.account_login,
-        )
-        .where(RemnawaveAccount.account_login == account_login)
-    )
+    query = select(RemnawaveDNSQuery).where(RemnawaveDNSQuery.account_login == account_login)
 
     if from_ts:
         query = query.where(RemnawaveDNSQuery.requested_at >= from_ts)
     if to_ts:
         query = query.where(RemnawaveDNSQuery.requested_at <= to_ts)
-    if q:
-        ql = q.strip()
-        if ql:
+    ql = (q or '').strip()
+    if ql:
+        query = query.where(RemnawaveDNSQuery.dns.ilike(f"%{ql}%"))
+
+    if use_keyset:
+        cursor_decoded = _decode_remnawave_query_cursor(cursor)
+        if cursor_decoded:
+            c_ts, c_id = cursor_decoded
             query = query.where(
-                RemnawaveDNSQuery.dns.ilike(f"%{ql}%")
+                or_(
+                    RemnawaveDNSQuery.requested_at < c_ts,
+                    and_(RemnawaveDNSQuery.requested_at == c_ts, RemnawaveDNSQuery.id < c_id),
+                )
             )
+
+        rows = (
+            await db.execute(
+                query.order_by(desc(RemnawaveDNSQuery.requested_at), desc(RemnawaveDNSQuery.id)).limit(per_page + 1)
+            )
+        ).scalars().all()
+
+        has_more = len(rows) > per_page
+        page_rows = rows[:per_page]
+        next_cursor = None
+        if has_more and page_rows:
+            tail = page_rows[-1]
+            if tail.requested_at and tail.id:
+                next_cursor = _encode_remnawave_query_cursor(requested_at=tail.requested_at, row_id=tail.id)
+
+        total_value: int | None = None
+        total_is_estimate = True
+        cache_key = _remnawave_query_count_cache_key(
+            account_login=account_login,
+            from_ts=from_ts,
+            to_ts=to_ts,
+            q=ql,
+        )
+        cached = _rnw_queries_total_cache.get(cache_key)
+        now_ts = time.time()
+        if cached and (now_ts - cached[0]) <= _RNW_QUERIES_TOTAL_CACHE_TTL_SEC:
+            total_value = int(cached[1])
+            total_is_estimate = False
+        elif include_total:
+            await _spawn_remnawave_query_count(
+                cache_key=cache_key,
+                account_login=account_login,
+                from_ts=from_ts,
+                to_ts=to_ts,
+                q=ql,
+            )
+
+        return {
+            'total': total_value,
+            'total_is_estimate': total_is_estimate,
+            'page': page,
+            'per_page': per_page,
+            'next_cursor': next_cursor,
+            'has_more': has_more,
+            'mode': 'keyset',
+            'items': [
+                {
+                    'dns': r.dns,
+                    'requested_at': r.requested_at.isoformat() if r.requested_at else None,
+                    'node': r.node_name,
+                }
+                for r in page_rows
+            ],
+        }
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
     rows = (await db.execute(
-        query.order_by(desc(RemnawaveDNSQuery.requested_at))
+        query.order_by(desc(RemnawaveDNSQuery.requested_at), desc(RemnawaveDNSQuery.id))
         .offset((page - 1) * per_page)
         .limit(per_page)
     )).scalars().all()
 
     return {
-        'total': total,
+        'total': int(total),
+        'total_is_estimate': False,
         'page': page,
         'per_page': per_page,
+        'next_cursor': None,
+        'has_more': (page * per_page) < int(total),
+        'mode': 'offset',
         'items': [
             {
                 'dns': r.dns,

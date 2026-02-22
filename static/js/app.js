@@ -6,6 +6,7 @@ let remnawaveSelectedAccount = null;
 let dbStatusInterval = null;
 let remnawaveNodesSearchTimer = null;
 let remnawaveAccountsSearchTimer = null;
+let remnawaveRecentState = { filterKey: null, cursor: null, prevStack: [], nextCursor: null };
 let sqlBrowserState = { tableName: '', offset: 0, limit: 25, atStart: true, atEnd: false, search: '', mode: 'page', primaryKeys: [], rows: [] };
 
 // ========== AUTH ==========
@@ -1439,6 +1440,7 @@ function loadRemnawaveNodesDebounced(page = 1) {
 
 function resetRemnawaveSelection() {
     remnawaveSelectedAccount = null;
+    remnawaveRecentState = { filterKey: null, cursor: null, prevStack: [], nextCursor: null };
     const topTitle = document.getElementById('rnw-top-title');
     const lastTitle = document.getElementById('rnw-last-title');
     const topBody = document.getElementById('rnw-top-tbody');
@@ -1477,12 +1479,24 @@ function loadRemnawaveAccountsDebounced(page = 1) {
     remnawaveAccountsSearchTimer = setTimeout(() => loadRemnawaveAccounts(page), 350);
 }
 
+function renderRemnawaveRecentCursorNav() {
+    const container = document.getElementById('rnw-recent-pagination');
+    if (!container) return;
+    const canPrev = remnawaveRecentState.prevStack.length > 0;
+    const canNext = !!remnawaveRecentState.nextCursor;
+    container.innerHTML = `
+        <button ${canPrev ? '' : 'disabled'} onclick="loadRemnawaveRecent('prev')">&laquo; Назад</button>
+        <button ${canNext ? '' : 'disabled'} onclick="loadRemnawaveRecent('next')">Вперёд &raquo;</button>
+    `;
+}
+
 async function selectRemnawaveAccount(account) {
     remnawaveSelectedAccount = account;
+    remnawaveRecentState = { filterKey: null, cursor: null, prevStack: [], nextCursor: null };
     document.getElementById('rnw-top-title').textContent = `Топ 25 доменов: ${account}`;
     document.getElementById('rnw-last-title').textContent = `Последние запросы: ${account}`;
     await loadRemnawaveTop();
-    await loadRemnawaveRecent(1);
+    await loadRemnawaveRecent('reset');
 }
 
 async function loadRemnawaveTop() {
@@ -1498,19 +1512,34 @@ async function loadRemnawaveTop() {
     `).join('') || '<tr><td colspan="2">Нет данных</td></tr>';
 }
 
-async function loadRemnawaveRecent(page = 1) {
+async function loadRemnawaveRecent(action = 'reset') {
     if (!remnawaveSelectedAccount) return;
     const fromVal = document.getElementById('rnw-from')?.value || '';
     const toVal = document.getElementById('rnw-to')?.value || '';
     const qVal = document.getElementById('rnw-q')?.value || '';
+    const filterKey = `${remnawaveSelectedAccount}|${fromVal}|${toVal}|${qVal}`;
 
-    let url = `/admin/remnawave-logs/${encodeURIComponent(remnawaveSelectedAccount)}/queries?selected=1&page=${page}&per_page=50`;
+    if (action === 'reset' || remnawaveRecentState.filterKey !== filterKey) {
+        remnawaveRecentState = { filterKey, cursor: null, prevStack: [], nextCursor: null };
+    } else if (action === 'next') {
+        if (!remnawaveRecentState.nextCursor) return;
+        remnawaveRecentState.prevStack.push(remnawaveRecentState.cursor);
+        remnawaveRecentState.cursor = remnawaveRecentState.nextCursor;
+    } else if (action === 'prev') {
+        if (!remnawaveRecentState.prevStack.length) return;
+        remnawaveRecentState.cursor = remnawaveRecentState.prevStack.pop() || null;
+    }
+
+    let url = `/admin/remnawave-logs/${encodeURIComponent(remnawaveSelectedAccount)}/queries?selected=1&per_page=50&use_keyset=1&include_total=1`;
+    if (remnawaveRecentState.cursor) url += `&cursor=${encodeURIComponent(remnawaveRecentState.cursor)}`;
     if (fromVal) url += `&from_ts=${encodeURIComponent(new Date(fromVal).toISOString())}`;
     if (toVal) url += `&to_ts=${encodeURIComponent(new Date(toVal).toISOString())}`;
     if (qVal) url += `&q=${encodeURIComponent(qVal)}`;
 
     const resp = await api(url);
     const d = await resp.json();
+    remnawaveRecentState.nextCursor = d.next_cursor || null;
+
     const tbody = document.getElementById('rnw-recent-tbody');
     tbody.innerHTML = d.items.map(i => `
         <tr>
@@ -1519,7 +1548,7 @@ async function loadRemnawaveRecent(page = 1) {
         </tr>
     `).join('') || '<tr><td colspan="2">Нет данных</td></tr>';
 
-    renderPagination(document.getElementById('rnw-recent-pagination'), d.total, d.page, d.per_page, 'loadRemnawaveRecent');
+    renderRemnawaveRecentCursorNav();
 }
 
 // ========== REMNAWAVE AUDIT ==========

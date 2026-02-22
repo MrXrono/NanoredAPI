@@ -13,6 +13,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.remnawave_log import RemnawaveAccount, RemnawaveDNSQuery, RemnawaveDNSUnique, RemnawaveNode
+from app.core.config import settings
 from app.services.remnawave_adult import ensure_adult_schema_ready, normalize_remnawave_domain
 from app.services.schema_bootstrap import ensure_base_schema_ready
 
@@ -25,6 +26,39 @@ def _iter_batch_slices(total_size: int, batch_size: int) -> list[tuple[int, int]
     safe_total = max(0, int(total_size or 0))
     safe_batch = max(1, int(batch_size or 1))
     return [(start, min(start + safe_batch, safe_total)) for start in range(0, safe_total, safe_batch)]
+
+
+async def _copy_insert_dns_queries(db: AsyncSession, rows: list[dict[str, Any]]) -> bool:
+    if not rows or not settings.REMNAWAVE_INGEST_COPY_ENABLED:
+        return False
+    if not settings.DATABASE_URL.startswith("postgresql"):
+        return False
+
+    try:
+        conn = await db.connection()
+        raw_conn = await conn.get_raw_connection()
+        driver_conn = getattr(raw_conn, "driver_connection", None)
+        if driver_conn is None:
+            return False
+
+        records = [
+            (
+                row["id"],
+                row["account_login"],
+                row["dns"],
+                row["node_name"],
+                row["requested_at"],
+            )
+            for row in rows
+        ]
+        await driver_conn.copy_records_to_table(
+            "remnawave_dns_queries",
+            records=records,
+            columns=["id", "account_login", "dns", "node_name", "requested_at"],
+        )
+        return True
+    except Exception:
+        return False
 
 
 async def _ensure_remnawave_schema_ready(db: AsyncSession) -> None:
@@ -51,6 +85,9 @@ async def _ensure_remnawave_schema_ready(db: AsyncSession) -> None:
         await db.execute(text("CREATE INDEX IF NOT EXISTS ix_remnawave_accounts_total_requests ON remnawave_accounts (total_requests DESC)"))
         await db.execute(text("CREATE INDEX IF NOT EXISTS ix_rnw_queries_account_requested_at ON remnawave_dns_queries (account_login, requested_at DESC)"))
         await db.execute(text("CREATE INDEX IF NOT EXISTS ix_rnw_queries_account_dns_requested_at ON remnawave_dns_queries (account_login, dns, requested_at DESC)"))
+        await db.execute(text("CREATE INDEX IF NOT EXISTS ix_rnw_queries_account_requested_id ON remnawave_dns_queries (account_login, requested_at DESC, id DESC)"))
+        await db.execute(text("CREATE INDEX IF NOT EXISTS ix_rnw_queries_dns_requested_id ON remnawave_dns_queries (dns, requested_at DESC, id DESC)"))
+        await db.execute(text("CREATE INDEX IF NOT EXISTS ix_rnw_queries_requested_at_brin ON remnawave_dns_queries USING BRIN (requested_at)"))
         await db.commit()
         _RNW_SCHEMA_READY = True
 
@@ -253,11 +290,13 @@ async def process_remnawave_ingest_entries(db: AsyncSession, entries: list[dict[
 
     result.accounts_upserted = len(account_last_activity)
 
-    for start_idx, end_idx in _iter_batch_slices(len(query_rows), 1000):
-        chunk = query_rows[start_idx:end_idx]
-        if not chunk:
-            continue
-        await db.execute(pg_insert(RemnawaveDNSQuery).values(chunk))
+    copied = await _copy_insert_dns_queries(db, query_rows)
+    if not copied:
+        for start_idx, end_idx in _iter_batch_slices(len(query_rows), 1000):
+            chunk = query_rows[start_idx:end_idx]
+            if not chunk:
+                continue
+            await db.execute(pg_insert(RemnawaveDNSQuery).values(chunk))
     result.inserted_queries = len(query_rows)
 
     if await ensure_adult_schema_ready():

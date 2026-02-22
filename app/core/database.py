@@ -3,6 +3,14 @@ from sqlalchemy.orm import DeclarativeBase
 
 from app.core.config import settings
 
+_server_settings = {
+    "statement_timeout": str(settings.DB_STATEMENT_TIMEOUT_MS),
+    "lock_timeout": str(settings.DB_LOCK_TIMEOUT_MS),
+    "idle_in_transaction_session_timeout": str(settings.DB_IDLE_IN_TX_TIMEOUT_MS),
+    "jit": "on" if settings.DB_JIT_ENABLED else "off",
+    "work_mem": f"{settings.DB_WORK_MEM_MB}MB",
+}
+
 engine = create_async_engine(
     settings.DATABASE_URL,
     echo=False,
@@ -13,11 +21,7 @@ engine = create_async_engine(
     pool_pre_ping=settings.DB_POOL_PRE_PING,
     connect_args={
         "command_timeout": settings.DB_COMMAND_TIMEOUT_SECONDS,
-        "server_settings": {
-            "statement_timeout": str(settings.DB_STATEMENT_TIMEOUT_MS),
-            "lock_timeout": str(settings.DB_LOCK_TIMEOUT_MS),
-            "idle_in_transaction_session_timeout": str(settings.DB_IDLE_IN_TX_TIMEOUT_MS),
-        },
+        "server_settings": _server_settings,
     },
 )
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)

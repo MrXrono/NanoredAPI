@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "NanoredVPN API"
-    VERSION: str = "1.17.0.6"
+    VERSION: str = "1.17.0.7"
     API_V1_PREFIX: str = "/api/v1"
 
     # Database
@@ -23,7 +23,12 @@ class Settings(BaseSettings):
     DB_STATEMENT_TIMEOUT_MS: int = max(1000, int(os.getenv("DB_STATEMENT_TIMEOUT_MS", "30000")))
     DB_LOCK_TIMEOUT_MS: int = max(500, int(os.getenv("DB_LOCK_TIMEOUT_MS", "5000")))
     DB_IDLE_IN_TX_TIMEOUT_MS: int = max(5000, int(os.getenv("DB_IDLE_IN_TX_TIMEOUT_MS", "60000")))
+    DB_JIT_ENABLED: bool = os.getenv("DB_JIT_ENABLED", "0").strip() in ("1", "true", "yes", "on")
+    DB_WORK_MEM_MB: int = max(4, int(os.getenv("DB_WORK_MEM_MB", "16")))
 
+    DB_MAINTENANCE_ENABLED: bool = os.getenv("DB_MAINTENANCE_ENABLED", "1").strip() in ("1", "true", "yes", "on")
+    DB_MAINTENANCE_ANALYZE_INTERVAL_SECONDS: int = max(300, int(os.getenv("DB_MAINTENANCE_ANALYZE_INTERVAL_SECONDS", "1800")))
+    DB_MAINTENANCE_INDEX_SETUP_ON_STARTUP: bool = os.getenv("DB_MAINTENANCE_INDEX_SETUP_ON_STARTUP", "1").strip() in ("1", "true", "yes", "on")
 
     # Redis
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://nanored-redis:6379/0")
@@ -79,6 +84,7 @@ class Settings(BaseSettings):
     REMNAWAVE_INGEST_DEAD_STREAM: str = os.getenv("REMNAWAVE_INGEST_DEAD_STREAM", "stream:remnawave:ingest:dead")
     REMNAWAVE_INGEST_DEAD_MAXLEN: int = int(os.getenv("REMNAWAVE_INGEST_DEAD_MAXLEN", "10000"))
     REMNAWAVE_LOGS_SUMMARY_DAYS: int = max(1, int(os.getenv("REMNAWAVE_LOGS_SUMMARY_DAYS", "7")))
+    REMNAWAVE_INGEST_COPY_ENABLED: bool = os.getenv("REMNAWAVE_INGEST_COPY_ENABLED", "1").strip() in ("1", "true", "yes", "on")
 
     # GeoIP
     GEOIP_DB_PATH: str = "/app/data/GeoLite2-City.mmdb"
